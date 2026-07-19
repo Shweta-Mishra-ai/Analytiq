@@ -1,0 +1,24 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.18.0
+scipy>=1.11.0
+statsmodels>=0.14.0
+matplotlib>=3.8.0
+Pillow>=10.0.0
+reportlab>=4.0.0
+xlsxwriter>=3.1.0
+openpyxl>=3.1.0
+groq>=0.4.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+scikit-learn>=1.4.0
+xgboost>=2.0.0
+pypdf>=4.0.0
+google-generativeai>=0.7.0
+tenacity>=8.2.0
+# ── RAG ──
+pypdfium2>=4.28.0
+python-docx>=1.1.0

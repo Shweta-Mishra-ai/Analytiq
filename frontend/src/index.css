@@ -1,0 +1,58 @@
+@import 'tailwindcss';
+@import 'react-grid-layout/css/styles.css';
+
+@theme {
+  --color-bg: #0d1117;
+  --color-panel: #151b26;
+  --color-panel2: #1b2331;
+  --color-edge: #232d3f;
+  --color-ink: #e6ebf2;
+  --color-mute: #8b97a8;
+  --color-accent: #4f8ef7;
+  --color-teal: #22d3a5;
+  --color-amber: #f7934f;
+  --color-rose: #f77070;
+  --color-violet: #a78bfa;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family:
+    'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2b3648;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.react-grid-item.react-grid-placeholder {
+  background: var(--color-accent) !important;
+  opacity: 0.15;
+  border-radius: 12px;
+}
+
+.react-resizable-handle {
+  filter: invert(0.7);
+}
+
+.tile-drag {
+  cursor: grab;
+}
+.tile-drag:active {
+  cursor: grabbing;
+}

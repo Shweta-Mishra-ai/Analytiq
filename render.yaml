@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: dataforge-pro
+    runtime: docker
+    plan: starter          # upgrade for more RAM if training large datasets
+    healthCheckPath: /api/health
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false        # set in Render dashboard
+      - key: GEMINI_API_KEY
+        sync: false        # set in Render dashboard
+      - key: DATA_DIR
+        value: /srv/data
+    disk:
+      name: dataforge-data
+      mountPath: /srv/data
+      sizeGB: 5
