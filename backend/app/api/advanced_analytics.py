@@ -1,0 +1,207 @@
+"""
+api/advanced_analytics.py — RFM segmentation, A/B testing, and survival
+(time-to-event) analysis. Ported from dataforge-ai's stronger analytics
+engines to close the gap with Analytiq's existing BI/EDA/stats suite.
+Every dataset is scoped to the authenticated client (`owner`).
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+import pandas as pd
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
+from app.services.auth import current_owner
+from app.services.dataset_store import store
+from app.services.serialize import to_jsonable
+
+router = APIRouter(prefix="/api/analytics", tags=["advanced-analytics"])
+
+
+def _df_or_404(owner: str, ds_id: str):
+    df = store.get_df(owner, ds_id)
+    if df is None:
+        raise HTTPException(404, "Dataset not found")
+    return df
+
+
+def _cached(owner: str, ds_id: str, key: str, compute):
+    obj = store.cache_get(owner, ds_id, key)
+    if obj is None:
+        obj = compute()
+        store.cache_set(owner, ds_id, key, obj)
+    return obj
+
+
+# ══════════════════════════════════════════════════════════
+#  RFM segmentation
+# ══════════════════════════════════════════════════════════
+
+@router.get("/{ds_id}/rfm/columns")
+def rfm_columns(ds_id: str, owner: str = Depends(current_owner)):
+    """Suggests which columns look like customer_id / date / monetary,
+    for a frontend column picker. Returns detected=null if this dataset
+    doesn't look like transaction-level data at all."""
+    df = _df_or_404(owner, ds_id)
+    from app.engines.rfm_engine import detect_rfm_columns
+    cols = detect_rfm_columns(df)
+    return {"detected": to_jsonable(cols) if cols else None}
+
+
+@router.get("/{ds_id}/rfm")
+def rfm(
+    ds_id: str,
+    customer_col: Optional[str] = None,
+    date_col: Optional[str] = None,
+    monetary_col: Optional[str] = None,
+    quantity_col: Optional[str] = None,
+    price_col: Optional[str] = None,
+    owner: str = Depends(current_owner),
+):
+    df = _df_or_404(owner, ds_id)
+    from app.engines.rfm_engine import RFMColumns, run_rfm
+
+    columns = None
+    if customer_col or date_col:
+        if not (customer_col and date_col):
+            raise HTTPException(422, "customer_col and date_col must both be given together")
+        for c in (customer_col, date_col, monetary_col, quantity_col, price_col):
+            if c and c not in df.columns:
+                raise HTTPException(422, f"Column '{c}' not in dataset")
+        columns = RFMColumns(customer_id=customer_col, date_col=date_col,
+                              monetary_col=monetary_col, quantity_col=quantity_col,
+                              price_col=price_col)
+
+    cache_key = f"rfm_{customer_col}_{date_col}_{monetary_col}" if columns else "rfm_auto"
+    try:
+        report = _cached(owner, ds_id, cache_key, lambda: run_rfm(df, columns))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return to_jsonable(report)
+
+
+# ══════════════════════════════════════════════════════════
+#  A/B testing
+# ══════════════════════════════════════════════════════════
+
+class ABTestRequest(BaseModel):
+    group_col: str
+    metric_col: str
+    group_a_value: Optional[str] = None
+    group_b_value: Optional[str] = None
+    # For a binary/conversion metric_col: which value counts as a
+    # "conversion" (e.g. "Yes", "1", "Converted"). Auto-detected from a
+    # common-token list when omitted.
+    success_value: Optional[str] = None
+    confidence_level: float = 0.95
+
+
+_POSITIVE_TOKENS = {"1", "1.0", "true", "yes", "y", "converted", "success", "won", "purchased"}
+
+
+def _is_binary_series(s: pd.Series) -> bool:
+    return 0 < s.dropna().nunique() <= 2
+
+
+@router.get("/{ds_id}/ab-test/fields")
+def ab_test_fields(ds_id: str, owner: str = Depends(current_owner)):
+    """Candidate group (2+ distinct values) and metric columns, for a
+    frontend column picker."""
+    df = _df_or_404(owner, ds_id)
+    group_candidates = [c for c in df.columns if 2 <= df[c].nunique() <= 20]
+    metric_candidates = [c for c in df.columns
+                          if pd.api.types.is_numeric_dtype(df[c]) or _is_binary_series(df[c])]
+    return {"group_columns": group_candidates, "metric_columns": metric_candidates}
+
+
+@router.post("/{ds_id}/ab-test")
+def ab_test(ds_id: str, req: ABTestRequest, owner: str = Depends(current_owner)):
+    df = _df_or_404(owner, ds_id)
+    from app.engines.ab_test_engine import run_conversion_test, run_continuous_test
+
+    if req.group_col not in df.columns:
+        raise HTTPException(422, f"Column '{req.group_col}' not in dataset")
+    if req.metric_col not in df.columns:
+        raise HTTPException(422, f"Column '{req.metric_col}' not in dataset")
+
+    counts = df[req.group_col].dropna().astype(str).value_counts()
+    if req.group_a_value and req.group_b_value:
+        group_a_value, group_b_value = req.group_a_value, req.group_b_value
+    else:
+        top2 = counts.head(2).index.tolist()
+        if len(top2) < 2:
+            raise HTTPException(422, f"'{req.group_col}' needs at least 2 distinct groups")
+        group_a_value, group_b_value = top2[0], top2[1]
+
+    sub_a = df[df[req.group_col].astype(str) == str(group_a_value)]
+    sub_b = df[df[req.group_col].astype(str) == str(group_b_value)]
+    if sub_a.empty or sub_b.empty:
+        raise HTTPException(422, "One of the selected groups has no rows")
+
+    try:
+        if _is_binary_series(df[req.metric_col]):
+            def _positive_count(sub: pd.DataFrame) -> int:
+                s = sub[req.metric_col].dropna().astype(str).str.strip().str.lower()
+                if req.success_value:
+                    return int((s == str(req.success_value).strip().lower()).sum())
+                return int(s.isin(_POSITIVE_TOKENS).sum())
+
+            result = run_conversion_test(
+                conversions_a=_positive_count(sub_a), n_a=len(sub_a),
+                conversions_b=_positive_count(sub_b), n_b=len(sub_b),
+                variant_a_name=str(group_a_value), variant_b_name=str(group_b_value),
+                metric_name=req.metric_col, confidence_level=req.confidence_level,
+            )
+        else:
+            result = run_continuous_test(
+                values_a=sub_a[req.metric_col], values_b=sub_b[req.metric_col],
+                variant_a_name=str(group_a_value), variant_b_name=str(group_b_value),
+                metric_name=req.metric_col, confidence_level=req.confidence_level,
+            )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+    return to_jsonable(result)
+
+
+# ══════════════════════════════════════════════════════════
+#  Survival analysis
+# ══════════════════════════════════════════════════════════
+
+class SurvivalRequest(BaseModel):
+    duration_col: str
+    event_col: str
+    group_col: Optional[str] = None
+
+
+@router.get("/{ds_id}/survival/fields")
+def survival_fields(ds_id: str, owner: str = Depends(current_owner)):
+    """Candidate duration (numeric), event (binary-ish), and group
+    (low-cardinality categorical) columns, for a frontend column picker."""
+    df = _df_or_404(owner, ds_id)
+    duration_candidates = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    event_candidates = [c for c in df.columns if _is_binary_series(df[c])]
+    group_candidates = [c for c in df.columns if 2 <= df[c].nunique() <= 20]
+    return {"duration_columns": duration_candidates, "event_columns": event_candidates,
+            "group_columns": group_candidates}
+
+
+@router.post("/{ds_id}/survival")
+def survival(ds_id: str, req: SurvivalRequest, owner: str = Depends(current_owner)):
+    df = _df_or_404(owner, ds_id)
+    from app.engines.survival_engine import run_survival_analysis
+
+    for c in (req.duration_col, req.event_col, req.group_col):
+        if c and c not in df.columns:
+            raise HTTPException(422, f"Column '{c}' not in dataset")
+
+    cache_key = f"survival_{req.duration_col}_{req.event_col}_{req.group_col}"
+    try:
+        report = _cached(
+            owner, ds_id, cache_key,
+            lambda: run_survival_analysis(df, req.duration_col, req.event_col, req.group_col),
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return to_jsonable(report)
