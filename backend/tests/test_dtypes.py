@@ -80,6 +80,67 @@ def test_the_original_failure_mode_is_gone():
     assert rate["Eng"] == pytest.approx(0.5)
 
 
+# ══════════════════════════════════════════════════════════
+#  Behaviour at each site that branched on `dtype == object`
+# ══════════════════════════════════════════════════════════
+# These assert the *effect*, not the predicate. On pandas 3 each of these
+# paths was skipped entirely because the dtype check said "not text" — so
+# whitespace was never stripped, high-cardinality string columns were
+# never dropped before training, and currency symbols were left in place.
+# All of it silent.
+
+def test_auto_clean_strips_whitespace_from_text_columns():
+    from app.engines.data_cleaner import auto_clean
+    df = pd.DataFrame({
+        "name": ["  Alice ", "Bob  ", " Carol"],
+        "value": [1.0, 2.0, 3.0],
+    })
+    cleaned, _report = auto_clean(df)
+    assert cleaned["name"].tolist() == ["Alice", "Bob", "Carol"], (
+        "whitespace stripping was skipped — the text-dtype branch did not fire")
+
+
+def test_ml_prep_drops_high_cardinality_text_columns():
+    """A near-unique string column is an identifier, not a feature; it must
+    be dropped before training rather than one-hot exploded."""
+    from app.engines.ml_engine import run_ml_pipeline
+    rng = np.random.default_rng(0)
+    n = 200
+    df = pd.DataFrame({
+        "ticket_ref": [f"REF-{i:05d}" for i in range(n)],   # unique text
+        "amount": rng.normal(100, 20, n),
+        "score": rng.normal(50, 10, n),
+        "target": rng.choice(["Yes", "No"], n),
+    })
+    report = run_ml_pipeline(df, "target")
+    assert "ticket_ref" not in report.feature_cols, (
+        "high-cardinality text column was kept as a feature")
+
+
+def test_table_json_to_df_strips_currency_decorations():
+    from app.services.table_extractor import table_json_to_df
+    payload = {
+        "found": True,
+        "columns": ["item", "price"],
+        "rows": [["Widget", "$1,200"], ["Gadget", "$350"], ["Doohickey", "$75"]],
+    }
+    df, _warnings = table_json_to_df(payload)
+    assert pd.api.types.is_numeric_dtype(df["price"]), (
+        f"currency stripping skipped — price dtype is {df['price'].dtype}")
+    assert df["price"].tolist() == [1200, 350, 75]
+
+
+def test_hr_attrition_rate_is_computed_from_text_flags(hr_df):
+    """_run_attrition reads a Yes/No column; on pandas 3 the text branch
+    was skipped and the rate came back missing or NaN."""
+    from app.engines.domains.hr import _run_attrition
+    result = _run_attrition(hr_df)
+    if result is None:
+        pytest.skip("no attrition column detected in fixture")
+    assert result.rate == result.rate, "attrition rate is NaN"
+    assert 0 < result.rate < 100
+
+
 def _iter_app_py_files():
     skip = {"__pycache__", ".git", "node_modules", "venv"}
     for root, dirs, files in os.walk(APP_DIR):
