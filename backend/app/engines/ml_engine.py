@@ -3,6 +3,7 @@ ml_engine.py — Production ML pipeline.
 Auto model selection, cross-validation, SHAP, what-if analysis.
 No shortcuts — proper ML engineering.
 """
+import logging
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
@@ -27,6 +28,8 @@ try:
     XGBOOST_AVAILABLE = True
 except ImportError:
     XGBOOST_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════
@@ -288,7 +291,7 @@ def _evaluate_classification(y_true, y_pred, y_prob=None) -> Dict:
                                     average="weighted")
             auc = round(auc, 4)
         except Exception:
-            pass
+            logger.debug("_evaluate_classification: suppressed exception", exc_info=True)
     return {"accuracy": round(acc, 4), "f1": round(f1, 4), "roc_auc": auc}
 
 
@@ -376,6 +379,7 @@ def train_models(
             ))
 
         except Exception as e:
+            logger.warning(f"Model '{name}' failed to train and was skipped: {e}")
             results.append(ModelResult(
                 name=name, task=task,
                 cv_score=-999, cv_std=0,
@@ -706,6 +710,7 @@ def run_ml_pipeline(
                         "(|r|={:.3f}). Using it would fake a perfect model "
                         "(target leakage).".format(col, abs(r)))
             except Exception:
+                logger.debug("run_ml_pipeline: suppressed exception", exc_info=True)
                 continue
 
     if len(X.columns) == 0:
@@ -742,7 +747,7 @@ def run_ml_pipeline(
         try:
             y_pred = best.model.predict(X_test)
         except Exception:
-            pass
+            logger.debug("run_ml_pipeline: suppressed exception", exc_info=True)
 
     report = MLReport(
         task=task,

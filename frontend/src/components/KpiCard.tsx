@@ -15,9 +15,11 @@ export default function KpiCard({ kpi }: { kpi: Kpi }) {
       <div className="text-[11px] font-medium tracking-wide text-mute uppercase">
         {kpi.label}
       </div>
-      <div className="mt-1 text-2xl font-bold text-ink">{fmt(kpi)}</div>
+      <div className="mt-1 font-data text-2xl font-semibold text-ink">
+        {fmt(kpi)}
+      </div>
       {kpi.mean !== undefined && (
-        <div className="text-[11px] text-mute">
+        <div className="font-data text-[11px] text-mute">
           avg {kpi.mean.toLocaleString(undefined, { maximumFractionDigits: 1 })}
         </div>
       )}

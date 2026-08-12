@@ -13,6 +13,15 @@
   --color-amber: #f7934f;
   --color-rose: #f77070;
   --color-violet: #a78bfa;
+
+  /* IBM Plex: a pairing built for technical/data-precision contexts,
+     not a generic app-UI default. Sans carries the interface; Mono is
+     used deliberately wherever a number needs to be trusted — KPIs,
+     table cells, chart axes — so figures always align on a fixed grid
+     instead of the ragged proportional-width look of default numerals. */
+  --font-sans:
+    'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
 }
 
 html,
@@ -24,8 +33,17 @@ body,
 body {
   background: var(--color-bg);
   color: var(--color-ink);
-  font-family:
-    'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  font-family: var(--font-sans);
+  font-feature-settings: 'tnum' 1; /* tabular figures even in sans-serif numerals */
+}
+
+/* Every number a person is meant to trust — a KPI, a table cell, an
+   axis label — renders in the mono face with real tabular alignment.
+   This is the app's one consistent, deliberate typographic signature. */
+.font-data {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
 
 ::-webkit-scrollbar {

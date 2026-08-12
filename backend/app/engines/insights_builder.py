@@ -6,10 +6,13 @@ Drop this file in core/ and import in 8_Reports.py
 """
 
 from __future__ import annotations
+import logging
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -165,6 +168,7 @@ def build_top_insights(
                 if len(insights) >= 5:
                     break
         except Exception:
+            logger.debug("build_top_insights: suppressed exception", exc_info=True)
             continue
 
     # ── Satisfaction benchmark insight ────────────────────────────────────────
@@ -225,7 +229,7 @@ def build_top_insights(
                                    "Gallup: 50–200% of annual salary per replacement.",
                     ))
         except Exception:
-            pass
+            logger.debug("build_top_insights: suppressed exception", exc_info=True)
 
     # ── Ecommerce insights ────────────────────────────────────────────────────
     if domain == "ecommerce" and not insights:

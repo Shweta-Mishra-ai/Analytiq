@@ -79,7 +79,7 @@ def clean_col(col: str) -> str:
         from app.ai.prompt_builder import translate_column_name
         return translate_column_name(col)
     except Exception:
-        pass
+        logger.debug("clean_col: suppressed exception", exc_info=True)
     return " ".join(w.capitalize()
                     for w in col.replace("_", " ").replace("montly", "Monthly").split())
 
@@ -442,6 +442,7 @@ def _build_raw_summary(df: pd.DataFrame, domain: str) -> str:
                 + (" [SKEWED — use median]" if abs(skew) > 0.5 else "")
             )
         except Exception:
+            logger.debug("_build_raw_summary: suppressed exception", exc_info=True)
             continue
 
     lines.append("")
@@ -454,6 +455,7 @@ def _build_raw_summary(df: pd.DataFrame, domain: str) -> str:
                 " | ".join([f"{k}: {v*100:.0f}%" for k, v in vc.items()])
             )
         except Exception:
+            logger.debug("_build_raw_summary: suppressed exception", exc_info=True)
             continue
 
     # HR-specific attrition
@@ -631,7 +633,7 @@ def generate_chart_narrative(
                 s = _hist_stats(df, num[0])
                 return _fb_hist(s)
         except Exception:
-            pass
+            logger.debug("generate_chart_narrative: suppressed exception", exc_info=True)
         return (f"Analysis of {chart_title}: "
                 f"dataset contains {len(df):,} records across "
                 f"{len(df.columns)} variables.")

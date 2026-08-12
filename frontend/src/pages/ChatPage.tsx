@@ -39,6 +39,12 @@ export default function ChatPage() {
   const send = async (text: string) => {
     if (!text.trim() || busy) return
     setInput('')
+    // Snapshot before appending the new user turn, so it becomes the
+    // conversation history sent to the backend for follow-up questions.
+    const priorTurns = messages
+      .filter((m) => m.text)
+      .slice(-8)
+      .map((m) => ({ role: m.role, content: m.text }))
     setMessages((m) => [...m, { role: 'user', text }])
     setBusy(true)
     try {
@@ -46,7 +52,7 @@ export default function ChatPage() {
         text: string
         figure: Figure | null
         table: TableData | null
-      }>(`/api/chat/${ds}`, { message: text })
+      }>(`/api/chat/${ds}`, { message: text, history: priorTurns })
       setMessages((m) => [
         ...m,
         { role: 'assistant', text: r.text, figure: r.figure, table: r.table },

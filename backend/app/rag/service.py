@@ -74,15 +74,10 @@ def _gemini_generate(system: str, user: str, max_tokens: int = 2048) -> Optional
     if not config.gemini_api_key:
         return None
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=config.gemini_api_key)
-        model = genai.GenerativeModel(
-            model_name=config.gemini_model,
-            system_instruction=system,
-            generation_config=genai.GenerationConfig(
-                max_output_tokens=max_tokens, temperature=0.2))
-        resp = model.generate_content(user)
-        return (resp.text or "").strip() or None
+        from app.ai import gemini_client
+        return gemini_client.generate_text(
+            [user], system=system, max_output_tokens=max_tokens,
+            temperature=0.2, timeout_sec=60).strip() or None
     except Exception as e:
         logger.warning(f"Gemini generation failed: {e}")
         return None

@@ -13,7 +13,6 @@ from __future__ import annotations
 import io
 import logging
 import os
-import time
 from typing import List
 
 from app.config import config
@@ -110,19 +109,19 @@ def _require_gemini():
     if not config.gemini_api_key:
         raise RuntimeError(
             "GEMINI_API_KEY is required to analyze images and video")
-    import google.generativeai as genai
-    genai.configure(api_key=config.gemini_api_key)
-    return genai
 
 
 def _image(name: str, data: bytes) -> List[dict]:
-    genai = _require_gemini()
+    _require_gemini()
+    from app.ai import gemini_client
     from PIL import Image
     img = Image.open(io.BytesIO(data))
     img.load()
-    model = genai.GenerativeModel(config.gemini_model)
-    resp = model.generate_content([IMAGE_PROMPT, img])
-    text = (resp.text or "").strip()
+    try:
+        text = gemini_client.generate_text(
+            [IMAGE_PROMPT, img], timeout_sec=60).strip()
+    except Exception as e:
+        raise RuntimeError(f"Image analysis failed: {e}")
     if not text:
         raise RuntimeError("Gemini returned no analysis for the image")
     return [{"text": f"[Image analysis of {name}]\n{text}",
@@ -132,29 +131,24 @@ def _image(name: str, data: bytes) -> List[dict]:
 def _video(name: str, data: bytes, ext: str) -> List[dict]:
     """Native video understanding via the Gemini File API
     (covers visuals, on-screen text and audio narration)."""
-    genai = _require_gemini()
+    _require_gemini()
+    from app.ai import gemini_client
     import tempfile
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
         tmp.write(data)
         path = tmp.name
     try:
-        vfile = genai.upload_file(path)
-        deadline = time.time() + 300
-        while vfile.state.name == "PROCESSING":
-            if time.time() > deadline:
-                raise RuntimeError("Video processing timed out")
-            time.sleep(4)
-            vfile = genai.get_file(vfile.name)
-        if vfile.state.name != "ACTIVE":
-            raise RuntimeError(f"Video processing failed: {vfile.state.name}")
-        model = genai.GenerativeModel(config.gemini_model)
-        resp = model.generate_content([VIDEO_PROMPT, vfile],
-                                      request_options={"timeout": 300})
-        text = (resp.text or "").strip()
         try:
-            genai.delete_file(vfile.name)
-        except Exception:
-            pass
+            vfile = gemini_client.upload_file(path, timeout_sec=300)
+        except Exception as e:
+            raise RuntimeError(f"Could not process video for analysis: {e}")
+        try:
+            text = gemini_client.generate_text(
+                [VIDEO_PROMPT, vfile], timeout_sec=120).strip()
+        except Exception as e:
+            raise RuntimeError(f"Video analysis failed: {e}")
+        finally:
+            gemini_client.delete_file(vfile.name)
         if not text:
             raise RuntimeError("Gemini returned no analysis for the video")
         return [{"text": f"[Video analysis of {name}]\n{text}",

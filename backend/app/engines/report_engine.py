@@ -1,7 +1,10 @@
+import logging
 import pandas as pd
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

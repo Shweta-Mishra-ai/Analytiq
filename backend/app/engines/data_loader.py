@@ -6,10 +6,13 @@ Handles ALL dirty data — original files, not just clean ones.
 Supports: CSV, Excel (multi-sheet), JSON up to 200MB.
 NO Streamlit imports. Always returns LoadResult.
 """
+import logging
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, List
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -129,6 +132,7 @@ def _load_csv(f, warnings: list) -> Optional[pd.DataFrame]:
                         warnings.append("Separator detected: '{}'".format(sep))
                     return df
             except Exception:
+                logger.debug("_load_csv: suppressed exception", exc_info=True)
                 continue
 
     # Last resort — no separator detection
@@ -243,7 +247,7 @@ def _sanitize(df: pd.DataFrame, warnings: list) -> pd.DataFrame:
                 warnings.append(
                     "{:,} infinite values replaced with blank.".format(int(inf_count)))
     except Exception:
-        pass
+        logger.debug("_sanitize: suppressed exception", exc_info=True)
 
     # Try to improve dtypes for object columns (safe — won't break values)
     df = _smart_dtype_inference(df)
@@ -254,7 +258,11 @@ def _sanitize(df: pd.DataFrame, warnings: list) -> pd.DataFrame:
 def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
     """
     Carefully improve dtypes.
-    Only converts when >80% of values successfully convert.
+    Only converts when >80% of values successfully convert — and even
+    then, a cell that fails to convert keeps its ORIGINAL value rather
+    than being silently destroyed into a blank. A "Revenue" column that's
+    90% numbers and one "Pending" stays a column with numbers and the
+    word "Pending" in it, not numbers and a hole where "Pending" was.
     NEVER converts columns that look like IDs or product names.
     """
     skip_keywords = ["id", "name", "code", "sku", "url", "link",
@@ -272,10 +280,10 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
             converted = pd.to_numeric(df[col], errors="coerce")
             success_rate = converted.notna().sum() / max(len(df), 1)
             if success_rate > 0.80:
-                df[col] = converted
+                df[col] = converted.where(converted.notna(), df[col])
                 continue
         except Exception:
-            pass
+            logger.debug("_smart_dtype_inference: suppressed exception", exc_info=True)
 
         # Try datetime (only for date-named columns)
         date_keywords = ["date", "time", "created", "updated", "timestamp"]
@@ -284,8 +292,8 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
                 converted = pd.to_datetime(df[col], errors="coerce")
                 success_rate = converted.notna().sum() / max(len(df), 1)
                 if success_rate > 0.70:
-                    df[col] = converted
+                    df[col] = converted.where(converted.notna(), df[col])
             except Exception:
-                pass
+                logger.debug("_smart_dtype_inference: suppressed exception", exc_info=True)
 
     return df

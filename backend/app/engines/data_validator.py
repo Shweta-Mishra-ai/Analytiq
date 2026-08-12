@@ -3,10 +3,13 @@ data_validator.py
 Validates DataFrame before analysis.
 Catches garbage data early — never let bad data reach analysis layer.
 """
+import logging
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # ── Config ────────────────────────────────────────────────

@@ -4,12 +4,13 @@ Safe tool-calling: the LLM picks a whitelisted tool + params;
 no generated code is ever executed.
 """
 from __future__ import annotations
+import logging
 
 import json
 from typing import List, Optional
 
 import plotly.io as pio
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.ai.llm_client import get_client
@@ -17,8 +18,11 @@ from app.ai.prompt_builder import build_chat_system_prompt
 from app.ai.response_parser import parse_tool_call
 from app.ai.tool_dispatcher import dispatch
 from app.config import config
+from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.serialize import df_records
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -34,8 +38,8 @@ class ChatRequest(BaseModel):
 
 
 @router.post("/{ds_id}")
-def chat(ds_id: str, req: ChatRequest):
-    df = store.get_df(ds_id)
+def chat(ds_id: str, req: ChatRequest, owner: str = Depends(current_owner)):
+    df = store.get_df(owner, ds_id)
     if df is None:
         raise HTTPException(404, "Dataset not found")
     if not config.groq_api_key:
@@ -44,8 +48,18 @@ def chat(ds_id: str, req: ChatRequest):
     client = get_client(config.groq_api_key)
     system = build_chat_system_prompt(df)
 
+    # Carry prior turns so follow-ups ("now split that by region") resolve
+    # correctly instead of every message being answered in isolation.
+    # Bounded window keeps prompt size predictable.
+    history_msgs = [
+        {"role": m.role, "content": m.content}
+        for m in req.history[-8:]
+        if m.role in ("user", "assistant") and m.content.strip()
+    ]
+    messages = history_msgs + [{"role": "user", "content": req.message}]
+
     raw = client.chat_safe(
-        messages=[{"role": "user", "content": req.message}],
+        messages=messages,
         system=system,
     )
     parsed = parse_tool_call(raw)

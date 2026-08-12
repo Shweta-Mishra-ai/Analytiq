@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { UploadCloud, Trash2, FileSpreadsheet, ScanText } from 'lucide-react'
+import { UploadCloud, Trash2, FileSpreadsheet, ScanText, FileVideo } from 'lucide-react'
 import {
   apiDelete,
   apiGet,
@@ -21,6 +21,7 @@ export default function UploadPage() {
   const [recent, setRecent] = useState<DatasetMeta[]>([])
   const [dragOver, setDragOver] = useState(false)
   const [extracting, setExtracting] = useState(false)
+  const [extractingVideo, setExtractingVideo] = useState(false)
 
   const refresh = useCallback(() => {
     apiGet<{ datasets: DatasetMeta[] }>('/api/datasets')
@@ -72,11 +73,29 @@ export default function UploadPage() {
     }
   }
 
+  const doExtractVideo = async (file: File) => {
+    setExtractingVideo(true)
+    setError('')
+    try {
+      const r = await apiUpload<{ meta: DatasetMeta; preview: TableData }>(
+        '/api/datasets/extract-from-video',
+        file,
+      )
+      setDataset(r.meta)
+      setPreview(r.preview)
+      refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setExtractingVideo(false)
+    }
+  }
+
   return (
     <div className="p-8">
       <PageHeader
         title="Data Upload"
-        subtitle="CSV, Excel (multi-sheet) or JSON — up to 200 MB"
+        subtitle="CSV, Excel (multi-sheet) or JSON up to 200 MB — or let AI extract a table from a photo or video"
       />
       {error && (
         <div className="mb-4">
@@ -84,7 +103,7 @@ export default function UploadPage() {
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+      <div className="grid gap-4 lg:grid-cols-3">
         <label
           onDragOver={(e) => {
             e.preventDefault()
@@ -130,11 +149,32 @@ export default function UploadPage() {
             onChange={(e) => e.target.files?.[0] && doExtract(e.target.files[0])}
           />
         </label>
+
+        <label className="flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-edge bg-panel py-14 transition hover:border-violet-400/60">
+          <FileVideo className="h-10 w-10 text-violet-400" />
+          <p className="mt-3 px-4 text-center text-sm text-ink">
+            Video of a <span className="text-violet-400">table or dashboard</span>
+          </p>
+          <p className="mt-1 px-4 text-center text-xs text-mute">
+            AI reads the data across the clip into a real dataset
+          </p>
+          <input
+            type="file"
+            accept=".mp4,.mov,.webm,.avi,.mkv"
+            className="hidden"
+            onChange={(e) =>
+              e.target.files?.[0] && doExtractVideo(e.target.files[0])
+            }
+          />
+        </label>
       </div>
 
       {busy && <Spinner label="Uploading and profiling…" />}
       {extracting && (
         <Spinner label="Reading the table from your image… (10–30s)" />
+      )}
+      {extractingVideo && (
+        <Spinner label="Reading the table from your video… (30s–a few min)" />
       )}
 
       {dataset && preview && (

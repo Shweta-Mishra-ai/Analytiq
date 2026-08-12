@@ -3,6 +3,7 @@ services/serialize.py — convert engine outputs (dataclasses, numpy,
 pandas, plotly) into JSON-safe structures for API responses.
 """
 from __future__ import annotations
+import logging
 
 import dataclasses
 import math
@@ -10,6 +11,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def to_jsonable(obj: Any, _depth: int = 0) -> Any:
@@ -35,6 +38,13 @@ def to_jsonable(obj: Any, _depth: int = 0) -> Any:
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return {k: to_jsonable(v, _depth + 1)
                 for k, v in dataclasses.asdict(obj).items()}
+    # NamedTuple before the generic tuple branch below: it IS a tuple, so
+    # without this it serialises to a positional array and every field name
+    # is lost. Clients then have to index by position — which silently
+    # broke the industry-benchmark UI (it read .low/.high off what arrived
+    # as [10, 15, "%", "..."]).
+    if isinstance(obj, tuple) and hasattr(obj, "_asdict"):
+        return {k: to_jsonable(v, _depth + 1) for k, v in obj._asdict().items()}
     if isinstance(obj, dict):
         return {str(k): to_jsonable(v, _depth + 1) for k, v in obj.items()}
     if isinstance(obj, (list, tuple, set)):

@@ -1,5 +1,8 @@
+import logging
 import pandas as pd
 from app.config import config
+
+logger = logging.getLogger(__name__)
 
 
 def build_chat_system_prompt(df: pd.DataFrame) -> str:

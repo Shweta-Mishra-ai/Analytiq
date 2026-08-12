@@ -1,15 +1,20 @@
 """
 api/ml.py — ML pipeline endpoints (mirrors page 5, ML Predictions).
+Every dataset is scoped to the authenticated client (`owner`).
 """
 from __future__ import annotations
+import logging
 
 from typing import Dict, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.serialize import to_jsonable
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ml", tags=["ml"])
 
@@ -24,8 +29,8 @@ class WhatIfRequest(BaseModel):
     inputs: Dict[str, object] = Field(default_factory=dict)
 
 
-def _df_or_404(ds_id: str):
-    df = store.get_df(ds_id)
+def _df_or_404(owner: str, ds_id: str):
+    df = store.get_df(owner, ds_id)
     if df is None:
         raise HTTPException(404, "Dataset not found")
     return df
@@ -55,15 +60,15 @@ def _serialize_report(report) -> dict:
 
 
 @router.get("/{ds_id}/targets")
-def targets(ds_id: str):
-    df = _df_or_404(ds_id)
+def targets(ds_id: str, owner: str = Depends(current_owner)):
+    df = _df_or_404(owner, ds_id)
     from app.engines.ml_engine import suggest_targets
     return {"targets": to_jsonable(suggest_targets(df))}
 
 
 @router.post("/{ds_id}/train")
-def train(ds_id: str, req: TrainRequest):
-    df = _df_or_404(ds_id)
+def train(ds_id: str, req: TrainRequest, owner: str = Depends(current_owner)):
+    df = _df_or_404(owner, ds_id)
     if req.target not in df.columns:
         raise HTTPException(422, f"Target '{req.target}' not in dataset")
     from app.engines.ml_engine import run_ml_pipeline
@@ -71,25 +76,27 @@ def train(ds_id: str, req: TrainRequest):
         report = run_ml_pipeline(df, req.target)
     except Exception as e:
         raise HTTPException(500, f"Training failed: {e}")
-    store.cache_set(ds_id, f"ml_{req.target}", report)
-    store.cache_set(ds_id, "ml_last", report)
+    store.cache_set(owner, ds_id, f"ml_{req.target}", report)
+    store.cache_set(owner, ds_id, "ml_last", report)
     return _serialize_report(report)
 
 
 @router.get("/{ds_id}/report")
-def last_report(ds_id: str, target: Optional[str] = None):
-    _df_or_404(ds_id)
+def last_report(ds_id: str, target: Optional[str] = None,
+                 owner: str = Depends(current_owner)):
+    _df_or_404(owner, ds_id)
     key = f"ml_{target}" if target else "ml_last"
-    report = store.cache_get(ds_id, key)
+    report = store.cache_get(owner, ds_id, key)
     if report is None:
         raise HTTPException(404, "No trained model yet — call /train first")
     return _serialize_report(report)
 
 
 @router.post("/{ds_id}/what-if")
-def what_if(ds_id: str, req: WhatIfRequest):
-    df = _df_or_404(ds_id)
-    report = store.cache_get(ds_id, f"ml_{req.target}") or store.cache_get(ds_id, "ml_last")
+def what_if(ds_id: str, req: WhatIfRequest, owner: str = Depends(current_owner)):
+    df = _df_or_404(owner, ds_id)
+    report = store.cache_get(owner, ds_id, f"ml_{req.target}") \
+        or store.cache_get(owner, ds_id, "ml_last")
     if report is None:
         raise HTTPException(404, "No trained model yet — call /train first")
     from app.engines.ml_engine import predict_what_if

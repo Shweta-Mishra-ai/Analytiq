@@ -9,6 +9,8 @@ services:
         sync: false        # set in Render dashboard
       - key: GEMINI_API_KEY
         sync: false        # set in Render dashboard
+      - key: APP_ADMIN_KEY
+        sync: false        # set in Render dashboard — gates account management, see README
       - key: DATA_DIR
         value: /srv/data
     disk:

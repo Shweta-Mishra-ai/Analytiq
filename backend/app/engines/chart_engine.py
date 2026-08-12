@@ -1,7 +1,10 @@
+import logging
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional
+
+logger = logging.getLogger(__name__)
 
 PALETTE  = ["#4f8ef7","#22d3a5","#f7934f","#a78bfa","#f77070","#ffd43b","#38bdf8","#fb7185"]
 TEMPLATE = "plotly_dark"

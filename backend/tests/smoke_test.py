@@ -11,6 +11,13 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATA_DIR", "/tmp/dataforge-test-data")
+# This suite exercises single-user open dev mode specifically (see
+# multi_tenant_test.py for the auth-enforced multi-client path) — force
+# that regardless of a local backend/.env that may set a real admin key
+# for deployment convenience, so this test's behavior doesn't depend on
+# whichever machine or directory it happens to run from.
+os.environ["APP_ADMIN_KEY"] = ""
+os.environ["APP_PASSWORD"] = ""
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402

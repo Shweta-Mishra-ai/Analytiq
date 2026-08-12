@@ -2,16 +2,22 @@
 services/dataset_store.py — server-side replacement for the old
 Streamlit session_manager.
 
-Each uploaded dataset gets a UUID. We keep:
+Each uploaded dataset gets a UUID and is scoped to the owner (client
+username) who uploaded it. We keep:
   - raw df      (as uploaded, never mutated)
   - active df   (after cleaning steps)
   - per-dataset analysis caches keyed by a content hash of the active df,
     so caches invalidate automatically when the data changes.
 
 DataFrames are pickled to disk (preserves dtypes exactly) with a small
-in-memory cache in front.
+in-memory cache in front. Storage layout is base_dir/{owner}/{ds_id}/ —
+physical separation per owner, not just a filtered query, so a bug in
+one code path can't accidentally cross-serve another client's files.
+Every method requires an explicit `owner` argument (no default) so a
+new call site can't forget to scope it.
 """
 from __future__ import annotations
+import logging
 
 import hashlib
 import os
@@ -26,6 +32,8 @@ import pandas as pd
 
 from app.config import config
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class DatasetMeta:
@@ -35,6 +43,7 @@ class DatasetMeta:
     uploaded_at: float
     rows: int
     cols: int
+    owner: str = ""
     sheet_names: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
 
@@ -48,18 +57,29 @@ class DatasetStore:
         self.base_dir = base_dir or os.path.join(config.data_dir, "datasets")
         os.makedirs(self.base_dir, exist_ok=True)
         self._lock = threading.RLock()
-        self._mem: Dict[str, Dict[str, Any]] = {}      # id -> {raw, active, meta}
-        self._caches: Dict[str, Dict[str, Any]] = {}   # id -> {key -> (hash, obj)}
+        self._mem: Dict[str, Dict[str, Any]] = {}      # "owner/id" -> {raw, active, meta}
+        self._caches: Dict[str, Dict[str, Any]] = {}   # "owner/id" -> {key -> (hash, obj)}
 
     # ── paths ────────────────────────────────────────────
-    def _dir(self, ds_id: str) -> str:
-        return os.path.join(self.base_dir, ds_id)
+    @staticmethod
+    def _safe(part: str) -> str:
+        # owner/ds_id are always our own generated slugs or validated
+        # usernames, but never trust path components blindly.
+        if not part or "/" in part or "\\" in part or part in (".", ".."):
+            raise ValueError(f"Invalid path segment: {part!r}")
+        return part
 
-    def _path(self, ds_id: str, name: str) -> str:
-        return os.path.join(self._dir(ds_id), name)
+    def _dir(self, owner: str, ds_id: str) -> str:
+        return os.path.join(self.base_dir, self._safe(owner), self._safe(ds_id))
+
+    def _path(self, owner: str, ds_id: str, name: str) -> str:
+        return os.path.join(self._dir(owner, ds_id), name)
+
+    def _mkey(self, owner: str, ds_id: str) -> str:
+        return f"{owner}/{ds_id}"
 
     # ── lifecycle ────────────────────────────────────────
-    def create(self, df_raw: pd.DataFrame, filename: str, size_mb: float,
+    def create(self, owner: str, df_raw: pd.DataFrame, filename: str, size_mb: float,
                sheet_names: Optional[list] = None,
                warnings: Optional[list] = None) -> DatasetMeta:
         ds_id = uuid.uuid4().hex[:12]
@@ -70,144 +90,171 @@ class DatasetStore:
             uploaded_at=time.time(),
             rows=len(df_raw),
             cols=df_raw.shape[1],
+            owner=owner,
             sheet_names=sheet_names or [],
             warnings=warnings or [],
         )
         with self._lock:
-            os.makedirs(self._dir(ds_id), exist_ok=True)
-            self._save_df(ds_id, "raw.pkl", df_raw)
-            self._save_df(ds_id, "active.pkl", df_raw)
-            with open(self._path(ds_id, "meta.pkl"), "wb") as f:
+            os.makedirs(self._dir(owner, ds_id), exist_ok=True)
+            self._save_df(owner, ds_id, "raw.pkl", df_raw)
+            self._save_df(owner, ds_id, "active.pkl", df_raw)
+            with open(self._path(owner, ds_id, "meta.pkl"), "wb") as f:
                 pickle.dump(meta, f)
-            self._touch_mem(ds_id, raw=df_raw, active=df_raw.copy(), meta=meta)
+            self._touch_mem(owner, ds_id, raw=df_raw, active=df_raw.copy(), meta=meta)
         return meta
 
-    def list_meta(self) -> list[DatasetMeta]:
+    def list_meta(self, owner: str) -> list[DatasetMeta]:
+        owner_dir = os.path.join(self.base_dir, self._safe(owner))
+        if not os.path.isdir(owner_dir):
+            return []
         out = []
-        for ds_id in sorted(os.listdir(self.base_dir)):
-            meta = self.get_meta(ds_id)
+        for ds_id in sorted(os.listdir(owner_dir)):
+            meta = self.get_meta(owner, ds_id)
             if meta:
                 out.append(meta)
         out.sort(key=lambda m: m.uploaded_at, reverse=True)
         return out
 
-    def get_meta(self, ds_id: str) -> Optional[DatasetMeta]:
+    def list_all_meta(self) -> list[DatasetMeta]:
+        """Every dataset across every owner. Internal use only (cleanup
+        sweep) — never expose this to a client-facing route."""
+        out = []
+        if not os.path.isdir(self.base_dir):
+            return out
+        for owner in sorted(os.listdir(self.base_dir)):
+            owner_dir = os.path.join(self.base_dir, owner)
+            if not os.path.isdir(owner_dir):
+                continue
+            out.extend(self.list_meta(owner))
+        return out
+
+    def get_meta(self, owner: str, ds_id: str) -> Optional[DatasetMeta]:
+        mkey = self._mkey(owner, ds_id)
         with self._lock:
-            if ds_id in self._mem:
-                return self._mem[ds_id]["meta"]
-        p = self._path(ds_id, "meta.pkl")
+            if mkey in self._mem:
+                return self._mem[mkey]["meta"]
+        p = self._path(owner, ds_id, "meta.pkl")
         if not os.path.exists(p):
             return None
         with open(p, "rb") as f:
-            return pickle.load(f)
+            meta = pickle.load(f)
+        if meta.owner and meta.owner != owner:
+            return None  # defense in depth; should be unreachable via _dir()
+        return meta
 
-    def delete(self, ds_id: str) -> bool:
+    def delete(self, owner: str, ds_id: str) -> bool:
         import shutil
+        mkey = self._mkey(owner, ds_id)
         with self._lock:
-            self._mem.pop(ds_id, None)
-            self._caches.pop(ds_id, None)
-            d = self._dir(ds_id)
+            self._mem.pop(mkey, None)
+            self._caches.pop(mkey, None)
+            d = self._dir(owner, ds_id)
             if os.path.isdir(d):
                 shutil.rmtree(d, ignore_errors=True)
                 return True
         return False
 
     # ── dataframes ───────────────────────────────────────
-    def get_df(self, ds_id: str) -> Optional[pd.DataFrame]:
+    def get_df(self, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
         """Active (possibly cleaned) dataframe."""
-        return self._load("active", ds_id)
+        return self._load("active", owner, ds_id)
 
-    def get_raw_df(self, ds_id: str) -> Optional[pd.DataFrame]:
-        return self._load("raw", ds_id)
+    def get_raw_df(self, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
+        return self._load("raw", owner, ds_id)
 
-    def update_active(self, ds_id: str, df: pd.DataFrame) -> None:
+    def update_active(self, owner: str, ds_id: str, df: pd.DataFrame) -> None:
+        mkey = self._mkey(owner, ds_id)
         with self._lock:
-            self._save_df(ds_id, "active.pkl", df)
-            if ds_id in self._mem:
-                self._mem[ds_id]["active"] = df
-            meta = self.get_meta(ds_id)
+            self._save_df(owner, ds_id, "active.pkl", df)
+            if mkey in self._mem:
+                self._mem[mkey]["active"] = df
+            meta = self.get_meta(owner, ds_id)
             if meta:
                 meta.rows, meta.cols = len(df), df.shape[1]
-                with open(self._path(ds_id, "meta.pkl"), "wb") as f:
+                with open(self._path(owner, ds_id, "meta.pkl"), "wb") as f:
                     pickle.dump(meta, f)
-                if ds_id in self._mem:
-                    self._mem[ds_id]["meta"] = meta
+                if mkey in self._mem:
+                    self._mem[mkey]["meta"] = meta
 
-    def reset_active(self, ds_id: str) -> Optional[pd.DataFrame]:
+    def reset_active(self, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
         """Restore active df back to the raw upload."""
-        raw = self.get_raw_df(ds_id)
+        raw = self.get_raw_df(owner, ds_id)
         if raw is None:
             return None
-        self.update_active(ds_id, raw.copy())
+        self.update_active(owner, ds_id, raw.copy())
         return raw
 
     # ── analysis caches (hash-invalidated) ───────────────
-    def cache_get(self, ds_id: str, key: str) -> Optional[Any]:
-        df = self.get_df(ds_id)
+    def cache_get(self, owner: str, ds_id: str, key: str) -> Optional[Any]:
+        df = self.get_df(owner, ds_id)
         if df is None:
             return None
         h = self._hash_df(df)
+        mkey = self._mkey(owner, ds_id)
         with self._lock:
-            entry = self._caches.get(ds_id, {}).get(key)
+            entry = self._caches.get(mkey, {}).get(key)
             if entry and entry[0] == h:
                 return entry[1]
         # disk fallback
-        p = self._path(ds_id, f"cache_{key}.pkl")
+        p = self._path(owner, ds_id, f"cache_{key}.pkl")
         if os.path.exists(p):
             try:
                 with open(p, "rb") as f:
                     stored_hash, obj = pickle.load(f)
                 if stored_hash == h:
                     with self._lock:
-                        self._caches.setdefault(ds_id, {})[key] = (h, obj)
+                        self._caches.setdefault(mkey, {})[key] = (h, obj)
                     return obj
             except Exception:
-                pass
+                logger.debug("cache_get: suppressed exception", exc_info=True)
         return None
 
-    def cache_set(self, ds_id: str, key: str, obj: Any) -> None:
-        df = self.get_df(ds_id)
+    def cache_set(self, owner: str, ds_id: str, key: str, obj: Any) -> None:
+        df = self.get_df(owner, ds_id)
         if df is None:
             return
         h = self._hash_df(df)
+        mkey = self._mkey(owner, ds_id)
         with self._lock:
-            self._caches.setdefault(ds_id, {})[key] = (h, obj)
+            self._caches.setdefault(mkey, {})[key] = (h, obj)
         try:
-            with open(self._path(ds_id, f"cache_{key}.pkl"), "wb") as f:
+            with open(self._path(owner, ds_id, f"cache_{key}.pkl"), "wb") as f:
                 pickle.dump((h, obj), f)
         except Exception:
             pass  # cache persistence is best-effort
 
     # ── internals ────────────────────────────────────────
-    def _save_df(self, ds_id: str, name: str, df: pd.DataFrame) -> None:
-        with open(self._path(ds_id, name), "wb") as f:
+    def _save_df(self, owner: str, ds_id: str, name: str, df: pd.DataFrame) -> None:
+        with open(self._path(owner, ds_id, name), "wb") as f:
             pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    def _load(self, which: str, ds_id: str) -> Optional[pd.DataFrame]:
+    def _load(self, which: str, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
+        mkey = self._mkey(owner, ds_id)
         with self._lock:
-            if ds_id in self._mem:
-                return self._mem[ds_id][which]
-        p = self._path(ds_id, f"{which}.pkl")
+            if mkey in self._mem:
+                return self._mem[mkey][which]
+        p = self._path(owner, ds_id, f"{which}.pkl")
         if not os.path.exists(p):
             return None
         with open(p, "rb") as f:
             df = pickle.load(f)
         other = "raw" if which == "active" else "active"
         other_df = None
-        op = self._path(ds_id, f"{other}.pkl")
+        op = self._path(owner, ds_id, f"{other}.pkl")
         if os.path.exists(op):
             with open(op, "rb") as f:
                 other_df = pickle.load(f)
-        meta = self.get_meta(ds_id)
+        meta = self.get_meta(owner, ds_id)
         with self._lock:
-            self._touch_mem(ds_id, **{which: df, other: other_df, "meta": meta})
+            self._touch_mem(owner, ds_id, **{which: df, other: other_df, "meta": meta})
         return df
 
-    def _touch_mem(self, ds_id: str, **entry) -> None:
-        self._mem[ds_id] = entry
+    def _touch_mem(self, owner: str, ds_id: str, **entry) -> None:
+        mkey = self._mkey(owner, ds_id)
+        self._mem[mkey] = entry
         while len(self._mem) > self._MEM_LIMIT:
             oldest = next(iter(self._mem))
-            if oldest == ds_id:
+            if oldest == mkey:
                 break
             self._mem.pop(oldest)
 
