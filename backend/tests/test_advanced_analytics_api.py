@@ -39,6 +39,48 @@ def test_rfm_endpoint_422_when_data_cannot_support_it(client):
     assert r.status_code == 422
 
 
+def test_field_pickers_exclude_id_columns(client, uploaded_dataset_id):
+    """Regression: identifier columns were offered as metrics/durations and,
+    being first in most frames, became the *default* selection — the
+    survival page opened on "median survival time: 108.0 (customer_id
+    units)" and the what-if simulator defaulted to projecting a change in
+    an ID. Neither surfaces as an error, it just renders nonsense."""
+    ab = client.get(f"/api/analytics/{uploaded_dataset_id}/ab-test/fields").json()
+    surv = client.get(f"/api/analytics/{uploaded_dataset_id}/survival/fields").json()
+    scen = client.get(f"/api/analytics/{uploaded_dataset_id}/scenario/fields").json()
+
+    for name, cols in [
+        ("ab metric", ab["metric_columns"]),
+        ("ab group", ab["group_columns"]),
+        ("survival duration", surv["duration_columns"]),
+        ("survival group", surv["group_columns"]),
+        ("scenario numeric", scen["numeric_columns"]),
+    ]:
+        assert "employee_id" not in cols, f"{name} still offers the ID column"
+
+    # and the real measures survive the filter
+    assert "salary" in scen["numeric_columns"]
+    assert "tenure_years" in surv["duration_columns"]
+
+
+def test_survival_duration_excludes_binary_columns(client, uploaded_dataset_id):
+    """A yes/no flag is an event, never a duration."""
+    surv = client.get(f"/api/analytics/{uploaded_dataset_id}/survival/fields").json()
+    assert "attrition" not in surv["duration_columns"]
+    assert "attrition" in surv["event_columns"]
+
+
+def test_industry_benchmark_range_is_an_object(client, uploaded_dataset_id):
+    """The range must arrive keyed (low/high/unit/note), not as a
+    positional array — see test_serialize.py for the underlying fix."""
+    body = client.get(
+        f"/api/analytics/{uploaded_dataset_id}/industry-benchmarks").json()
+    for entry in body["benchmarks"]:
+        bm = entry["benchmark"]
+        assert isinstance(bm, dict), f"benchmark serialised as {type(bm)}"
+        assert {"low", "high", "unit"} <= set(bm)
+
+
 def test_ab_test_endpoint_continuous(client, uploaded_dataset_id):
     r = client.get(f"/api/analytics/{uploaded_dataset_id}/ab-test/fields")
     assert r.status_code == 200

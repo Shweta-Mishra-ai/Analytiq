@@ -4,6 +4,7 @@ import {
   ShieldCheck,
   LayoutDashboard,
   FlaskConical,
+  FlaskRound,
   Brain,
   Lightbulb,
   Briefcase,
@@ -12,21 +13,52 @@ import {
   Database,
   Layers,
   LogOut,
+  Users,
+  Activity,
+  GitCompare,
+  Gauge,
 } from 'lucide-react'
 import { useApp } from '../store/app'
 import { getToken, setToken } from '../api/client'
 
-const nav = [
-  { to: '/', label: 'Upload', icon: Upload },
-  { to: '/quality', label: 'Data Quality', icon: ShieldCheck },
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/eda', label: 'Deep EDA', icon: FlaskConical },
-  { to: '/insights', label: 'Insights', icon: Lightbulb },
-  { to: '/bi', label: 'Business Intel', icon: Briefcase },
-  { to: '/ml', label: 'ML Predictions', icon: Brain },
-  { to: '/chat', label: 'AI Chat', icon: MessageSquare },
-  { to: '/rag', label: 'RAG Studio', icon: Layers },
-  { to: '/reports', label: 'Reports', icon: FileText },
+// Grouped so the sidebar stays readable as the analysis surface grows —
+// a flat list of 15 links makes it hard to find anything.
+const navGroups = [
+  {
+    label: 'Data',
+    items: [
+      { to: '/', label: 'Upload', icon: Upload },
+      { to: '/quality', label: 'Data Quality', icon: ShieldCheck },
+    ],
+  },
+  {
+    label: 'Explore',
+    items: [
+      { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      { to: '/eda', label: 'Deep EDA', icon: FlaskConical },
+      { to: '/insights', label: 'Insights', icon: Lightbulb },
+      { to: '/bi', label: 'Business Intel', icon: Briefcase },
+    ],
+  },
+  {
+    label: 'Advanced',
+    items: [
+      { to: '/deep-analysis', label: 'Deep Analysis', icon: Gauge },
+      { to: '/segments', label: 'Customer Segments', icon: Users },
+      { to: '/ab-test', label: 'A/B Test', icon: FlaskRound },
+      { to: '/survival', label: 'Survival', icon: Activity },
+      { to: '/compare', label: 'Compare', icon: GitCompare },
+      { to: '/ml', label: 'ML Predictions', icon: Brain },
+    ],
+  },
+  {
+    label: 'Deliver',
+    items: [
+      { to: '/chat', label: 'AI Chat', icon: MessageSquare },
+      { to: '/rag', label: 'RAG Studio', icon: Layers },
+      { to: '/reports', label: 'Reports', icon: FileText },
+    ],
+  },
 ]
 
 export default function Layout() {
@@ -43,23 +75,32 @@ export default function Layout() {
             <div className="text-[10px] text-mute">Data Analysis Workbench</div>
           </div>
         </div>
-        <nav className="flex-1 space-y-0.5 px-2">
-          {nav.map(({ to, label, icon: Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === '/'}
-              className={({ isActive }) =>
-                `flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] transition-colors ${
-                  isActive
-                    ? 'bg-accent/15 font-semibold text-accent'
-                    : 'text-mute hover:bg-panel2 hover:text-ink'
-                }`
-              }
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </NavLink>
+        <nav className="flex-1 overflow-y-auto px-2 pb-2">
+          {navGroups.map((group) => (
+            <div key={group.label} className="mb-3">
+              <div className="px-3 pb-1 text-[10px] font-semibold tracking-wider text-mute/70 uppercase">
+                {group.label}
+              </div>
+              <div className="space-y-0.5">
+                {group.items.map(({ to, label, icon: Icon }) => (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    end={to === '/'}
+                    className={({ isActive }) =>
+                      `flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] transition-colors ${
+                        isActive
+                          ? 'bg-accent/15 font-semibold text-accent'
+                          : 'text-mute hover:bg-panel2 hover:text-ink'
+                      }`
+                    }
+                  >
+                    <Icon className="h-4 w-4 shrink-0" />
+                    {label}
+                  </NavLink>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
         <div className="border-t border-edge px-4 py-3 text-[11px] text-mute">

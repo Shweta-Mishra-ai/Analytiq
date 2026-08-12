@@ -107,14 +107,38 @@ def _is_binary_series(s: pd.Series) -> bool:
     return 0 < s.dropna().nunique() <= 2
 
 
+def _measure_columns(df: pd.DataFrame, numeric_only: bool = False) -> list[str]:
+    """Columns offerable as a metric/duration/driver — identifiers excluded.
+
+    Without this an ID column is a valid-looking pick and, being first in
+    most frames, becomes the default: the survival page opened on
+    "median survival time: 108.0 (customer_id units)" and the what-if
+    simulator defaulted to projecting a change in customer_id. Both are
+    meaningless, and neither surfaces as an error.
+    """
+    from app.engines.domains.base import is_id_column
+    out = []
+    for c in df.columns:
+        if numeric_only and not pd.api.types.is_numeric_dtype(df[c]):
+            continue
+        if is_id_column(c, df[c]):
+            continue
+        out.append(c)
+    return out
+
+
 @router.get("/{ds_id}/ab-test/fields")
 def ab_test_fields(ds_id: str, owner: str = Depends(current_owner)):
     """Candidate group (2+ distinct values) and metric columns, for a
     frontend column picker."""
     df = _df_or_404(owner, ds_id)
-    group_candidates = [c for c in df.columns if 2 <= df[c].nunique() <= 20]
+    measures = set(_measure_columns(df))
+    group_candidates = [c for c in df.columns
+                         if c in measures and 2 <= df[c].nunique() <= 20]
     metric_candidates = [c for c in df.columns
-                          if pd.api.types.is_numeric_dtype(df[c]) or _is_binary_series(df[c])]
+                          if c in measures
+                          and (pd.api.types.is_numeric_dtype(df[c])
+                               or _is_binary_series(df[c]))]
     return {"group_columns": group_candidates, "metric_columns": metric_candidates}
 
 
@@ -183,9 +207,13 @@ def survival_fields(ds_id: str, owner: str = Depends(current_owner)):
     """Candidate duration (numeric), event (binary-ish), and group
     (low-cardinality categorical) columns, for a frontend column picker."""
     df = _df_or_404(owner, ds_id)
-    duration_candidates = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    measures = set(_measure_columns(df))
+    duration_candidates = [c for c in df.columns
+                            if c in measures and pd.api.types.is_numeric_dtype(df[c])
+                            and not _is_binary_series(df[c])]
     event_candidates = [c for c in df.columns if _is_binary_series(df[c])]
-    group_candidates = [c for c in df.columns if 2 <= df[c].nunique() <= 20]
+    group_candidates = [c for c in df.columns
+                         if c in measures and 2 <= df[c].nunique() <= 20]
     return {"duration_columns": duration_candidates, "event_columns": event_candidates,
             "group_columns": group_candidates}
 
@@ -218,6 +246,14 @@ class ScenarioRequest(BaseModel):
     driver_col: str
     target_col: str
     change_pct: float = 10.0
+
+
+@router.get("/{ds_id}/scenario/fields")
+def scenario_fields(ds_id: str, owner: str = Depends(current_owner)):
+    """Numeric columns that are real measures — identifiers excluded, since
+    projecting "what if customer_id rose 10%" is meaningless."""
+    df = _df_or_404(owner, ds_id)
+    return {"numeric_columns": _measure_columns(df, numeric_only=True)}
 
 
 @router.post("/{ds_id}/scenario")

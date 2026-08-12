@@ -13,6 +13,11 @@ const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const EdaPage = lazy(() => import('./pages/EdaPage'))
 const InsightsPage = lazy(() => import('./pages/InsightsPage'))
 const BiPage = lazy(() => import('./pages/BiPage'))
+const DeepAnalysisPage = lazy(() => import('./pages/DeepAnalysisPage'))
+const SegmentsPage = lazy(() => import('./pages/SegmentsPage'))
+const AbTestPage = lazy(() => import('./pages/AbTestPage'))
+const SurvivalPage = lazy(() => import('./pages/SurvivalPage'))
+const ComparePage = lazy(() => import('./pages/ComparePage'))
 const MlPage = lazy(() => import('./pages/MlPage'))
 const ChatPage = lazy(() => import('./pages/ChatPage'))
 const RagPage = lazy(() => import('./pages/RagPage'))
@@ -39,6 +44,11 @@ export default function App() {
               <Route path="/eda" element={<EdaPage />} />
               <Route path="/insights" element={<InsightsPage />} />
               <Route path="/bi" element={<BiPage />} />
+              <Route path="/deep-analysis" element={<DeepAnalysisPage />} />
+              <Route path="/segments" element={<SegmentsPage />} />
+              <Route path="/ab-test" element={<AbTestPage />} />
+              <Route path="/survival" element={<SurvivalPage />} />
+              <Route path="/compare" element={<ComparePage />} />
               <Route path="/ml" element={<MlPage />} />
               <Route path="/chat" element={<ChatPage />} />
               <Route path="/rag" element={<RagPage />} />
