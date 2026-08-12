@@ -208,3 +208,133 @@ def survival(ds_id: str, req: SurvivalRequest, owner: str = Depends(current_owne
     except ValueError as e:
         raise HTTPException(422, str(e))
     return to_jsonable(report)
+
+
+# ══════════════════════════════════════════════════════════
+#  Scenario / what-if projection
+# ══════════════════════════════════════════════════════════
+
+class ScenarioRequest(BaseModel):
+    driver_col: str
+    target_col: str
+    change_pct: float = 10.0
+
+
+@router.post("/{ds_id}/scenario")
+def scenario(ds_id: str, req: ScenarioRequest, owner: str = Depends(current_owner)):
+    """"What if <driver> moved by X%?" — projects the effect on a target
+    metric from the historical linear relationship. The response carries
+    an explicit `reliable` flag and a causal caveat; a weak relationship
+    still returns a result so the caller can say "not reliable enough"
+    rather than showing nothing."""
+    df = _df_or_404(owner, ds_id)
+    from app.engines.bi_engine import analyze_scenario
+
+    for c in (req.driver_col, req.target_col):
+        if c not in df.columns:
+            raise HTTPException(422, f"Column '{c}' not in dataset")
+
+    result = analyze_scenario(df, req.driver_col, req.target_col, req.change_pct)
+    if result is None:
+        raise HTTPException(
+            422,
+            "Cannot project this scenario — both columns must be numeric, "
+            "distinct, and share at least 10 rows with values in both.")
+    return to_jsonable(result)
+
+
+# ══════════════════════════════════════════════════════════
+#  Internal benchmarking (metric vs its own top quartile)
+# ══════════════════════════════════════════════════════════
+
+@router.get("/{ds_id}/benchmarks")
+def benchmarks(ds_id: str, max_metrics: int = 5,
+                owner: str = Depends(current_owner)):
+    """Benchmarks each directional numeric metric against its own
+    top-quartile performers — no external/industry assumptions."""
+    df = _df_or_404(owner, ds_id)
+    from app.engines.benchmarking import compute_benchmarks
+    results = _cached(owner, ds_id, f"benchmarks_{max_metrics}",
+                       lambda: compute_benchmarks(df, max_metrics=max_metrics))
+    return {"benchmarks": to_jsonable(results)}
+
+
+@router.get("/{ds_id}/industry-benchmarks")
+def industry_benchmarks(ds_id: str, owner: str = Depends(current_owner)):
+    """Looks up published industry reference ranges for recognised metric
+    names in the detected domain. Only returns columns with a known
+    reference range — never invents one."""
+    df = _df_or_404(owner, ds_id)
+    from app.engines.industry_benchmarks import lookup_benchmark, format_benchmark_context
+    from app.engines.story_engine import detect_domain
+
+    domain, _confidence = detect_domain(df)
+    out = []
+    for col in df.columns:
+        bm = lookup_benchmark(domain, col)
+        if bm is not None:
+            out.append({"column": col, "benchmark": to_jsonable(bm),
+                        "context": format_benchmark_context(bm)})
+    return {"domain": domain, "benchmarks": out}
+
+
+# ══════════════════════════════════════════════════════════
+#  Predictive drivers (what predicts churn / attrition)
+# ══════════════════════════════════════════════════════════
+
+@router.get("/{ds_id}/drivers")
+def drivers(ds_id: str, target: Optional[str] = None,
+            owner: str = Depends(current_owner)):
+    """Ranks which factors most predict a binary outcome (attrition,
+    churn, default), with model quality and the highest-risk profile.
+    Auto-detects a suitable target column when `target` is omitted."""
+    df = _df_or_404(owner, ds_id)
+    from app.engines.predictive import compute_drivers, find_binary_target
+
+    target_col = target or find_binary_target(df)
+    if not target_col:
+        raise HTTPException(
+            422,
+            "No binary outcome column detected. Pass ?target=<column> "
+            "naming a two-value column such as churn/attrition/left.")
+    if target_col not in df.columns:
+        raise HTTPException(422, f"Column '{target_col}' not in dataset")
+
+    result = _cached(owner, ds_id, f"drivers_{target_col}",
+                      lambda: compute_drivers(df, target_col))
+    if result is None:
+        raise HTTPException(
+            422,
+            f"Could not model '{target_col}' — it must be effectively binary "
+            "with both classes present and enough rows to train on.")
+    return to_jsonable(result)
+
+
+# ══════════════════════════════════════════════════════════
+#  Dataset comparison (period over period)
+# ══════════════════════════════════════════════════════════
+
+class ComparisonRequest(BaseModel):
+    other_dataset_id: str
+    label_a: str = "Period A"
+    label_b: str = "Period B"
+
+
+@router.post("/{ds_id}/compare")
+def compare(ds_id: str, req: ComparisonRequest,
+            owner: str = Depends(current_owner)):
+    """Diff-style comparison of two of the caller's own datasets — schema
+    drift, row-count change, and per-column distribution shifts with
+    significance testing. Both datasets are resolved under `owner`, so a
+    client can never compare against another client's data."""
+    df_a = _df_or_404(owner, ds_id)
+    df_b = store.get_df(owner, req.other_dataset_id)
+    if df_b is None:
+        raise HTTPException(404, "Comparison dataset not found")
+
+    from app.engines.comparison_engine import run_comparison
+    try:
+        report = run_comparison(df_a, df_b, label_a=req.label_a, label_b=req.label_b)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(422, str(e))
+    return to_jsonable(report)

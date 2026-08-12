@@ -123,6 +123,55 @@ class _FakeClient:
         self.models = _FakeModels()
 
 
+def test_get_client_caches_the_same_instance(monkeypatch):
+    """A new genai.Client per call would re-open connections on every
+    request; the module caches one per key."""
+    built = []
+
+    class _Genai:
+        @staticmethod
+        def Client(api_key):
+            built.append(api_key)
+            return object()
+
+    monkeypatch.setattr(config, "gemini_api_key", "key-one", raising=False)
+    monkeypatch.setattr(gemini_client, "_client", None, raising=False)
+    monkeypatch.setattr(gemini_client, "_client_key", None, raising=False)
+    monkeypatch.setitem(__import__("sys").modules, "google", type(
+        "M", (), {"genai": _Genai})())
+
+    first = gemini_client.get_client()
+    second = gemini_client.get_client()
+    assert first is second
+    assert built == ["key-one"], "client should be constructed exactly once"
+
+
+def test_get_client_rebuilds_when_the_key_changes(monkeypatch):
+    """Regression: the cached client is keyed on the API key, so rotating
+    GEMINI_API_KEY takes effect immediately. If this branch broke, a key
+    rotation would silently keep using the old (possibly revoked) key."""
+    built = []
+
+    class _Genai:
+        @staticmethod
+        def Client(api_key):
+            built.append(api_key)
+            return object()
+
+    monkeypatch.setattr(gemini_client, "_client", None, raising=False)
+    monkeypatch.setattr(gemini_client, "_client_key", None, raising=False)
+    monkeypatch.setitem(__import__("sys").modules, "google", type(
+        "M", (), {"genai": _Genai})())
+
+    monkeypatch.setattr(config, "gemini_api_key", "key-one", raising=False)
+    first = gemini_client.get_client()
+    monkeypatch.setattr(config, "gemini_api_key", "key-two", raising=False)
+    second = gemini_client.get_client()
+
+    assert first is not second
+    assert built == ["key-one", "key-two"]
+
+
 def test_generate_text_uses_configured_model(monkeypatch):
     fake = _FakeClient()
     monkeypatch.setattr(config, "gemini_api_key", "fake-key", raising=False)
@@ -232,3 +281,37 @@ def test_task_routing_table_targets_known_providers():
     from app.ai.llm_client import TASK_ROUTING
     assert set(TASK_ROUTING.values()) <= {"groq", "gemini"}
     assert "default" in TASK_ROUTING
+
+
+# ══════════════════════════════════════════════════════════
+#  report_narrator.clean_col — column-name humanisation
+# ══════════════════════════════════════════════════════════
+
+def test_clean_col_uses_known_mapping():
+    from app.ai.report_narrator import clean_col
+    assert clean_col("satisfaction_level") == "Employee Satisfaction Score"
+    assert clean_col("  Satisfaction_Level  ") == "Employee Satisfaction Score"
+
+
+def test_clean_col_falls_back_when_translator_unavailable(monkeypatch):
+    """The translator import is optional; if it raises, clean_col must
+    still return a readable label rather than propagating."""
+    import app.ai.prompt_builder as pb
+    monkeypatch.setattr(
+        pb, "translate_column_name",
+        lambda c: (_ for _ in ()).throw(RuntimeError("translator down")),
+        raising=False)
+    from app.ai.report_narrator import clean_col
+    assert clean_col("total_order_value") == "Total Order Value"
+
+
+def test_clean_col_repairs_known_source_typo(monkeypatch):
+    """`average_montly_hours` (sic) is a real column spelling in the
+    common HR dataset — the humanised label should not carry the typo."""
+    import app.ai.prompt_builder as pb
+    monkeypatch.setattr(
+        pb, "translate_column_name",
+        lambda c: (_ for _ in ()).throw(RuntimeError("translator down")),
+        raising=False)
+    from app.ai.report_narrator import clean_col
+    assert "montly" not in clean_col("shift_montly_target").lower()
