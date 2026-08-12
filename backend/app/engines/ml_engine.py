@@ -23,6 +23,8 @@ from sklearn.metrics import (
     accuracy_score, f1_score, roc_auc_score,
     classification_report
 )
+
+from app.services.dtypes import is_text_dtype
 try:
     from xgboost import XGBRegressor, XGBClassifier
     XGBOOST_AVAILABLE = True
@@ -194,7 +196,7 @@ def prepare_features(
                 drop_cols.append(col)
                 continue
             # High cardinality string → drop
-            if df[col].dtype == object and df[col].nunique() / max(len(df), 1) > 0.5:
+            if is_text_dtype(df[col]) and df[col].nunique() / max(len(df), 1) > 0.5:
                 drop_cols.append(col)
         df = df.drop(columns=drop_cols)
 

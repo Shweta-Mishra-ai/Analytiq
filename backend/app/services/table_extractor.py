@@ -19,6 +19,7 @@ import tempfile
 import pandas as pd
 
 from app.config import config
+from app.services.dtypes import is_text_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +258,7 @@ def table_json_to_df(payload: dict) -> tuple[pd.DataFrame, list[str]]:
 
     # strip common numeric decorations so dtype inference can work
     for col in df.columns:
-        if (df[col].dtype == object
+        if (is_text_dtype(df[col])
                 or pd.api.types.is_string_dtype(df[col])):
             cleaned = (df[col].astype(str)
                        .str.strip()

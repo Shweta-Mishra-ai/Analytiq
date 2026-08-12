@@ -16,6 +16,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from app.services.dtypes import is_categorical_like
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def pick_heatmap_dims(df: pd.DataFrame, target_col: str):
             if c == target_col:
                 continue
             s = df[c]
-            if (s.dtype == object or str(s.dtype) in ("category", "bool")
+            if (is_categorical_like(s)
                     or s.nunique() <= 8):
                 nun = s.nunique(dropna=True)
                 if 2 <= nun <= 9:
@@ -90,7 +91,7 @@ def find_top_cluster(df: pd.DataFrame, target_col: str) -> Optional[TopCluster]:
             if c == target_col:
                 continue
             s = df[c]
-            if s.dtype == object or str(s.dtype) in ("category", "bool") or s.nunique() <= 6:
+            if is_categorical_like(s) or s.nunique() <= 6:
                 if 2 <= s.nunique(dropna=True) <= 12:
                     seg_cols.append(c)
                     work[c] = s.astype(str)

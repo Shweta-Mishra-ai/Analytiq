@@ -13,6 +13,7 @@ from scipy import stats as scipy_stats
 
 from app.engines.domains.base import (Insight, AttritionAnalysis, build_insight,
                                col_stats, correlations, infer_scale_bounds)
+from app.services.dtypes import is_text_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +166,7 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
     dept_col = next((c for c in df.columns
                      if "department" in c.lower() or "dept" in c.lower()), None)
     sal_col  = next((c for c in df.columns
-                     if "salary" in c.lower() and df[c].dtype==object), None)
+                     if "salary" in c.lower() and is_text_dtype(df[c])), None)
 
     dept_attrition = {}
     if dept_col:
@@ -213,7 +214,7 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
             if any(kw in col_l for kw in keywords):
                 if max_unique and df[col].nunique() > max_unique:
                     continue
-                if not cat_ok and df[col].dtype == object:
+                if not cat_ok and is_text_dtype(df[col]):
                     continue
                 return col
         return None
