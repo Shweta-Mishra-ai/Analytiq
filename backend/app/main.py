@@ -22,6 +22,8 @@ from app.services.auth import AuthMiddleware
 from app.services.cleanup import cleanup_loop, sweep_expired
 from app.services.user_store import user_store
 
+logger = logging.getLogger(__name__)
+
 logging.basicConfig(level=logging.INFO)
 
 

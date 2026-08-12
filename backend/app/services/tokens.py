@@ -8,6 +8,7 @@ disk the same way a real secret would be, and never logged or returned
 by any endpoint.
 """
 from __future__ import annotations
+import logging
 
 import base64
 import hashlib
@@ -18,6 +19,8 @@ import time
 from typing import Optional
 
 from app.config import config
+
+logger = logging.getLogger(__name__)
 
 _secret_cache: Optional[bytes] = None
 

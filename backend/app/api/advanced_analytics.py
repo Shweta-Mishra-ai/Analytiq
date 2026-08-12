@@ -5,6 +5,7 @@ engines to close the gap with Analytiq's existing BI/EDA/stats suite.
 Every dataset is scoped to the authenticated client (`owner`).
 """
 from __future__ import annotations
+import logging
 
 from typing import Optional
 
@@ -15,6 +16,8 @@ from pydantic import BaseModel
 from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.serialize import to_jsonable
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/analytics", tags=["advanced-analytics"])
 

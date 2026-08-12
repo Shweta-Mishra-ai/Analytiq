@@ -1,6 +1,9 @@
+import logging
 import pandas as pd
 import numpy as np
 from typing import List, Dict
+
+logger = logging.getLogger(__name__)
 
 
 def generate_insights(df: pd.DataFrame) -> List[Dict]:
@@ -61,7 +64,7 @@ def generate_insights(df: pd.DataFrame) -> List[Dict]:
                 "icon":  "🏆"
             })
         except Exception:
-            pass
+            logger.debug("generate_insights: suppressed exception", exc_info=True)
 
     # ── 4. Strong correlation ─────────────────────────────
     if len(num_cols) >= 2:

@@ -123,7 +123,7 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
                 stats_report = analyze(df)
                 store.cache_set(owner, ds_id, "stats", stats_report)
             except Exception:
-                pass
+                logger.debug("generate_pdf: suppressed exception", exc_info=True)
 
     # 6. BI
     bi_report = None
@@ -135,7 +135,7 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
                 bi_report = run_bi(df)
                 store.cache_set(owner, ds_id, "bi", bi_report)
             except Exception:
-                pass
+                logger.debug("generate_pdf: suppressed exception", exc_info=True)
 
     # 7. ML (only if previously trained)
     ml_report = store.cache_get(owner, ds_id, "ml_last") if req.include_ml else None

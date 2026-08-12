@@ -3,11 +3,14 @@ story_engine.py — Senior analyst insights for HR, Ecommerce, Sales.
 Format: Problem → Cause → Evidence → Action → Impact
 McKinsey/BCG level — no jargon, plain English decisions.
 """
+import logging
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 from scipy import stats as scipy_stats
+
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════
@@ -159,6 +162,7 @@ def _correlations(df: pd.DataFrame) -> List[Dict]:
                     "direction": "positive" if r>0 else "negative",
                 })
             except Exception:
+                logger.debug("_correlations: suppressed exception", exc_info=True)
                 continue
     survived = filter_correlations(results)
     return sorted(survived, key=lambda x: abs(x["r"]), reverse=True)
@@ -217,6 +221,7 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
                         lv.mean(), sv.mean(), diff_pct),
                 })
         except Exception:
+            logger.debug("_run_attrition: suppressed exception", exc_info=True)
             continue
 
     # Categorical drivers
@@ -242,6 +247,7 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
                         worst, rates[worst], best, rates[best]),
                 })
         except Exception:
+            logger.debug("_run_attrition: suppressed exception", exc_info=True)
             continue
 
     top_drivers.sort(key=lambda x: x["impact"], reverse=True)
@@ -980,8 +986,28 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
     critical  = [i for i in deduped if i.severity=="critical"]
     positive  = [i for i in deduped if i.severity=="positive"]
 
-    # Flat lists for PDF
+    # Flat lists for PDF.
+    # key_findings previously came straight off raw["findings"], which the
+    # domain-specific insight builders often leave empty even when they
+    # produced rich `insights` — the report then rendered a blank "Key
+    # Findings" section while the rest of the page was full, with no error
+    # anywhere. Fall back to the insight titles, then to a dataset-shape
+    # summary, so this section is never silently empty.
     findings_flat = raw["findings"][:6]
+    if not findings_flat and deduped:
+        findings_flat = ["{}: {}".format(ins.severity.upper(), ins.title)
+                          for ins in deduped[:6]]
+    if not findings_flat:
+        n_cat = len(df.select_dtypes(include=["object", "string"]).columns)
+        miss_pct = round(df.isna().mean().mean() * 100, 1)
+        findings_flat = [
+            "{:,} records × {} columns ({} numeric, {} categorical)".format(
+                len(df), len(df.columns), len(num_cols), n_cat),
+            "Missing data: {:.1f}%{}".format(
+                miss_pct, " — fully complete" if miss_pct == 0
+                else " — imputation applied"),
+        ]
+
     risks_flat    = raw["risks"][:6]
     opps_flat     = raw["opportunities"][:4]
     actions_flat  = ["[{}] {}".format(

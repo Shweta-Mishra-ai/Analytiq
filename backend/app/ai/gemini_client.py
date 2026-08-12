@@ -157,7 +157,7 @@ def delete_file(file_name: str) -> None:
     try:
         client.files.delete(name=file_name)
     except Exception:
-        pass
+        logger.debug("delete_file: suppressed exception", exc_info=True)
 
 
 _TASK_TYPE_MAP = {

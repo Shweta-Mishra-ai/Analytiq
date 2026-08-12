@@ -2,8 +2,11 @@
 app/config.py — Analytiq backend configuration.
 All values overridable via environment variables (.env supported).
 """
+import logging
 from pydantic_settings import BaseSettings
 from pydantic import Field
+
+logger = logging.getLogger(__name__)
 
 
 class AppConfig(BaseSettings):

@@ -5,12 +5,15 @@ All heavy results are cached per dataset content hash. Every dataset is
 scoped to the authenticated client (`owner`).
 """
 from __future__ import annotations
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.serialize import to_jsonable
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 

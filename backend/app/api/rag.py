@@ -4,6 +4,7 @@ images, video), Q&A with citations, and report generation.
 Every knowledge base is scoped to the authenticated client (`owner`).
 """
 from __future__ import annotations
+import logging
 
 import io
 import time
@@ -17,6 +18,8 @@ from app.rag import service
 from app.rag.vector_store import rag_store
 from app.services.auth import current_owner
 from app.services.serialize import to_jsonable
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/rag", tags=["rag"])
 

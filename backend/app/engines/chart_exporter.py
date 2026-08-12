@@ -1,3 +1,4 @@
+import logging
 import io
 import pandas as pd
 import matplotlib
@@ -5,6 +6,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from typing import List, Tuple, Optional
+
+logger = logging.getLogger(__name__)
 
 
 LIGHT_COLORS = ["#1a4a8a", "#2196F3", "#42A5F5", "#90CAF9", "#0D47A1", "#1565C0"]
@@ -384,7 +387,7 @@ def generate_all_charts(
                 df, best_cat, num_cols[0], title, theme_name
             )))
         except Exception:
-            pass
+            logger.debug("generate_all_charts: suppressed exception", exc_info=True)
 
     # 2. Line chart — trend over time or numeric
     if date_cols and num_cols:
@@ -394,7 +397,7 @@ def generate_all_charts(
                 df, date_cols[0], num_cols[0], title, theme_name
             )))
         except Exception:
-            pass
+            logger.debug("generate_all_charts: suppressed exception", exc_info=True)
     elif len(num_cols) >= 2:
         title = "{} Trend".format(num_cols[1])
         try:
@@ -402,7 +405,7 @@ def generate_all_charts(
                 df, num_cols[0], num_cols[1], title, theme_name
             )))
         except Exception:
-            pass
+            logger.debug("generate_all_charts: suppressed exception", exc_info=True)
 
     # 3. Histogram — distribution
     if num_cols:
@@ -412,7 +415,7 @@ def generate_all_charts(
                 df, num_cols[0], title, theme_name
             )))
         except Exception:
-            pass
+            logger.debug("generate_all_charts: suppressed exception", exc_info=True)
 
     # 4. Correlation heatmap
     if len(num_cols) >= 3:
@@ -421,7 +424,7 @@ def generate_all_charts(
                 df, "Correlation Matrix", theme_name
             )))
         except Exception:
-            pass
+            logger.debug("generate_all_charts: suppressed exception", exc_info=True)
 
     # 5. Pie chart — category share
     if cat_cols and num_cols:
@@ -436,6 +439,6 @@ def generate_all_charts(
                     df, best_cat, num_cols[0], title, theme_name
                 )))
             except Exception:
-                pass
+                logger.debug("generate_all_charts: suppressed exception", exc_info=True)
 
     return charts[:max_charts]

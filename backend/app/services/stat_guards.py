@@ -10,8 +10,11 @@ that doesn't survive basic scrutiny:
   - a confidence label the UI/reports can show next to every claim.
 """
 from __future__ import annotations
+import logging
 
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 MIN_N = 30            # below this, report nothing
 EFFECT_FLOOR = 0.30   # |r| below this is noise for business narratives

@@ -1,8 +1,11 @@
+import logging
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from scipy import stats as scipy_stats
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -266,6 +269,7 @@ def _correlation_analysis(
                 pearson_r, p_val = scipy_stats.pearsonr(x, y)
                 spearman_r, _    = scipy_stats.spearmanr(x, y)
             except Exception:
+                logger.debug("_correlation_analysis: suppressed exception", exc_info=True)
                 continue
 
             abs_r = abs(pearson_r)

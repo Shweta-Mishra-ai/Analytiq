@@ -4,6 +4,7 @@ Safe tool-calling: the LLM picks a whitelisted tool + params;
 no generated code is ever executed.
 """
 from __future__ import annotations
+import logging
 
 import json
 from typing import List, Optional
@@ -20,6 +21,8 @@ from app.config import config
 from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.serialize import df_records
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 

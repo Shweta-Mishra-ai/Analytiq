@@ -1,7 +1,10 @@
+import logging
 import pandas as pd
 from dataclasses import dataclass
 from typing import Optional, Any
 from app.engines import chart_engine
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

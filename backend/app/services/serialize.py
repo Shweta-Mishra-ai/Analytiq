@@ -3,6 +3,7 @@ services/serialize.py — convert engine outputs (dataclasses, numpy,
 pandas, plotly) into JSON-safe structures for API responses.
 """
 from __future__ import annotations
+import logging
 
 import dataclasses
 import math
@@ -10,6 +11,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def to_jsonable(obj: Any, _depth: int = 0) -> Any:

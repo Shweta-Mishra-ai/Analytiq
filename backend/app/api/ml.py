@@ -3,6 +3,7 @@ api/ml.py — ML pipeline endpoints (mirrors page 5, ML Predictions).
 Every dataset is scoped to the authenticated client (`owner`).
 """
 from __future__ import annotations
+import logging
 
 from typing import Dict, Optional
 
@@ -12,6 +13,8 @@ from pydantic import BaseModel, Field
 from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.serialize import to_jsonable
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ml", tags=["ml"])
 

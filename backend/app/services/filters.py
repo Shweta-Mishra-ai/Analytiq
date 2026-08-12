@@ -5,10 +5,13 @@ Applied server-side before any chart/KPI computation, so every
 dashboard tile reflects the same slicer state.
 """
 from __future__ import annotations
+import logging
 
 from typing import Any, List
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def apply_filters(df: pd.DataFrame, filters: List[dict] | None) -> pd.DataFrame:
@@ -48,6 +51,7 @@ def apply_filters(df: pd.DataFrame, filters: List[dict] | None) -> pd.DataFrame:
                 continue
             out = out[mask]
         except Exception:
+            logger.debug("apply_filters: suppressed exception", exc_info=True)
             continue
     return out
 

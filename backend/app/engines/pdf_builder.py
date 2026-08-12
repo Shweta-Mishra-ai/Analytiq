@@ -21,6 +21,7 @@ SAME public API — zero changes needed in 8_Reports.py:
             top_insights, attrition, domain) → bytes
 """
 
+import logging
 import io
 import os
 from datetime import datetime
@@ -39,6 +40,8 @@ from reportlab.platypus import (
     Image, HRFlowable, PageBreak, KeepTogether,
 )
 from reportlab.pdfgen import canvas as CV
+
+logger = logging.getLogger(__name__)
 
 W, H = A4
 CW_DEFAULT = W - 36 * mm   # content width (18mm each side)
@@ -903,7 +906,7 @@ def _dataset_overview(story, s, T, df, profile, CW):
                         "use median not mean for reporting.".format(col, sk),
                         s["note"]))
             except Exception:
-                pass
+                logger.debug("_dataset_overview: suppressed exception", exc_info=True)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1021,7 +1024,7 @@ def _chart_page(story, s, T, img_bytes, title, narrative, num, CW):
                         width=CW, height=CW * 0.48)
             story.append(KeepTogether([img, Spacer(1, 3*mm)]))
         except Exception:
-            pass
+            logger.debug("_chart_page: suppressed exception", exc_info=True)
     if narrative:
         story.append(Paragraph("Analysis", s["h3"]))
         _narrative_box(story, s, T, narrative)

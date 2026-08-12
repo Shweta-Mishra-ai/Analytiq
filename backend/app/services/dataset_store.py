@@ -17,6 +17,7 @@ Every method requires an explicit `owner` argument (no default) so a
 new call site can't forget to scope it.
 """
 from __future__ import annotations
+import logging
 
 import hashlib
 import os
@@ -30,6 +31,8 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from app.config import config
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -203,7 +206,7 @@ class DatasetStore:
                         self._caches.setdefault(mkey, {})[key] = (h, obj)
                     return obj
             except Exception:
-                pass
+                logger.debug("cache_get: suppressed exception", exc_info=True)
         return None
 
     def cache_set(self, owner: str, ds_id: str, key: str, obj: Any) -> None:

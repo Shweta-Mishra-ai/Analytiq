@@ -1,7 +1,10 @@
+import logging
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

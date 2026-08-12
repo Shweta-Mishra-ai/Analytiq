@@ -4,6 +4,7 @@ Every endpoint accepts a `filters` list so all tiles cross-filter together.
 Charts are returned as Plotly JSON (rendered by react-plotly on the frontend).
 """
 from __future__ import annotations
+import logging
 
 import json
 from typing import List, Optional
@@ -18,6 +19,8 @@ from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.filters import apply_filters, field_catalog
 from app.services.serialize import to_jsonable
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/charts", tags=["charts"])
 

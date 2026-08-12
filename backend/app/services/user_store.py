@@ -7,6 +7,7 @@ stored or returned in plaintext. Deliberately dependency-free (stdlib
 hashlib) to match the rest of the project's minimal-dependency style.
 """
 from __future__ import annotations
+import logging
 
 import hashlib
 import hmac
@@ -19,6 +20,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from app.config import config
+
+logger = logging.getLogger(__name__)
 
 _PBKDF2_ITERATIONS = 200_000
 

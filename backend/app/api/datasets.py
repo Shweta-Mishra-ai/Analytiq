@@ -4,6 +4,7 @@ Mirrors pages 1 (Upload) and 2 (Data Quality) of the Streamlit app.
 Every dataset is scoped to the authenticated client (`owner`).
 """
 from __future__ import annotations
+import logging
 
 import io
 
@@ -17,6 +18,8 @@ from app.engines.data_validator import validate_dataframe, validate_file_size
 from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.serialize import df_records, to_jsonable
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 

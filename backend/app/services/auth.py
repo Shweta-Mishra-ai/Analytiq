@@ -17,6 +17,7 @@ development and the test suite need zero setup. The moment either an
 admin key is set or an account exists, auth is enforced.
 """
 from __future__ import annotations
+import logging
 
 import hmac
 
@@ -27,6 +28,8 @@ from starlette.responses import JSONResponse
 from app.config import config
 from app.services.tokens import verify_token
 from app.services.user_store import user_store
+
+logger = logging.getLogger(__name__)
 
 # endpoints that must stay reachable without a token
 PUBLIC_PATHS = {"/api/health", "/api/auth/login"}
