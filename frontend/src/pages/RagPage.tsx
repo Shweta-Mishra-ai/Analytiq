@@ -13,7 +13,7 @@ import {
   Send,
   Trash2,
   UploadCloud,
-  Sparkles,
+  FileOutput,
   Download,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -227,7 +227,7 @@ export default function RagPage() {
               <div className="flex gap-2">
                 <Btn variant="ghost" onClick={makeReport} disabled={reporting || !active.chunks}>
                   <span className="flex items-center gap-1.5">
-                    <Sparkles className="h-4 w-4" /> Generate report
+                    <FileOutput className="h-4 w-4" /> Generate report
                   </span>
                 </Btn>
                 {report && (

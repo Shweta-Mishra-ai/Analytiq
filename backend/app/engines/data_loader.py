@@ -254,7 +254,11 @@ def _sanitize(df: pd.DataFrame, warnings: list) -> pd.DataFrame:
 def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
     """
     Carefully improve dtypes.
-    Only converts when >80% of values successfully convert.
+    Only converts when >80% of values successfully convert — and even
+    then, a cell that fails to convert keeps its ORIGINAL value rather
+    than being silently destroyed into a blank. A "Revenue" column that's
+    90% numbers and one "Pending" stays a column with numbers and the
+    word "Pending" in it, not numbers and a hole where "Pending" was.
     NEVER converts columns that look like IDs or product names.
     """
     skip_keywords = ["id", "name", "code", "sku", "url", "link",
@@ -272,7 +276,7 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
             converted = pd.to_numeric(df[col], errors="coerce")
             success_rate = converted.notna().sum() / max(len(df), 1)
             if success_rate > 0.80:
-                df[col] = converted
+                df[col] = converted.where(converted.notna(), df[col])
                 continue
         except Exception:
             pass
@@ -284,7 +288,7 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
                 converted = pd.to_datetime(df[col], errors="coerce")
                 success_rate = converted.notna().sum() / max(len(df), 1)
                 if success_rate > 0.70:
-                    df[col] = converted
+                    df[col] = converted.where(converted.notna(), df[col])
             except Exception:
                 pass
 

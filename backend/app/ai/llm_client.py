@@ -26,6 +26,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 from app.config import config
+from app.ai import gemini_client
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +50,7 @@ class LLMClient:
         # ── Existing Groq setup — unchanged ──────────────
         self._client = Groq(api_key=api_key)
         self.model   = config.llm_model
-
-        # ── New: Gemini — optional, loads from secrets ───
-        self._gemini_key   = self._load_secret("GEMINI_API_KEY")
-        self._gemini_model = "gemini-1.5-flash"
+        self._gemini_model = config.gemini_model
 
     # ─────────────────────────────────────────────────────
     #  EXISTING METHODS — completely unchanged
@@ -120,7 +118,7 @@ class LLMClient:
             try:
                 if prov == "groq":
                     result = self._groq_report(system, user, max_tokens)
-                elif prov == "gemini" and self._gemini_key:
+                elif prov == "gemini" and gemini_client.is_configured():
                     result = self._gemini(system, user, max_tokens)
                 else:
                     continue
@@ -135,7 +133,7 @@ class LLMClient:
     def status(self) -> dict:
         return {
             "groq":         True,
-            "gemini":       bool(self._gemini_key),
+            "gemini":       gemini_client.is_configured(),
             "groq_model":   self.model,
             "gemini_model": self._gemini_model,
         }
@@ -168,21 +166,12 @@ class LLMClient:
 
     def _gemini(self, system: str, user: str,
                 max_tokens: int) -> str | None:
-        if not self._gemini_key:
+        if not gemini_client.is_configured():
             return None
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=self._gemini_key)
-            model = genai.GenerativeModel(
-                model_name         = self._gemini_model,
-                system_instruction = system,
-                generation_config  = genai.GenerationConfig(
-                    max_output_tokens = max_tokens,
-                    temperature       = 0.2,
-                ),
-            )
-            resp = model.generate_content(user)
-            return resp.text
+            return gemini_client.generate_text(
+                [user], system=system, max_output_tokens=max_tokens,
+                temperature=0.2, timeout_sec=60)
         except Exception as e:
             logger.warning(f"Gemini call failed: {e}")
             return None

@@ -144,6 +144,53 @@ The application remains fully functional locally without keys (AI modules degrad
 |---|---|---|
 | `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) | Powering the AI Chat copilot and chart generation narratives |
 | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com) | Powering image/video analysis, RAG indexing, and executive summaries |
+| `APP_ADMIN_KEY` | you choose | Master key for account management (`/api/admin/*`). Unset + zero accounts created = open/no-auth (local dev only). `APP_PASSWORD` also works as a fallback name. |
+| `DATA_TTL_DAYS` | you choose | Days before an uploaded dataset or RAG knowledge base is auto-deleted. Default `30`. Set `0` to disable expiry entirely. |
+| `CLEANUP_INTERVAL_HOURS` | you choose | How often the expiry sweep runs in the background. Default `6`. A sweep also runs once at startup, and can be triggered manually via `POST /api/admin/cleanup`. |
+| `APP_SECRET` | you choose | Signs client login tokens. Optional — auto-generated and persisted to `DATA_DIR/.secret_key` if unset. Set explicitly if you run multiple backend instances behind a load balancer, so they all validate the same tokens. |
+| `TOKEN_TTL_DAYS` | you choose | How long a client's login session lasts before they must sign in again. Default `30`. |
+
+### 🎬 Video-to-dataset extraction
+
+Uploading a video of a table/spreadsheet/dashboard (`POST /api/datasets/extract-from-video`) extracts a handful of visually-distinct frames locally with **ffmpeg** — free, no API cost — then runs each frame through the same image-table-extraction path as a photo upload, merging the results. This is why the Docker image installs `ffmpeg`; if you deploy without Docker (a bare `pip install` on your own host), install `ffmpeg` yourself or this one endpoint will return a clear "ffmpeg is not installed" error while everything else keeps working.
+
+
+### 👥 Multi-tenant clients
+
+Each client gets their own account and only ever sees their own datasets and RAG knowledge bases — enforced both by an ownership check on every request and by physically separate storage directories per client. Onboard a client:
+
+```bash
+curl -X POST https://your-deployment/api/admin/users \
+  -H "Authorization: Bearer $APP_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "acme_corp", "password": "a-strong-password"}'
+```
+
+They then log in at `/api/auth/login` with that username/password (the app's login screen does this for them) and get a token scoped to only their own data. To offboard a client — this **permanently deletes every dataset and knowledge base they own**, not just their login:
+
+```bash
+curl -X DELETE https://your-deployment/api/admin/users/acme_corp \
+  -H "Authorization: Bearer $APP_ADMIN_KEY"
+```
+
+List current clients with `GET /api/admin/users` (same admin header).
+
+### ✅ Verifying your GROQ/GEMINI keys actually work
+
+An AI assistant helping you set this up can't reach `api.groq.com` or
+`generativelanguage.googleapis.com` to test a key for you — both are
+outside what its sandbox can call. Run this yourself instead (takes a
+few seconds, your key never leaves your machine):
+
+```bash
+cd backend
+python3 scripts/check_api_keys.py
+```
+
+It makes one minimal real call to each provider and tells you plainly
+whether each key works, and the actual error if not.
+
+
 
 ---
 

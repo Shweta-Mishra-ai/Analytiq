@@ -1,7 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import {
   Upload,
-  Sparkles,
+  ShieldCheck,
   LayoutDashboard,
   FlaskConical,
   Brain,
@@ -11,12 +11,14 @@ import {
   MessageSquare,
   Database,
   Layers,
+  LogOut,
 } from 'lucide-react'
 import { useApp } from '../store/app'
+import { getToken, setToken } from '../api/client'
 
 const nav = [
   { to: '/', label: 'Upload', icon: Upload },
-  { to: '/quality', label: 'Data Quality', icon: Sparkles },
+  { to: '/quality', label: 'Data Quality', icon: ShieldCheck },
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/eda', label: 'Deep EDA', icon: FlaskConical },
   { to: '/insights', label: 'Insights', icon: Lightbulb },
@@ -35,8 +37,10 @@ export default function Layout() {
         <div className="flex items-center gap-2 px-5 py-5">
           <Database className="h-6 w-6 text-accent" />
           <div>
-            <div className="text-sm font-bold tracking-wide">Analytiq</div>
-            <div className="text-[10px] text-mute">AI Analytics Platform</div>
+            <div className="font-data text-sm font-semibold tracking-tight">
+              Analytiq
+            </div>
+            <div className="text-[10px] text-mute">Data Analysis Workbench</div>
           </div>
         </div>
         <nav className="flex-1 space-y-0.5 px-2">
@@ -72,6 +76,17 @@ export default function Layout() {
             'No dataset loaded'
           )}
         </div>
+        {getToken() && (
+          <button
+            onClick={() => {
+              setToken('')
+              window.location.reload()
+            }}
+            className="flex items-center gap-2 border-t border-edge px-4 py-3 text-[11px] text-mute transition-colors hover:bg-panel2 hover:text-ink"
+          >
+            <LogOut className="h-3.5 w-3.5" /> Sign out
+          </button>
+        )}
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto">
         <Outlet />

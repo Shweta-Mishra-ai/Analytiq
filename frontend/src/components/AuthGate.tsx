@@ -1,15 +1,17 @@
 /**
- * Blocks the app behind a workspace password when the server has
- * APP_PASSWORD set. Open mode (no password configured) passes through.
+ * Blocks the app behind login when the server requires auth (any admin
+ * key set, or at least one client account exists). Open mode (fresh
+ * install, zero setup) passes through untouched.
  */
 import { useEffect, useState, type ReactNode } from 'react'
-import { Database, Lock } from 'lucide-react'
+import { Database, Lock, User } from 'lucide-react'
 import { apiGet, apiPost, getToken, setToken } from '../api/client'
 
 type Status = 'checking' | 'open' | 'locked' | 'authed'
 
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>('checking')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -55,6 +57,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       setError('')
       try {
         const r = await apiPost<{ token: string }>('/api/auth/login', {
+          username,
           password,
         })
         setToken(r.token)
@@ -76,22 +79,32 @@ export default function AuthGate({ children }: { children: ReactNode }) {
             <div className="text-sm font-bold">Analytiq</div>
           </div>
           <label className="mb-1 flex items-center gap-1.5 text-xs text-mute">
-            <Lock className="h-3.5 w-3.5" /> Workspace password
+            <User className="h-3.5 w-3.5" /> Username
+          </label>
+          <input
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoFocus
+            autoCapitalize="off"
+            className="mb-3 w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
+          />
+          <label className="mb-1 flex items-center gap-1.5 text-xs text-mute">
+            <Lock className="h-3.5 w-3.5" /> Password
           </label>
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            autoFocus
             className="w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
           />
           {error && <p className="mt-2 text-xs text-rose">{error}</p>}
           <button
             type="submit"
-            disabled={busy || !password}
+            disabled={busy || !username || !password}
             className="mt-4 w-full rounded-lg bg-accent py-2 text-sm font-semibold text-white disabled:opacity-40"
           >
-            {busy ? 'Checking…' : 'Enter workspace'}
+            {busy ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
       </div>

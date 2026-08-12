@@ -10,10 +10,11 @@ from typing import List, Optional
 
 import pandas as pd
 import plotly.io as pio
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.engines import chart_engine
+from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.filters import apply_filters, field_catalog
 from app.services.serialize import to_jsonable
@@ -43,8 +44,8 @@ class FiltersBody(BaseModel):
     filters: List[FilterSpec] = Field(default_factory=list)
 
 
-def _df(ds_id: str, filters: List[FilterSpec] | None = None) -> pd.DataFrame:
-    df = store.get_df(ds_id)
+def _df(owner: str, ds_id: str, filters: List[FilterSpec] | None = None) -> pd.DataFrame:
+    df = store.get_df(owner, ds_id)
     if df is None:
         raise HTTPException(404, "Dataset not found")
     return apply_filters(df, [f.model_dump() for f in (filters or [])])
@@ -55,14 +56,14 @@ def _fig_json(fig) -> dict:
 
 
 @router.get("/{ds_id}/fields")
-def fields(ds_id: str):
-    df = _df(ds_id)
+def fields(ds_id: str, owner: str = Depends(current_owner)):
+    df = _df(owner, ds_id)
     return {"fields": field_catalog(df)}
 
 
 @router.post("/{ds_id}/kpis")
-def kpis(ds_id: str, body: FiltersBody):
-    df = _df(ds_id, body.filters)
+def kpis(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
+    df = _df(owner, ds_id, body.filters)
     num_cols = df.select_dtypes(include="number").columns.tolist()
     cards = [
         {"label": "Rows", "value": len(df), "format": "int"},
@@ -84,15 +85,15 @@ def kpis(ds_id: str, body: FiltersBody):
 
 
 @router.post("/{ds_id}/recommend")
-def recommend(ds_id: str, body: FiltersBody):
-    df = _df(ds_id, body.filters)
+def recommend(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
+    df = _df(owner, ds_id, body.filters)
     charts = chart_engine.recommend_charts(df)
     return {"charts": [{"title": t, "figure": _fig_json(f)} for t, f in charts]}
 
 
 @router.post("/{ds_id}/build")
-def build(ds_id: str, req: ChartRequest):
-    df = _df(ds_id, req.filters)
+def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
+    df = _df(owner, ds_id, req.filters)
     if df.empty:
         raise HTTPException(422, "No rows match the current filters")
     t = req.type

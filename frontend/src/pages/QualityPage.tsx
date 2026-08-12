@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Sparkles, Undo2 } from 'lucide-react'
+import { Wrench, Undo2 } from 'lucide-react'
 import { apiGet, apiPost, type TableData } from '../api/client'
 import { useApp } from '../store/app'
 import DataTable from '../components/DataTable'
@@ -107,7 +107,7 @@ export default function QualityPage() {
             )}
             <Btn onClick={runClean} disabled={busy}>
               <span className="flex items-center gap-1.5">
-                <Sparkles className="h-4 w-4" /> Auto-clean
+                <Wrench className="h-4 w-4" /> Auto-clean
               </span>
             </Btn>
           </div>

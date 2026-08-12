@@ -10,6 +10,14 @@ RUN npm run build
 FROM python:3.11-slim
 WORKDIR /srv
 
+# ffmpeg powers local video-frame extraction for video-to-dataset
+# uploads (services/video_frames.py) — without it, that endpoint fails
+# with a clear "ffmpeg is not installed" error rather than a crash, but
+# the feature is silently unavailable. python:3.11-slim doesn't include
+# it by default.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

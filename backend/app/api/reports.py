@@ -9,11 +9,12 @@ import io
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.config import config
+from app.services.auth import current_owner
 from app.services.dataset_store import store
 
 logger = logging.getLogger(__name__)
@@ -33,24 +34,24 @@ class PdfRequest(BaseModel):
     max_charts: int = 5
 
 
-def _df_or_404(ds_id: str):
-    df = store.get_df(ds_id)
+def _df_or_404(owner: str, ds_id: str):
+    df = store.get_df(owner, ds_id)
     if df is None:
         raise HTTPException(404, "Dataset not found")
     return df
 
 
 @router.get("/{ds_id}/csv")
-def export_csv(ds_id: str):
-    df = _df_or_404(ds_id)
+def export_csv(ds_id: str, owner: str = Depends(current_owner)):
+    df = _df_or_404(owner, ds_id)
     buf = io.BytesIO(df.to_csv(index=False).encode("utf-8-sig"))
     return StreamingResponse(buf, media_type="text/csv", headers={
         "Content-Disposition": "attachment; filename=analytiq_cleaned_data.csv"})
 
 
 @router.get("/{ds_id}/excel")
-def export_excel(ds_id: str):
-    df = _df_or_404(ds_id)
+def export_excel(ds_id: str, owner: str = Depends(current_owner)):
+    df = _df_or_404(owner, ds_id)
     buf = io.BytesIO()
     import pandas as pd
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
@@ -66,8 +67,8 @@ def export_excel(ds_id: str):
 
 
 @router.post("/{ds_id}/pdf")
-def generate_pdf(ds_id: str, req: PdfRequest):
-    df = _df_or_404(ds_id)
+def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner)):
+    df = _df_or_404(owner, ds_id)
 
     from app.engines.data_profiler import profile_dataset
     from app.engines.story_engine import detect_domain, generate_story
@@ -115,29 +116,29 @@ def generate_pdf(ds_id: str, req: PdfRequest):
     # 5. stats
     stats_report = None
     if req.include_stats:
-        stats_report = store.cache_get(ds_id, "stats")
+        stats_report = store.cache_get(owner, ds_id, "stats")
         if stats_report is None:
             try:
                 from app.engines.stats_engine import analyze
                 stats_report = analyze(df)
-                store.cache_set(ds_id, "stats", stats_report)
+                store.cache_set(owner, ds_id, "stats", stats_report)
             except Exception:
                 pass
 
     # 6. BI
     bi_report = None
     if req.include_bi:
-        bi_report = store.cache_get(ds_id, "bi")
+        bi_report = store.cache_get(owner, ds_id, "bi")
         if bi_report is None:
             try:
                 from app.engines.bi_engine import run_bi
                 bi_report = run_bi(df)
-                store.cache_set(ds_id, "bi", bi_report)
+                store.cache_set(owner, ds_id, "bi", bi_report)
             except Exception:
                 pass
 
     # 7. ML (only if previously trained)
-    ml_report = store.cache_get(ds_id, "ml_last") if req.include_ml else None
+    ml_report = store.cache_get(owner, ds_id, "ml_last") if req.include_ml else None
 
     # 8. charts + AI narratives
     chart_data = []
@@ -169,7 +170,7 @@ def generate_pdf(ds_id: str, req: PdfRequest):
     try:
         pdf_bytes = build_pdf(
             df=df, config=pdf_config, profile=profile,
-            cleaning_summary=store.cache_get(ds_id, "clean_report"),
+            cleaning_summary=store.cache_get(owner, ds_id, "clean_report"),
             stats_report=stats_report, bi_report=bi_report,
             ml_report=ml_report, chart_data=chart_data,
             executive_summary=exec_summary, findings=findings,

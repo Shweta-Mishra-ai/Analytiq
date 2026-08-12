@@ -213,7 +213,12 @@ export default function BiPage() {
                       <div className="mt-0.5 text-rose">✗ {s.weaknesses.join(' · ')}</div>
                     )}
                     {s.opportunity && (
-                      <div className="mt-1.5 text-mute">💡 {s.opportunity}</div>
+                      <div className="mt-1.5 text-mute">
+                        <span className="text-[10px] font-semibold tracking-wide text-mute/80 uppercase">
+                          Opportunity:
+                        </span>{' '}
+                        {s.opportunity}
+                      </div>
                     )}
                   </div>
                 ))}

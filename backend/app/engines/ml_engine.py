@@ -3,6 +3,7 @@ ml_engine.py — Production ML pipeline.
 Auto model selection, cross-validation, SHAP, what-if analysis.
 No shortcuts — proper ML engineering.
 """
+import logging
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
@@ -27,6 +28,8 @@ try:
     XGBOOST_AVAILABLE = True
 except ImportError:
     XGBOOST_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════
@@ -376,6 +379,7 @@ def train_models(
             ))
 
         except Exception as e:
+            logger.warning(f"Model '{name}' failed to train and was skipped: {e}")
             results.append(ModelResult(
                 name=name, task=task,
                 cv_score=-999, cv_std=0,
