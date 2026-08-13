@@ -193,7 +193,7 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
 
         if mean_r < weak:
             insights.append(build_insight(
-                title="Rating Emergency: {} Average — {:,} Products Below {:.1f}".format(
+                title="Average rating {} — {:,} products below {:.1f}".format(
                     scale, low_n, poor),
                 problem="Average {} with {:,} products rated below {:.1f} on this "
                         "{:.0f}-point scale.".format(scale, low_n, poor, hi),
