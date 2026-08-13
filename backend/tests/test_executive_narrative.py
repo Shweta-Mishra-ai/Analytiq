@@ -166,6 +166,70 @@ def test_health_pdf_still_builds_without_any_narrative(hr_df):
     assert pdf[:4] == b"%PDF"
 
 
+# ══════════════════════════════════════════════════════════
+#  Report structure — cover, contents, numbered sections
+# ══════════════════════════════════════════════════════════
+
+def _pdf_pages_text(pdf_bytes: bytes):
+    pypdf = pytest.importorskip("pypdf")
+    import io
+    reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+    return [(p.extract_text() or "") for p in reader.pages]
+
+
+def _build(df, agency="Shweta Analytics"):
+    from app.engines.health_engine import build_report_payload, compute_health
+    from app.engines.health_pdf_builder import build_health_pdf
+    payload = build_report_payload(df, "finance")
+    return build_health_pdf(
+        df, "finance", compute_health(df), payload["insights"], "acme_q3.csv",
+        agency_name=agency, executive_summary=payload["executive_summary"],
+        key_findings=payload["key_findings"], risks=payload["risks"],
+        opportunities=payload["opportunities"], actions=payload["actions"])
+
+
+def test_report_opens_with_a_cover_then_contents(finance_df):
+    pages = _pdf_pages_text(_build(finance_df))
+    assert len(pages) >= 4
+    cover = pages[0]
+    assert "SHWETA ANALYTICS" in cover.upper()
+    assert "Data Health" in cover
+    assert "acme_q3.csv" in cover
+    assert "Contents" in pages[1]
+
+
+def test_cover_carries_no_running_header_or_page_number(finance_df):
+    """A cover with a running header and a '1/10' badge reads as page one
+    of a document, not as a cover."""
+    cover = _pdf_pages_text(_build(finance_df))[0]
+    assert "CONFIDENTIAL" in cover.upper()   # cover has its own footer line
+    assert "1/" not in cover, "page-number badge leaked onto the cover"
+
+
+def test_contents_lists_only_sections_actually_present(finance_df):
+    pages = _pdf_pages_text(_build(finance_df))
+    toc = pages[1]
+    body = "\n".join(pages[2:])
+    for entry in ("Data Health Overview", "Executive Summary",
+                  "Descriptive Statistics", "Recommended Actions"):
+        assert entry in toc, f"'{entry}' missing from contents"
+        assert entry in body, f"contents lists '{entry}' but no such section exists"
+
+
+def test_section_numbers_match_the_contents_order(finance_df):
+    """The heading number is derived from the contents list, so the two
+    can't drift apart."""
+    pages = _pdf_pages_text(_build(finance_df))
+    body = "\n".join(pages[2:])
+    assert "01" in body and "Data Health Overview" in body
+    assert "02" in body and "Executive Summary" in body
+
+
+def test_agency_name_brands_the_cover(finance_df):
+    cover = _pdf_pages_text(_build(finance_df, agency="Acme Data Co"))[0]
+    assert "ACME DATA CO" in cover.upper()
+
+
 def test_pdf_text_cleaner_escapes_markup_and_markdown():
     """Column names containing & or < would otherwise be parsed as markup
     by reportlab and silently swallow the rest of the paragraph."""
