@@ -12,6 +12,8 @@ import warnings
 warnings.filterwarnings("ignore")
 from scipy import stats as scipy_stats
 
+from app.services.stat_guards import apply_fdr, chi2_association
+
 logger = logging.getLogger(__name__)
 
 
@@ -249,12 +251,21 @@ def analyze_root_cause(
                 if 2 <= df[c].nunique() <= 20]
     for col in cat_cols[:8]:
         try:
-            # Chi-square test
+            # Chi-square with its assumptions verified. The raw
+            # chi2_contingency p-value used to be taken at face value, so a
+            # sparse crosstab (an expected cell count below 5) could yield a
+            # confident "significant driver" that no reviewer would accept.
+            # chi2_association returns None when the table can't support the
+            # test, and also gives Cramér's V so strength is judged, not just
+            # significance.
             ct = pd.crosstab(df[col], low_mask)
             if ct.shape[1] < 2:
                 continue
-            chi2, p, dof, _ = scipy_stats.chi2_contingency(ct)
-            if p >= 0.05:
+            assoc = chi2_association(ct)
+            if assoc is None:
+                continue
+            p = assoc["p"]
+            if p >= 0.05 or assoc["cramers_v"] < 0.1:
                 continue
 
             # Find which category is most common in low performers
@@ -271,8 +282,11 @@ def analyze_root_cause(
 
             detail = (
                 "In low performers, '{}' = '{}' in {:.0f}% of cases "
-                "vs {:.0f}% in high performers (chi2 p={:.4f})".format(
-                    col, worst_cat, low_pct_cat, high_pct_cat, p)
+                "vs {:.0f}% in high performers "
+                "(chi-square p={:.4f}, Cramér's V={:.2f} — {} association, "
+                "n={:,})".format(
+                    col, worst_cat, low_pct_cat, high_pct_cat, p,
+                    assoc["cramers_v"], assoc["effect_label"], assoc["n"])
             )
             drivers.append({
                 "factor":      col,
@@ -282,12 +296,34 @@ def analyze_root_cause(
                 "low_pct":     low_pct_cat,
                 "high_pct":    high_pct_cat,
                 "p_value":     round(p, 4),
+                "cramers_v":   assoc["cramers_v"],
+                "effect_label": assoc["effect_label"],
+                "n":           assoc["n"],
                 "detail":      detail,
                 "dtype":       "categorical",
             })
         except Exception:
             logger.debug("analyze_root_cause: suppressed exception", exc_info=True)
             continue
+
+    # Multiple-comparison correction across the whole driver scan.
+    # This function tests up to 15 numeric plus 8 categorical columns, each
+    # at α=0.05. Across ~20 independent columns roughly one "significant
+    # driver" is expected from chance alone — and it would have been
+    # reported as the headline root cause. Benjamini-Hochberg controls the
+    # false-discovery rate over the family; drivers are kept only if they
+    # survive it.
+    if drivers:
+        drivers = apply_fdr(drivers, p_key="p_value", q_key="q_value")
+        survivors = [d for d in drivers if d["q_value"] < 0.05]
+        if survivors:
+            drivers = survivors
+        else:
+            # Nothing survived correction: report none rather than present a
+            # finding that is indistinguishable from noise.
+            logger.info("root cause: %d candidate driver(s) failed FDR "
+                        "correction — reporting none", len(drivers))
+            drivers = []
 
     # Sort by impact
     drivers.sort(key=lambda x: x["impact"], reverse=True)

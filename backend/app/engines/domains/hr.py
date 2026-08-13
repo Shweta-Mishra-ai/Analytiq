@@ -14,6 +14,7 @@ from scipy import stats as scipy_stats
 from app.engines.domains.base import (Insight, AttritionAnalysis, build_insight,
                                col_stats, correlations, infer_scale_bounds)
 from app.services.dtypes import is_text_dtype
+from app.services.stat_guards import apply_fdr, chi2_association
 
 logger = logging.getLogger(__name__)
 
@@ -141,8 +142,15 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
         try:
             ct = pd.crosstab(df[col], left_mask)
             if ct.shape[1] < 2: continue
-            _, p, _, _ = scipy_stats.chi2_contingency(ct)
-            if p < 0.05:
+            # Verified chi-square: skips tables whose expected cell counts
+            # are too small for the p-value to mean anything, and gives an
+            # effect size so a large-n table can't turn a trivial difference
+            # into a headline "attrition driver".
+            assoc = chi2_association(ct)
+            if assoc is None:
+                continue
+            p = assoc["p"]
+            if p < 0.05 and assoc["cramers_v"] >= 0.1:
                 rates = {str(k): round(left_mask[df[col]==k].mean()*100,1)
                          for k in df[col].dropna().unique()}
                 worst = max(rates, key=rates.get)
@@ -159,6 +167,18 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
         except Exception:
             logger.warning("%s unexpected failure", exc_info=True)
             continue
+
+    # Up to 12 numeric plus 6 categorical columns are tested here, each at
+    # α=0.05 — across ~18 tests about one spurious "attrition driver" is
+    # expected from chance alone, and it would be presented as a cause.
+    # Benjamini-Hochberg controls the false-discovery rate over the family.
+    if top_drivers:
+        top_drivers = apply_fdr(top_drivers, p_key="p_value", q_key="q_value")
+        survivors = [d for d in top_drivers if d["q_value"] < 0.05]
+        if not survivors:
+            logger.info("attrition: %d candidate driver(s) failed FDR "
+                        "correction — reporting none", len(top_drivers))
+        top_drivers = survivors
 
     top_drivers.sort(key=lambda x: x["impact"], reverse=True)
 
