@@ -95,6 +95,32 @@ def _as_datetime(s: pd.Series) -> pd.Series:
 #  COHORT RETENTION
 # ══════════════════════════════════════════════════════════
 
+def _reorder_window(work: pd.DataFrame, cust: str) -> tuple:
+    """How many months out to measure retention, and the typical gap.
+
+    Month 1 is the conventional window and the right one for a business
+    people buy from monthly. On a quarterly reorder cycle it is not: every
+    cohort scores 0% at month 1, and the report prints "retention averages
+    0.0%, ranging 0.0% to 0.0%" for a book where every customer came back.
+    That reads as a broken report, and it is the wrong measure rather than
+    a wrong number.
+
+    The window is the median gap between a customer's consecutive order
+    months, capped at 6 — beyond that the cohorts in a normal extract are
+    too young to have reached it.
+    """
+    months = (work.groupby(cust)["_month"]
+              .apply(lambda s: sorted(set(s))))
+    gaps = []
+    for seq in months:
+        if len(seq) < 2:
+            continue
+        gaps.extend((b - a).n for a, b in zip(seq, seq[1:]))
+    if not gaps:
+        return 1, 1
+    typical = int(np.median(gaps))
+    return max(1, min(typical, 6)), max(1, typical)
+
 def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
                      risks: List, opps: List) -> None:
     """Do customers acquired in one month come back in later months?
@@ -139,23 +165,37 @@ def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
             return
         usable = usable.iloc[:-1] if len(usable) > 2 else usable
 
+        # Month 1 is the right window only for a business people buy from
+        # monthly. On a quarterly reorder cycle every cohort returns 0% at
+        # month 1, and "retention averages 0.0%, ranging 0.0% to 0.0%"
+        # reads as a broken report rather than as the wrong measure.
+        window, typical_gap = _reorder_window(work, cust)
+        cadence_note = (
+            "" if window == 1 else
+            " Measured at month {} rather than month 1 because customers here "
+            "typically reorder about every {} months; a one-month window would "
+            "report near-zero retention for a business that retains "
+            "well.".format(window, typical_gap))
+
         m1 = {}
         for cohort, size in usable.items():
-            returned = work[(work["_cohort"] == cohort) & (work["_age"] == 1)][cust].nunique()
+            returned = work[(work["_cohort"] == cohort)
+                            & (work["_age"] == window)][cust].nunique()
             m1[cohort] = returned / size * 100
 
         if len(m1) < 2:
             return
         rates = pd.Series(m1).sort_index()
+        label = "Month-{}".format(window)
         overall = float(rates.mean())
         newest, oldest = float(rates.iloc[-1]), float(rates.iloc[0])
         drift = newest - oldest
 
         findings.append(
-            "Month-1 retention averages {:.1f}% across {} monthly cohorts "
-            "({:,} customers), ranging {:.1f}% to {:.1f}%.".format(
-                overall, len(rates), int(usable.sum()),
-                float(rates.min()), float(rates.max())))
+            "{} retention averages {:.1f}% across {} monthly cohorts "
+            "({:,} customers), ranging {:.1f}% to {:.1f}%.{}".format(
+                label, overall, len(rates), int(usable.sum()),
+                float(rates.min()), float(rates.max()), cadence_note))
 
         # A cohort trend is worth reporting when it is large enough not to
         # be month-to-month noise.
@@ -166,37 +206,38 @@ def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
                 "{}: {:.1f}%".format(str(k), v) for k, v in rates.items())
             if drift < 0:
                 risks.append(
-                    "Month-1 retention has {} {:.1f} points across the cohorts in "
+                    "{} retention has {} {:.1f} points across the cohorts in "
                     "this data, from {:.1f}% ({}) to {:.1f}% ({}). Later cohorts "
                     "are returning less often than earlier ones.".format(
-                        direction, abs(drift), oldest, str(rates.index[0]),
+                        label, direction, abs(drift), oldest, str(rates.index[0]),
                         newest, str(rates.index[-1])))
             else:
                 opps.append(
-                    "Month-1 retention has {} {:.1f} points across cohorts, from "
+                    "{} retention has {} {:.1f} points across cohorts, from "
                     "{:.1f}% to {:.1f}% — whatever changed for the later cohorts "
                     "is worth identifying and holding.".format(
-                        direction, abs(drift), oldest, newest))
+                        label, direction, abs(drift), oldest, newest))
 
             insights.append(build_insight(
-                title="Month-1 retention {} from {:.1f}% to {:.1f}%".format(
-                    direction, oldest, newest),
-                problem="Customers acquired in {} returned the following month "
+                title="{} retention {} from {:.1f}% to {:.1f}%".format(
+                    label, direction, oldest, newest),
+                problem="Customers acquired in {} returned within {} month(s) "
                         "{:.1f}% of the time; for {} it was {:.1f}%.".format(
-                            str(rates.index[0]), oldest,
+                            str(rates.index[0]), window, oldest,
                             str(rates.index[-1]), newest),
                 cause="A cohort trend of this size normally follows a change in "
                       "acquisition mix, onboarding, or the offer itself. Which one "
                       "applies is not established by this data — it needs the "
                       "channel or campaign behind each cohort.",
-                evidence="Month-1 retention by cohort — {} (cohorts of "
-                         "{}+ customers only)".format(detail, MIN_COHORT_CUSTOMERS),
+                evidence="{} retention by cohort — {} (cohorts of "
+                         "{}+ customers only)".format(
+                             label, detail, MIN_COHORT_CUSTOMERS),
                 action="1. Split the weakest and strongest cohorts by acquisition "
                        "channel  2. Compare first-order contents between them  "
                        "3. Set the stronger cohort's rate as the retention target",
-                impact="Month-1 retention compounds: a {:.1f} point difference "
+                impact="{} retention compounds: a {:.1f} point difference "
                        "persists through every later month of a cohort's life.".format(
-                           abs(drift)),
+                           label, abs(drift)),
                 severity=sev, category="ecommerce_retention",
             ))
     except Exception:

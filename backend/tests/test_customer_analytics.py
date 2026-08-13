@@ -150,6 +150,55 @@ def test_stable_retention_produces_no_trend_claim():
         "invented a trend in a stationary book: {}".format(_text(out)[:300])
 
 
+def _quarterly_frame(per_cohort=80, months=9, gap=3, seed=59):
+    """Customers who reorder every `gap` months — a business with a long
+    purchase cycle, not a business with no retention."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    cid = 0
+    for m in range(months):
+        start = pd.Timestamp("2023-01-01") + pd.DateOffset(months=m)
+        for _ in range(per_cohort):
+            cid += 1
+            when = start
+            for _ in range(3):
+                rows.append({"customer_id": cid,
+                             "order_date": when + pd.Timedelta(
+                                 days=int(rng.integers(0, 26))),
+                             "amount": float(rng.uniform(20, 200))})
+                when = when + pd.DateOffset(months=gap)
+    return pd.DataFrame(rows)
+
+
+def test_a_quarterly_book_is_not_reported_as_zero_retention():
+    """Month 1 is the conventional window and the wrong one here: every
+    cohort scores 0%, and "retention averages 0.0%, ranging 0.0% to 0.0%"
+    prints for a book where every customer came back."""
+    out = _run(cohort_retention, _quarterly_frame())
+    assert out["findings"], "no retention reported at all"
+    finding = out["findings"][0]
+    assert "0.0%, ranging 0.0% to 0.0%" not in finding, \
+        "reported a quarterly book as total churn: {}".format(finding)
+    assert "Month-3" in finding, \
+        "did not measure at the observed reorder cadence: {}".format(finding)
+
+
+def test_a_non_standard_window_says_why_it_was_used():
+    """A reader who expects month-1 retention has to be told this is not
+    it, or the number is not comparable to anything they know."""
+    out = _run(cohort_retention, _quarterly_frame())
+    assert "typically reorder" in out["findings"][0], \
+        "changed the measurement window without explaining it"
+
+
+def test_a_monthly_book_still_uses_month_1():
+    out = _run(cohort_retention, _cohort_frame([0.40] * 6))
+    finding = out["findings"][0]
+    assert "Month-1" in finding
+    assert "typically reorder" not in finding, \
+        "explained a window change that did not happen"
+
+
 def test_small_cohorts_are_excluded():
     """Six customers a month is not a retention rate."""
     df = _cohort_frame([0.40] * 6, per_cohort=6)
