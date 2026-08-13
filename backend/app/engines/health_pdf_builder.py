@@ -292,6 +292,19 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # Only top-level sections are numbered. Key Findings / Risks /
     # Opportunities are subsections of the Executive Summary, so listing
     # them as peers would make the numbering disagree with the headings.
+    # Business charts, generated up-front so the contents page knows whether
+    # the section will exist. The chart engine excludes identifier and
+    # constant columns, so this returns nothing rather than plotting an ID
+    # when a dataset has no real measures.
+    _charts = []
+    try:
+        from app.engines.chart_exporter import generate_all_charts
+        _charts = generate_all_charts(df, theme_name="Corporate Light",
+                                       max_charts=4)
+    except Exception:
+        logger.warning("chart generation failed for the health report",
+                       exc_info=True)
+
     _toc_entries = ["Data Health Overview"]
     _sub = [n for n, present in (("Key Findings", key_findings),
                                   ("Risks Identified", risks),
@@ -300,6 +313,8 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         _toc_entries.append("Executive Summary")
     if insights:
         _toc_entries.append("Meaningful Business Insights")
+    if _charts:
+        _toc_entries.append("Visual Analysis")
     _toc_entries += ["Descriptive Statistics", "Column Quality Analysis"]
     if len(df.select_dtypes(include="number").columns) >= 2:
         _toc_entries.append("Correlation Analysis")
@@ -524,6 +539,38 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             ("BOX",           (0,0),(-1,-1), 0.5, HexColor("#E5E7EB")),
         ]))
         story.append(KeepTogether([card, Spacer(1, 5*mm)]))
+
+    # ══════════════════════════════════════════════════════
+    # VISUAL ANALYSIS
+    # ══════════════════════════════════════════════════════
+    # The report previously carried only thumbnail histograms and a
+    # correlation heatmap — diagnostics, not the business picture a client
+    # reads. These are the same charts as the main report, each captioned
+    # with what it shows rather than left to speak for itself.
+    if _charts:
+        story.append(PageBreak())
+        story.append(_section("Visual Analysis"))
+        story.append(Paragraph(
+            "Charts are built from measure columns only; identifiers and "
+            "columns with no variation are excluded, since neither carries "
+            "business meaning.", ST["body"]))
+        story.append(HRFlowable(width="100%", thickness=1.5, color=accent,
+                                 spaceAfter=6))
+
+        for idx, (chart_title, img_bytes) in enumerate(_charts, 1):
+            if not img_bytes:
+                continue
+            try:
+                block = [
+                    Paragraph("{}. {}".format(idx, _clean_text(chart_title)),
+                              ST["h3"]),
+                    Image(_io.BytesIO(img_bytes), width=CW, height=CW * 0.46),
+                    Spacer(1, 6 * mm),
+                ]
+                story.append(KeepTogether(block))
+            except Exception:
+                logger.warning("could not place chart %r in the health report",
+                               chart_title, exc_info=True)
 
     # ══════════════════════════════════════════════════════
     # PAGE 3: DESCRIPTIVE STATISTICS

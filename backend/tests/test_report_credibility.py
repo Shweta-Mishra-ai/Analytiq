@@ -158,6 +158,61 @@ def test_finance_report_cites_finance_appropriate_sources(finance_df):
         "no domain-appropriate reference sources in the appendix"
 
 
+def _health_pdf(df, agency="Shweta Analytics"):
+    from app.engines.health_engine import build_report_payload, compute_health
+    from app.engines.health_pdf_builder import build_health_pdf
+    from app.engines.story_engine import detect_domain
+    domain, _ = detect_domain(df)
+    payload = build_report_payload(df, domain)
+    return build_health_pdf(
+        df, domain, compute_health(df), payload["insights"], "acme_q3.csv",
+        agency_name=agency, executive_summary=payload["executive_summary"],
+        key_findings=payload["key_findings"], risks=payload["risks"],
+        opportunities=payload["opportunities"], actions=payload["actions"])
+
+
+def test_health_report_includes_business_charts(finance_df):
+    """It previously carried only thumbnail histograms and a correlation
+    heatmap — diagnostics, not the picture a client reads."""
+    import pypdf
+    pdf = _health_pdf(finance_df)
+    reader = pypdf.PdfReader(io.BytesIO(pdf))
+    text = "\n".join((p.extract_text() or "") for p in reader.pages)
+    assert "Visual Analysis" in text, "no chart section in the health report"
+    assert "Visual Analysis" in (reader.pages[1].extract_text() or ""), \
+        "chart section missing from the contents page"
+
+
+def test_health_report_charts_exclude_identifiers(finance_df):
+    """Scoped to the chart section only: the Column Quality inventory
+    legitimately lists every column, including identifiers, and marks them
+    "ID COL" — that is the inventory doing its job, not a charting fault."""
+    import pypdf
+    pdf = _health_pdf(finance_df)
+    reader = pypdf.PdfReader(io.BytesIO(pdf))
+    pages = [(p.extract_text() or "") for p in reader.pages]
+    chart_pages = [t for t in pages[2:] if "Visual Analysis" in t]
+    assert chart_pages, "chart section not found"
+    for t in chart_pages:
+        # cut the caption block at the next section heading if present
+        section = t.split("Descriptive Statistics")[0]
+        assert "invoice_id" not in section, \
+            "an identifier was charted or captioned in Visual Analysis"
+
+
+def test_health_report_omits_chart_section_when_nothing_is_chartable():
+    """No measures means no charts — and no empty section advertising them."""
+    import pypdf
+    df = pd.DataFrame({
+        "record_id": range(60),
+        "ref_code": [f"R{i}" for i in range(60)],
+        "label": ["a", "b"] * 30,
+    })
+    pdf = _health_pdf(df)
+    reader = pypdf.PdfReader(io.BytesIO(pdf))
+    assert "Visual Analysis" not in (reader.pages[1].extract_text() or "")
+
+
 def test_methodology_states_the_tests_actually_used(finance_df):
     """A senior reviewer reads this section to decide whether to trust the
     rest, so it must describe method, not tooling."""
