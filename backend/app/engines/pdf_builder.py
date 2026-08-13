@@ -246,8 +246,16 @@ class _ReportCanvas(CV.Canvas):
         self.rect(0, 12*mm, W, 1.2*mm, fill=1, stroke=0)
         self.setFillColor(HexColor("#FFFFFF"))
         self.setFont("Helvetica", 6.5)
+        # The footer previously named a fixed set of HR benchmark bodies
+        # (SHRM · Gallup · Mercer · Deloitte) on EVERY page of EVERY report,
+        # so a finance or e-commerce deliverable cited HR attrition sources
+        # 15 times over. Sources belong in the appendix, keyed to the
+        # detected domain; the footer carries the client and confidentiality
+        # marking, which is what a footer is for.
         self.drawString(18*mm, 4.5*mm,
-            "Benchmarks: SHRM · Gallup · Mercer · Deloitte — verify with domain experts before action")
+            "{} · Confidential · Prepared for {}".format(
+                getattr(self, "agency_name", "Analytiq"),
+                self.client_name))
         self.drawRightString(W - 18*mm, 4.5*mm,
             "Page {} of {}".format(self._pageNumber, tot))
 
@@ -373,10 +381,14 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
         cv.setFillColor(HexColor("#FFFFFF"))
         cv.setFont("Helvetica-Bold", 8); cv.drawString(x, 13*mm, v[:22])
 
+    # The cover previously carried "Powered by Groq Llama 3.3 70B". Naming
+    # the model on the front page of a client deliverable invites the
+    # reader to discount everything behind it, and says nothing about
+    # whether the analysis is sound. Confidentiality marking belongs here
+    # instead.
     cv.setFillColor(HexColor(T["accent2"]))
     cv.setFont("Helvetica", 6.5)
-    cv.drawRightString(W - 21*mm, 5*mm,
-                       "Powered by Groq Llama 3.3 70B")
+    cv.drawRightString(W - 21*mm, 5*mm, "Confidential")
     cv.save()
     buf.seek(0)
     return buf.read()
@@ -1088,18 +1100,58 @@ def _recommendations(story, s, T, actions, CW):
 #  APPENDIX
 # ══════════════════════════════════════════════════════════
 
-def _appendix(story, s, T, config, CW):
+def _appendix(story, s, T, config, CW, domain: str = "general"):
     _sec(story, s, T, "Appendix — Methodology & Sources")
 
-    story.append(Paragraph("A. Methodology", s["h3"]))
+    # This section is what a reviewing analyst reads to decide whether to
+    # trust the rest. It states the tests actually applied and why each was
+    # chosen — it does not describe the tooling that rendered the document,
+    # which tells the reader nothing about validity.
+    story.append(Paragraph("A. Analytical Method", s["h3"]))
     story.append(Paragraph(
-        "Data quality scoring: 60% completeness, 30% deduplication, 10% column health. "
-        "Outlier detection: IQR (1.5×) and Modified Z-Score. "
-        "Normality: Shapiro-Wilk (n≤5000) and D'Agostino-Pearson tests. "
-        "Correlations: Pearson (normal) / Spearman (non-normal). "
-        "Domain detection: keyword matching across HR, E-commerce, Sales, Finance. "
-        "Attrition drivers: Mann-Whitney U (numeric) and Chi-Square (categorical). "
-        "AI narratives: Groq Llama 3.3 70B with pre-computed statistics.",
+        "Every figure in this report is computed directly from the supplied "
+        "dataset. No values are estimated, imputed into the findings, or "
+        "carried over from other engagements.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Distributional testing.</b> Normality is assessed with Shapiro-Wilk "
+        "(n≤5,000) and D'Agostino-Pearson, rather than assumed. The outcome "
+        "determines which downstream test is used, so a non-normal column is "
+        "never summarised with a statistic that presumes normality.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Association.</b> Pearson's r is used where both variables are "
+        "approximately normal; Spearman's rank correlation otherwise. "
+        "Correlations are reported with their p-value and sample size. "
+        "Pairs that are mechanically related (a rate against its own "
+        "numerator, a duplicated column) are excluded rather than presented "
+        "as findings.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Group differences.</b> Two-group comparisons use Welch's t-test "
+        "where the normality condition holds and Mann-Whitney U where it does "
+        "not; comparisons across three or more groups use one-way ANOVA or "
+        "Kruskal-Wallis on the same basis. Categorical association uses "
+        "Chi-square with an expected-frequency check.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Outliers.</b> Flagged by the 1.5×IQR rule and cross-checked with "
+        "the modified Z-score (Iglewicz &amp; Hoaglin), which is robust to "
+        "skew. Outliers are reported, never silently removed — an extreme "
+        "value is frequently the finding rather than an error.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Missing and duplicate records.</b> Completeness is measured per "
+        "column and reported before any analysis. Records are not dropped "
+        "to improve a result; where a test required complete cases, the "
+        "excluded count is stated alongside it.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Limitations.</b> Findings describe association within this "
+        "dataset and the period it covers. They do not establish causation, "
+        "and do not extrapolate beyond the observed range of each variable. "
+        "Segment-level results with small denominators are marked as "
+        "directional.",
         s["body"]))
 
     story.append(Paragraph("B. Quality Score Formula", s["h3"]))
@@ -1110,25 +1162,63 @@ def _appendix(story, s, T, config, CW):
              ["Column Health", "10%", "Avg per-column quality score"]],
             [CW*0.25, CW*0.15, CW*0.60])
 
-    story.append(Paragraph("C. Industry Sources", s["h3"]))
-    for src in [
-        "SHRM 2024 State of the Workplace — attrition benchmarks, replacement cost $4,700 direct avg.",
-        "Gallup State of the Global Workplace 2024 — 52% exits preventable, 50-200% salary replacement.",
-        "Mercer Global Talent Trends 2024 — career growth = #1 voluntary attrition driver.",
-        "Deloitte Human Capital Trends 2025 — 70%+ firms use HR analytics.",
-    ]:
+    # Reference ranges are listed per detected domain. This list was
+    # previously hardcoded to HR sources, so a finance or e-commerce report
+    # cited SHRM attrition benchmarks and Gallup engagement data — an
+    # immediate credibility failure for any reader who checks.
+    _SOURCES_BY_DOMAIN = {
+        "hr": [
+            "SHRM, State of the Workplace — voluntary attrition benchmarks and "
+            "direct replacement cost.",
+            "Gallup, State of the Global Workplace — engagement and preventable-exit "
+            "rates; replacement cost commonly modelled at 50–200% of salary.",
+            "Mercer, Global Talent Trends — career growth as the leading voluntary "
+            "exit driver.",
+        ],
+        "finance": [
+            "IFRS / GAAP presentation conventions for revenue, COGS and operating "
+            "expense classification.",
+            "CFA Institute, financial ratio conventions — gross margin, operating "
+            "expense ratio, and their standard interpretation bands.",
+            "Sector margin ranges vary widely; compare against the organisation's "
+            "own prior periods before comparing against any external range.",
+        ],
+        "sales": [
+            "Quota attainment and pipeline-coverage conventions as used in standard "
+            "sales-operations practice.",
+            "Win-rate and cycle-length ranges are highly sector-specific; the "
+            "internal top-quartile comparison in this report is the more reliable "
+            "reference.",
+        ],
+        "ecommerce": [
+            "Baymard Institute, cart-abandonment and checkout usability research.",
+            "Category-level conversion, return and rating norms differ sharply by "
+            "vertical and price point; treat any external figure as indicative only.",
+        ],
+    }
+    _sources = _SOURCES_BY_DOMAIN.get(
+        str(domain).lower(),
+        ["No external benchmark set applies to this dataset's domain. All "
+         "comparisons in this report are internal — each metric is measured "
+         "against its own distribution within the supplied data."],
+    )
+    story.append(Paragraph("C. Reference Ranges & Sources", s["h3"]))
+    for src in _sources:
         story.append(Paragraph("• " + src, s["bl"]))
 
     story.append(Spacer(1, 4*mm))
     disc = Table([[Paragraph(
-        "<b>DISCLAIMER</b><br/>"
-        "Report generated by Analytiq on {} for {}. "
-        "Findings based solely on provided dataset. "
-        "Correlations do not imply causation. "
-        "Industry benchmarks are indicative — verify against sector-specific data. "
-        "Verify with qualified data analyst before business decisions.".format(
-            datetime.now().strftime("%B %d, %Y"),
-            config.get("client_name", "Client")),
+        "<b>BASIS OF PREPARATION</b><br/>"
+        "Prepared for {} on {}. All figures derive solely from the dataset "
+        "supplied for this engagement and describe the period it covers. "
+        "Statistical association is reported where present; it does not "
+        "establish causation. Any external reference range cited is "
+        "indicative and should be validated against the organisation's own "
+        "sector and prior periods before it informs a decision. "
+        "Recommendations assume the data is complete and accurate as "
+        "supplied.".format(
+            config.get("client_name", "Client"),
+            datetime.now().strftime("%B %d, %Y")),
         s["wh"])]],
         colWidths=["100%"])
     disc.setStyle(TableStyle([
@@ -1300,7 +1390,7 @@ def build_pdf(
     _recommendations(story, s, T, recommendations, CW)
     story.append(PageBreak())
 
-    _appendix(story, s, T, config, CW)
+    _appendix(story, s, T, config, CW, domain=domain)
 
     # ── Build PDF ─────────────────────────────────────────
     doc.build(story, canvasmaker=canvas_maker)

@@ -18,6 +18,8 @@ from scipy.stats import (
     levene, bartlett
 )
 
+from app.services.dtypes import MONTH_END
+
 logger = logging.getLogger(__name__)
 
 
@@ -640,7 +642,7 @@ def analyze_time_series(
 
     try:
         ts = (df.set_index(date_col)[value_col]
-                .resample("M").mean()
+                .resample(MONTH_END).mean()
                 .dropna())
 
         if len(ts) < 10:

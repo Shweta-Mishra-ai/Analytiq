@@ -49,6 +49,32 @@ def is_text_dtype(obj) -> bool:
         return False
 
 
+def month_end_rule() -> str:
+    """The resample alias for month-end, valid on this pandas version.
+
+    pandas 3 removed the ``"M"`` alias in favour of ``"ME"``; calling
+    ``resample("M")`` now raises. Every call site here sat inside a
+    try/except that logged at debug level, so the failures were invisible:
+    the time-series trend chart vanished from every report and Deep EDA's
+    stationarity/trend section silently returned nothing.
+    """
+    test = pd.Series(
+        [0.0, 1.0],
+        index=pd.to_datetime(["2025-01-01", "2025-02-01"]),
+    )
+    for alias in ("ME", "M"):
+        try:
+            test.resample(alias).mean()
+            return alias
+        except (ValueError, KeyError):
+            continue
+    logger.warning("no usable month-end resample alias found; defaulting to 'ME'")
+    return "ME"
+
+
+MONTH_END = month_end_rule()
+
+
 def is_categorical_like(obj) -> bool:
     """True for text columns *and* pandas categorical/boolean columns —
     i.e. anything that groups into discrete buckets rather than measuring
