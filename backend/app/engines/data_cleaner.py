@@ -27,6 +27,17 @@ class CleaningReport:
     actions: List[CleanAction] = field(default_factory=list)
     duplicates_removed: int = 0
     rows_dropped: int = 0
+    # Columns where values were substituted for missing data, with the
+    # share imputed. Any statistic derived from these is partly computed
+    # on fabricated values, so the report must be able to say so rather
+    # than presenting an imputed mean as an observed one.
+    imputed_columns: Dict[str, float] = field(default_factory=dict)
+    # Columns whose missingness is NOT random — it predicts another
+    # column. Imputing these erases a real signal.
+    informative_missingness: List[str] = field(default_factory=list)
+    # Duplicate identity keys (same entity appearing more than once with
+    # differing values), which exact-row deduplication cannot catch.
+    key_duplicate_note: str = ""
 
     def add(self, col, issue, action, before, after, rows=0):
         self.actions.append(CleanAction(col, issue, action, before, after, rows))
@@ -34,6 +45,73 @@ class CleaningReport:
     @property
     def total_changes(self):
         return len(self.actions) + self.duplicates_removed + self.rows_dropped
+
+    @property
+    def heavily_imputed(self) -> List[str]:
+        """Columns imputed beyond the point where derived statistics can be
+        reported without a caveat."""
+        return [c for c, pct in self.imputed_columns.items() if pct >= 20.0]
+
+
+def _missingness_is_informative(df: pd.DataFrame, col: str) -> bool:
+    """Does whether `col` is missing predict anything else in the frame?
+
+    Missing-at-random can be imputed. Missingness that carries signal —
+    a satisfaction score absent precisely for the people who left, an
+    income blank only for one segment — must not be, because filling it
+    with the median erases the very pattern worth reporting.
+
+    Tested by comparing each other numeric column between the
+    missing and non-missing groups; a large standardised difference means
+    the missingness is not random.
+    """
+    mask = df[col].isna()
+    n_missing = int(mask.sum())
+    if n_missing < 15 or (len(df) - n_missing) < 15:
+        return False
+    for other in df.select_dtypes(include="number").columns:
+        if other == col:
+            continue
+        a = df.loc[mask, other].dropna()
+        b = df.loc[~mask, other].dropna()
+        if len(a) < 15 or len(b) < 15:
+            continue
+        try:
+            pooled = np.sqrt((a.var() + b.var()) / 2)
+            if pooled == 0:
+                continue
+            # Cohen's d >= 0.5 is a medium effect — clearly not random.
+            if abs(float(a.mean() - b.mean()) / pooled) >= 0.5:
+                return True
+        except Exception:
+            logger.debug("informative-missingness check failed for %s vs %s",
+                         col, other, exc_info=True)
+    return False
+
+
+def _describe_key_duplicates(df: pd.DataFrame) -> str:
+    """Exact-row deduplication misses the commoner real problem: the same
+    entity recorded twice with different values. Detect and describe it
+    rather than silently keeping both rows."""
+    from app.engines.domains.base import is_id_column
+    for col in df.columns:
+        try:
+            if not is_id_column(col, df[col]):
+                continue
+            non_null = df[col].dropna()
+            if len(non_null) < 10:
+                continue
+            n_dupe_keys = int(non_null.duplicated().sum())
+            if n_dupe_keys > 0:
+                return (
+                    f"'{col}' repeats for {n_dupe_keys:,} row(s). Exact-duplicate "
+                    "rows were removed, but these share an identifier while "
+                    "differing elsewhere — confirm whether they are genuine "
+                    "repeat events or an unresolved join before aggregating."
+                )
+        except Exception:
+            logger.debug("key-duplicate check failed for %s", col, exc_info=True)
+    return ""
 
 
 def auto_clean(df: pd.DataFrame) -> tuple[pd.DataFrame, CleaningReport]:
@@ -88,6 +166,15 @@ def auto_clean(df: pd.DataFrame) -> tuple[pd.DataFrame, CleaningReport]:
     for col in df.columns:
         _clean_column(df, col, report)
 
+    # ── 6. Identity duplicates ─────────────────────────────
+    # drop_duplicates above removes only byte-identical rows. The commoner
+    # real defect is one entity appearing twice with differing values,
+    # which silently double-counts in every downstream sum.
+    report.key_duplicate_note = _describe_key_duplicates(df)
+    if report.key_duplicate_note:
+        report.add("identity", "repeated identifier values",
+                   report.key_duplicate_note, "review", "flagged", 0)
+
     report.cleaned_shape = df.shape
     return df, report
 
@@ -120,13 +207,31 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
                        "{} missing".format(missing), "removed", missing)
             return
 
+        elif _missingness_is_informative(df, col):
+            # Missingness that predicts another column is itself a finding.
+            # Median-filling it would erase the pattern and report a mean
+            # computed partly from invented values. Left as NA — pandas
+            # excludes NA from statistics natively — and recorded so the
+            # report can say why.
+            report.informative_missingness.append(col)
+            report.add(col,
+                       "{} missing values ({:.1f}%) — not missing at random".format(
+                           missing, missing_pct),
+                       "left as missing deliberately; the pattern of absence "
+                       "predicts other columns and is reported as a finding",
+                       "{} nulls".format(missing), "{} nulls".format(missing), 0)
+
         elif pd.api.types.is_numeric_dtype(s):
             # Numeric → fill with median
             median_val = s.median()
             df[col] = s.fillna(median_val)
+            report.imputed_columns[col] = round(missing_pct, 1)
+            caveat = (" — over a fifth of this column is imputed, so its mean, "
+                      "spread and correlations are partly synthetic"
+                      if missing_pct >= 20 else "")
             report.add(col,
                        "{} missing values ({:.1f}%)".format(missing, missing_pct),
-                       "filled with median ({:.4g})".format(median_val),
+                       "filled with median ({:.4g}){}".format(median_val, caveat),
                        "{} nulls".format(missing), 0, missing)
 
         else:
