@@ -21,6 +21,9 @@ MAX_COLS          = 500
 SAMPLE_THRESHOLD  = 100_000   # rows above this → auto-sample for heavy ops
 
 
+from app.services.dtypes import text_columns
+
+
 @dataclass
 class ValidationResult:
     is_valid: bool
@@ -147,7 +150,7 @@ def validate_dataframe(df: pd.DataFrame) -> ValidationResult:
                 inf_count))
 
     # Mixed type columns (mostly numeric but some strings)
-    for col in df.select_dtypes(include="object").columns[:20]:
+    for col in text_columns(df)[:20]:
         sample = df[col].dropna().head(100)
         if len(sample) == 0:
             continue

@@ -20,7 +20,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.services.dtypes import is_categorical_like, is_text_dtype
+from app.services.dtypes import (is_categorical_like, is_text_dtype,
+                                 text_columns)
 
 APP_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app")
@@ -175,4 +176,54 @@ def test_no_bare_object_dtype_comparisons_remain():
         "Bare `dtype == object` comparison(s) — these silently return False "
         "for text columns on pandas 3; use is_text_dtype():\n"
         + "\n".join(violations)
+    )
+
+
+# ══════════════════════════════════════════════════════════
+#  select_dtypes(include="object")
+# ══════════════════════════════════════════════════════════
+
+def test_text_columns_finds_text_under_this_pandas():
+    df = pd.DataFrame({
+        "name":    ["a", "b", "c"],
+        "grade":   pd.Series(["x", "y", "z"], dtype="string"),
+        "bucket":  pd.Series(["p", "q", "p"], dtype="category"),
+        "count":   [1, 2, 3],
+        "ratio":   [0.1, 0.2, 0.3],
+        "flag":    [True, False, True],
+        "seen_at": pd.to_datetime(["2025-01-01", "2025-02-01", "2025-03-01"]),
+    })
+    assert text_columns(df) == ["name", "grade"]
+
+
+def test_text_columns_matches_select_dtypes_on_a_plain_frame():
+    """Same answer as the call it replaces, so swapping it in changes
+    nothing today — it only removes the pandas-4 cliff."""
+    df = pd.DataFrame({"a": ["p", "q"], "b": [1, 2], "c": ["r", "s"]})
+    assert text_columns(df) == ["a", "c"]
+
+
+_OBJECT_SELECT = re.compile(r'select_dtypes\(\s*include\s*=\s*(\[\s*)?["\']object["\']')
+
+
+def test_no_object_only_select_dtypes_remains():
+    """`select_dtypes(include="object")` reaches pandas 3's str columns
+    only through a deprecation shim. When that shim goes, every one of
+    these returns an empty list and the categorical half of the analysis
+    disappears without raising — the same failure mode as the
+    `dtype == object` bug, on a timer.
+
+    `include=["object", "string"]` is fine and not matched here.
+    """
+    violations = []
+    for path in _iter_app_py_files():
+        if path.endswith(os.path.join("services", "dtypes.py")):
+            continue  # the helper's own docstring quotes the pattern
+        for i, line in enumerate(open(path, encoding="utf-8").read().splitlines(), 1):
+            if _OBJECT_SELECT.search(line) and "string" not in line:
+                rel = os.path.relpath(path, os.path.dirname(APP_DIR))
+                violations.append(f"{rel}:{i}: {line.strip()}")
+    assert not violations, (
+        "object-only select_dtypes call(s) — use services.dtypes."
+        "text_columns(df):\n" + "\n".join(violations)
     )

@@ -15,6 +15,9 @@ from typing import Optional, List
 logger = logging.getLogger(__name__)
 
 
+from app.services.dtypes import text_columns
+
+
 @dataclass
 class LoadResult:
     df:             Optional[pd.DataFrame]
@@ -268,7 +271,7 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
     skip_keywords = ["id", "name", "code", "sku", "url", "link",
                      "image", "description", "address", "email", "phone"]
 
-    for col in df.select_dtypes(include="object").columns:
+    for col in text_columns(df):
         col_lower = col.lower()
 
         # Skip ID-like columns

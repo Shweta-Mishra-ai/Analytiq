@@ -133,8 +133,9 @@ def test_repeated_identity_keys_are_reported_not_silently_kept():
         "amount": rng.normal(100, 20, n).round(2),
         "region": rng.choice(["N", "S"], n),
     })
-    note = _describe_key_duplicates(df)
+    key_col, note = _describe_key_duplicates(df)
     assert note, "repeated identity keys were not detected"
+    assert key_col == "customer_id"
     assert "customer_id" in note
     _cleaned, report = auto_clean(df)
     assert report.key_duplicate_note
@@ -147,7 +148,7 @@ def test_unique_keys_produce_no_false_alarm():
         "order_id": range(n),
         "value": rng.normal(50, 5, n),
     })
-    assert _describe_key_duplicates(df) == ""
+    assert _describe_key_duplicates(df) == ("", "")
 
 
 def test_cleaning_never_silently_loses_rows():

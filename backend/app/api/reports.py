@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.config import config
+from app.engines.data_cleaner import table_name_from_filename
 from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.serialize import to_jsonable
@@ -167,6 +168,11 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
         "confidential": req.confidential,
         "theme_name": theme_name,
         "logo_path": None,
+        # Names the table the Data Preparation SQL is written against, so a
+        # reader recognises their own warehouse object rather than a
+        # placeholder.
+        "source_table": table_name_from_filename(
+            getattr(store.get_meta(owner, ds_id), "filename", "")),
     }
     try:
         pdf_bytes = build_pdf(

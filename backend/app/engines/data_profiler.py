@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 #  DATA CLASSES
 # ══════════════════════════════════════════════════════════
 
+from app.services.dtypes import text_columns
+
+
 @dataclass
 class ColumnProfile:
     name:             str
@@ -496,7 +499,7 @@ def profile_dataset(df: pd.DataFrame) -> DatasetProfile:
 
     # ── Dataset-level stats ────────────────────────────────
     numeric_cols     = df.select_dtypes(include="number").columns.tolist()
-    categorical_cols = df.select_dtypes(include="object").columns.tolist()
+    categorical_cols = text_columns(df)
     datetime_cols    = df.select_dtypes(include="datetime").columns.tolist()
 
     total_cells   = df.shape[0] * df.shape[1]

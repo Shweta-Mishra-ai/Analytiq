@@ -15,6 +15,9 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+from app.services.dtypes import text_columns
+
+
 @dataclass
 class Insight:
     severity: str          # critical | high | warning | info
@@ -62,7 +65,7 @@ def build_top_insights(
     # ── 2. Build from scratch using df + existing objects ────────────────────
 
     num_cols = df.select_dtypes(include="number").columns.tolist()
-    cat_cols = df.select_dtypes(include="object").columns.tolist()
+    cat_cols = text_columns(df)
 
     # ── Attrition insight (HR) ────────────────────────────────────────────────
     if attrition and getattr(attrition, "rate", 0) > 0:

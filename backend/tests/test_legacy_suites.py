@@ -23,17 +23,25 @@ import pytest
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _run_suite(module: str) -> None:
-    # DATA_DIR is deliberately dropped here even though conftest.py sets
-    # it (via os.environ.setdefault, for the in-process `client` fixture):
-    # subprocess.run() inherits the parent's environment, and each legacy
-    # suite also does `os.environ.setdefault("DATA_DIR", ...)` with its
-    # own distinct path for isolation. If conftest.py's value is inherited,
-    # every suite's setdefault becomes a no-op and they all end up sharing
-    # one DATA_DIR — e.g. multi_tenant_test's persisted admin/client
-    # accounts then leak into data_integrity_test's run, flipping it out
-    # of open dev mode and turning its upload call into a 401.
+def _run_suite(module: str, tmp_path) -> None:
+    # Each suite must get a DATA_DIR of its own, and a fresh one per run.
+    #
+    # Two ways to get this wrong, both of which have bitten:
+    #   - inheriting conftest.py's DATA_DIR makes every suite's own
+    #     os.environ.setdefault() a no-op, so they share one directory and
+    #     multi_tenant_test's persisted admin/client accounts leak into
+    #     data_integrity_test, flipping it out of open dev mode and turning
+    #     its upload into a 401;
+    #   - dropping DATA_DIR entirely lets each suite fall back to its own
+    #     hard-coded /tmp path, which survives the run. The second
+    #     invocation then finds tenant_a and tenant_b already registered
+    #     and fails on "admin creates tenant_b" — green on a clean CI
+    #     runner, red on any developer's second `pytest`.
+    #
+    # A per-suite tmp_path satisfies both: distinct between suites, and
+    # discarded by pytest afterwards.
     env = {k: v for k, v in os.environ.items() if k != "DATA_DIR"}
+    env["DATA_DIR"] = str(tmp_path / module)
     result = subprocess.run(
         [sys.executable, "-m", f"tests.{module}"],
         cwd=BACKEND_DIR, capture_output=True, text=True, timeout=300, env=env,
@@ -44,21 +52,21 @@ def _run_suite(module: str) -> None:
     )
 
 
-def test_smoke_suite():
-    _run_suite("smoke_test")
+def test_smoke_suite(tmp_path):
+    _run_suite("smoke_test", tmp_path)
 
 
-def test_multi_tenant_suite():
-    _run_suite("multi_tenant_test")
+def test_multi_tenant_suite(tmp_path):
+    _run_suite("multi_tenant_test", tmp_path)
 
 
-def test_data_integrity_suite():
-    _run_suite("data_integrity_test")
+def test_data_integrity_suite(tmp_path):
+    _run_suite("data_integrity_test", tmp_path)
 
 
 @pytest.mark.skipif(
     not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
     reason="ffmpeg/ffprobe not on PATH",
 )
-def test_video_frames_suite():
-    _run_suite("video_frames_test")
+def test_video_frames_suite(tmp_path):
+    _run_suite("video_frames_test", tmp_path)

@@ -49,6 +49,18 @@ def is_text_dtype(obj) -> bool:
         return False
 
 
+def text_columns(df) -> list:
+    """The text-like column names of a frame, in order.
+
+    Replaces ``df.select_dtypes(include="object")``. That call still finds
+    pandas 3's ``str`` columns, but only through a deprecation shim that
+    warns and is scheduled for removal — at which point every categorical
+    breakdown in the app would quietly return an empty list and the
+    reports would lose their segment analysis without erroring.
+    """
+    return [c for c in df.columns if is_text_dtype(df[c])]
+
+
 def month_end_rule() -> str:
     """The resample alias for month-end, valid on this pandas version.
 

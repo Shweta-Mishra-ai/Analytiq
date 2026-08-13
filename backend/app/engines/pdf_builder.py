@@ -40,7 +40,7 @@ from reportlab.platypus import (
     Image, HRFlowable, PageBreak, KeepTogether,
 )
 from reportlab.pdfgen import canvas as CV
-from app.services.dtypes import is_text_dtype
+from app.services.dtypes import is_text_dtype, text_columns
 
 logger = logging.getLogger(__name__)
 
@@ -690,7 +690,7 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
         {"label": "COLUMNS",       "value": str(df.shape[1]),
          "sub": "{} num · {} cat".format(
              len(df.select_dtypes(include="number").columns),
-             len(df.select_dtypes(include="object").columns)),
+             len(text_columns(df))),
          "color": T["accent"]},
         {"label": "MISSING DATA",  "value": "{:.1f}%".format(miss_pct),
          "sub": "0% = perfect",
@@ -707,6 +707,143 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
         for rec in recs[:6]:
             sty = "bl"
             story.append(Paragraph("• " + str(rec), s[sty]))
+
+
+# ══════════════════════════════════════════════════════════
+#  DATA PREPARATION  (what was changed, and the SQL for it)
+# ══════════════════════════════════════════════════════════
+
+def _data_prep_section(story, s, T, cleaning_summary, CW, table="source_table"):
+    """Every transformation applied before analysis, with its SQL.
+
+    A reader who cannot see what was changed between the file they sent
+    and the numbers they are reading has to take the whole report on
+    trust. Listing each step — and the statement that reproduces it in
+    their own warehouse — is what makes the rest checkable.
+    """
+    if not cleaning_summary:
+        return
+    actions = cleaning_summary.get("actions")
+    if not actions:
+        # Older cached summaries carry only the display groups. Flattening
+        # them loses execution order, so the SQL block is suppressed rather
+        # than printed in an order that would not reproduce the table.
+        groups = cleaning_summary.get("groups") or {}
+        actions = [a for g in groups.values() for a in g]
+        ordered = False
+    else:
+        ordered = True
+    if not actions:
+        return
+
+    _sec(story, s, T, "Data Preparation",
+         "Every change made to the source data before any figure was computed")
+
+    story.append(Paragraph(
+        "The source file contained {:,} rows across {} columns. After the "
+        "steps below, {:,} rows and {} columns were carried into the "
+        "analysis. Nothing else was altered.".format(
+            cleaning_summary.get("original_rows", 0),
+            cleaning_summary.get("original_cols", 0),
+            cleaning_summary.get("cleaned_rows", 0),
+            cleaning_summary.get("cleaned_cols", 0)),
+        s["body"]))
+    story.append(Spacer(1, 2*mm))
+
+    rows = []
+    for a in actions[:18]:
+        rows.append([
+            getattr(a, "column", ""),
+            getattr(a, "issue", ""),
+            getattr(a, "action", ""),
+            "{:,}".format(getattr(a, "rows_affected", 0) or 0),
+        ])
+    _gtable(story, T, ["Column", "Observed", "Treatment", "Rows"],
+            rows, [CW*x for x in [0.18, 0.30, 0.42, 0.10]])
+    if len(actions) > 18:
+        story.append(Paragraph(
+            "{} further steps of the same kinds are listed in the "
+            "accompanying SQL script.".format(len(actions) - 18), s["note"]))
+
+    # ── The same steps as SQL ──────────────────────────────
+    sql_actions = [a for a in actions if getattr(a, "sql", "")] if ordered else []
+    if not sql_actions:
+        return
+    story.append(Spacer(1, 3*mm))
+    story.append(Paragraph("Equivalent SQL", s["h3"]))
+    story.append(Paragraph(
+        "The analysis itself was performed in pandas. These statements "
+        "express the same treatment against <b>{}</b> so your data team can "
+        "verify each step, or apply it upstream and stop the issue "
+        "recurring. Order matters: deduplicating after imputing does not "
+        "give the same table. None of it has been executed.".format(table),
+        s["body"]))
+    story.append(Spacer(1, 1.5*mm))
+
+    mono = ParagraphStyle(
+        "sqlmono", fontName="Courier", fontSize=7.2, leading=9.6,
+        textColor=_c(T["text"]), leftIndent=4, spaceAfter=0)
+    lines = []
+    for a in sql_actions[:14]:
+        stmt = a.sql.replace("{table}", '"{}"'.format(table))
+        for raw in stmt.splitlines():
+            lines.extend(_wrap_sql_line(raw))
+        lines.append("")
+    block = [[Paragraph(_sql_escape(ln) or "&nbsp;", mono)] for ln in lines[:70]]
+    tbl = Table(block, colWidths=[CW])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",   (0,0), (-1,-1), _c(T["bg_light"])),
+        ("BOX",          (0,0), (-1,-1), 0.5, _c(T["border"])),
+        ("LEFTPADDING",  (0,0), (-1,-1), 6),
+        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING",   (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
+    ]))
+    story.append(tbl)
+    if len(lines) > 70:
+        story.append(Paragraph(
+            "Truncated for length — the full script is available from the "
+            "Data Quality screen.", s["note"]))
+
+
+_SQL_COLS = 96   # fits Courier 7.2pt across the content frame
+
+
+def _wrap_sql_line(line: str) -> list:
+    """Break one SQL line to the page width, at a space where possible.
+
+    A `GROUP BY` over thirty columns is a single line in the script. Left
+    to itself the Paragraph cannot break it (every space is
+    non-breaking), so it runs off the page and the reader loses the tail
+    of the statement without any sign that it happened. Continuations are
+    indented so the break is visibly a wrap, not a new statement.
+    """
+    line = line.rstrip()
+    if len(line) <= _SQL_COLS:
+        return [line]
+    indent = len(line) - len(line.lstrip())
+    out, rest = [], line
+    while len(rest) > _SQL_COLS:
+        cut = rest.rfind(" ", indent + 1, _SQL_COLS)
+        if cut <= indent:
+            cut = _SQL_COLS
+        out.append(rest[:cut].rstrip())
+        rest = " " * (indent + 4) + rest[cut:].lstrip()
+    out.append(rest)
+    return out
+
+
+def _sql_escape(text: str) -> str:
+    """Escape SQL for ReportLab's mini-HTML parser.
+
+    `WHERE "x" < 108 OR "x" > 877` is a legal comparison and an illegal
+    tag; unescaped, ReportLab swallows the rest of the line. Spaces become
+    non-breaking so indentation survives — the wrapping is done by
+    `_wrap_sql_line` beforehand, where the break points can be chosen.
+    """
+    return (str(text).replace("&", "&amp;")
+            .replace("<", "&lt;").replace(">", "&gt;")
+            .replace(" ", "&nbsp;") if text else "")
 
 
 # ══════════════════════════════════════════════════════════
@@ -871,7 +1008,7 @@ def _dataset_overview(story, s, T, df, profile, CW):
          "Column breakdown and statistical summary")
 
     num_cols = df.select_dtypes(include="number").columns.tolist()
-    cat_cols = df.select_dtypes(include="object").columns.tolist()
+    cat_cols = text_columns(df)
     dt_cols  = df.select_dtypes(include="datetime").columns.tolist()
 
     _gtable(story, T,
@@ -1335,6 +1472,8 @@ def build_pdf(
 
     _add_toc("Executive Summary")
     _add_toc("Data Quality & Transparency Note")
+    if cleaning_summary:
+        _add_toc("Data Preparation")
     if domain in ("hr", "ecommerce", "sales"):
         _add_toc("Industry Benchmark Context")
     _add_toc("Top Insights — Decision Summary")
@@ -1360,6 +1499,11 @@ def build_pdf(
 
     _dq_note(story, s, T, df, profile, CW)
     story.append(PageBreak())
+
+    if cleaning_summary:
+        _data_prep_section(story, s, T, cleaning_summary, CW,
+                           table=config.get("source_table") or "source_table")
+        story.append(PageBreak())
 
     if domain in ("hr", "ecommerce", "sales"):
         _benchmark_section(story, s, T, domain, CW, df=df)

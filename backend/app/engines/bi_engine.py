@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 #  DATA CLASSES
 # ══════════════════════════════════════════════════════════
 
+from app.services.dtypes import text_columns
+
+
 @dataclass
 class BenchmarkResult:
     column:          str
@@ -247,7 +250,7 @@ def analyze_root_cause(
             continue
 
     # Categorical features — compare distributions
-    cat_cols = [c for c in df.select_dtypes(include="object").columns
+    cat_cols = [c for c in text_columns(df)
                 if 2 <= df[c].nunique() <= 20]
     for col in cat_cols[:8]:
         try:
@@ -835,7 +838,7 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
         df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
 
     num_cols = df.select_dtypes(include="number").columns.tolist()
-    cat_cols = [c for c in df.select_dtypes(include="object").columns
+    cat_cols = [c for c in text_columns(df)
                 if 2 <= df[c].nunique() <= 25]
 
     report = BIReport()
