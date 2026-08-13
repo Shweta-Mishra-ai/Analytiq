@@ -159,3 +159,67 @@ def test_cleaning_never_silently_loses_rows():
     df = pd.concat([df, df.head(10)], ignore_index=True)   # 10 exact dupes
     cleaned, report = auto_clean(df)
     assert len(df) - len(cleaned) == report.duplicates_removed
+
+
+# ══════════════════════════════════════════════════════════
+#  Cleaning an already-cleaned frame
+# ══════════════════════════════════════════════════════════
+
+def test_cleaning_twice_does_not_crash():
+    """The Data Quality page runs auto-clean on the active dataset, which
+    the previous run already replaced. Second click returned a 500:
+    step 5d converts "Yes"/"no" to bool, pandas counts bool as numeric, and
+    np.quantile on a boolean array raises "numpy boolean subtract ... is
+    not supported"."""
+    rng = np.random.default_rng(80)
+    n = 200
+    df = pd.DataFrame({
+        "is_paid": rng.choice(["Yes", "no"], n),
+        "amount": rng.normal(500, 90, n).round(2),
+        "region": rng.choice(["N", "S", "E"], n),
+        "channel": rng.choice(["web", "store"], n),
+        "score": rng.uniform(0, 100, n).round(1),
+    })
+    once, first_report = auto_clean(df)
+    assert once["is_paid"].dtype == bool, "the fixture did not exercise the bool path"
+    twice, second_report = auto_clean(once)
+    assert len(twice) == len(once)
+    assert twice["is_paid"].dtype == bool
+
+
+def test_second_clean_is_a_no_op_on_stable_columns():
+    """Cleaning twice must converge — a pass that keeps finding work to do
+    on its own output is changing data for no reason."""
+    rng = np.random.default_rng(81)
+    n = 300
+    df = pd.DataFrame({
+        "flag": rng.choice(["yes", "no"], n),
+        "value": rng.normal(50, 8, n).round(2),
+        "grp": rng.choice(["a", "b", "c"], n),
+        "extra": rng.uniform(1, 9, n).round(3),
+        "label": rng.choice(["p", "q"], n),
+    })
+    once, _ = auto_clean(df)
+    twice, report2 = auto_clean(once)
+    assert once.shape == twice.shape
+    assert not [a for a in report2.actions if "filled" in a.action], \
+        "the second pass imputed values the first pass had already resolved"
+
+
+def test_boolean_column_with_gaps_is_not_median_filled():
+    """A median of 0.5 is not a value a boolean column can hold."""
+    rng = np.random.default_rng(82)
+    n = 200
+    flag = pd.Series(rng.choice([True, False], n)).astype("boolean")
+    flag[:20] = pd.NA
+    df = pd.DataFrame({
+        "flag": flag,
+        "value": rng.normal(10, 2, n).round(2),
+        "grp": rng.choice(["a", "b"], n),
+        "other": rng.uniform(0, 5, n).round(2),
+        "label": rng.choice(["x", "y"], n),
+    })
+    cleaned, report = auto_clean(df)
+    fills = [a for a in report.actions if a.column == "flag" and "median" in a.action]
+    assert not fills, "median-filled a boolean column: {}".format(
+        [a.action for a in fills])

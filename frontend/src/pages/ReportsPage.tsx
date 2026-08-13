@@ -109,7 +109,7 @@ export default function ReportsPage() {
     <div className="p-8">
       <PageHeader
         title="Reports"
-        subtitle="Senior-analyst PDF with AI narratives, plus clean data exports"
+        subtitle="Client-ready analysis PDF, plus clean data exports"
       />
       {error && (
         <div className="mb-4">
@@ -166,7 +166,8 @@ export default function ReportsPage() {
             </Btn>
             <p className="text-xs text-mute">
               Cover + TOC · executive summary · structured insight cards · industry
-              benchmarks · statistics · BI · charts with AI narratives · recommendations.
+              benchmarks · statistics · BI · annotated charts · data preparation with
+              SQL · recommendations.
             </p>
           </div>
         </Panel>

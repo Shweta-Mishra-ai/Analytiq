@@ -325,8 +325,11 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
                             "SELECT {c} IS NULL AS is_missing, COUNT(*)\n"
                             "FROM {{table}} GROUP BY 1;").format(c=_q(col)))
 
-        elif pd.api.types.is_numeric_dtype(s):
-            # Numeric → fill with median
+        elif (pd.api.types.is_numeric_dtype(s)
+                and not pd.api.types.is_bool_dtype(s)):
+            # Numeric → fill with median. Booleans are excluded: pandas
+            # counts them as numeric, and the median of a nullable boolean
+            # column can be 0.5 — a value the column cannot hold.
             median_val = s.median()
             df[col] = s.fillna(median_val)
             report.imputed_columns[col] = round(missing_pct, 1)
@@ -369,7 +372,15 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
                                 "WHERE {c} IS NULL;").format(c=_q(col)))
 
     # ── 5c. Numeric outlier flagging (NOT auto-removed) ────
-    if pd.api.types.is_numeric_dtype(df[col]) and col in df.columns:
+    # Booleans are numeric to pandas, and np.quantile on a boolean array
+    # raises "numpy boolean subtract ... is not supported". This is not
+    # hypothetical: step 5d below converts "Yes"/"no" columns to bool, so
+    # cleaning the same dataset twice — which the Data Quality page allows
+    # with one click — turned the second call into a 500. An outlier in a
+    # two-valued column is meaningless in any case.
+    if (pd.api.types.is_numeric_dtype(df[col])
+            and not pd.api.types.is_bool_dtype(df[col])
+            and col in df.columns):
         s2 = df[col].dropna()
         if len(s2) > 10:
             q1, q3 = s2.quantile(0.25), s2.quantile(0.75)
@@ -389,7 +400,9 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
                                     "-- Bounds are Q1 - 3*IQR and Q3 + 3*IQR.\n"
                                     "SELECT * FROM {{table}}\n"
                                     "WHERE {c} < {lo} OR {c} > {hi};").format(
-                                        c=_q(col), lo=_lit(float(lo)), hi=_lit(float(hi))))
+                                        c=_q(col),
+                                        lo=_lit(round(float(lo), 4)),
+                                        hi=_lit(round(float(hi), 4))))
 
     # ── 5d. Normalize boolean-like text columns ────────────
     if is_text_dtype(df[col]) and col in df.columns:

@@ -177,6 +177,20 @@ def test_median_fill_states_the_value_actually_used(messy_df):
         "the SQL fills a different value from the one pandas used"
 
 
+def test_outlier_bounds_are_not_printed_with_float_noise(messy_df):
+    """`WHERE "revenue" < 106.02249999999992` is binary representation
+    leaking into a client-facing script. Rounding to 4 decimal places
+    keeps the magnitude exact and cannot plausibly change which rows
+    match."""
+    _cleaned, report = auto_clean(messy_df)
+    flags = [a for a in report.actions if "outlier" in a.issue.lower()]
+    assert flags, "no outliers flagged"
+    for a in flags:
+        for number in re.findall(r"-?\d+\.(\d+)", a.sql):
+            assert len(number) <= 4, \
+                "float noise in the emitted bound: {!r}".format(a.sql)
+
+
 def test_categorical_fill_targets_only_nulls(messy_df):
     _cleaned, report = auto_clean(messy_df)
     fills = [a for a in report.actions
