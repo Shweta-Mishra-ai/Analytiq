@@ -547,6 +547,47 @@ def _insight_to_card(ins) -> Dict:
             "confidence": str(getattr(ins, "confidence", "") or "")}
 
 
+def build_report_payload(df: pd.DataFrame, niche: str,
+                          max_cards: int = 12) -> Dict:
+    """Everything the Health Report renders, in one call.
+
+    The domain engines produce four distinct kinds of output — insight
+    cards, key findings, risks and opportunities — and several analyses
+    contribute only to the latter three. Finance, for example, emits 6
+    findings, 2 risks and 2 opportunities alongside just 3 cards; the
+    cost-concentration and budget-variance analyses produce no card at
+    all. Rendering cards alone therefore threw most of the analysis away.
+
+    Returning all four (plus the executive summary and recommended
+    actions) is also what makes the output read like a consulting
+    deliverable rather than a list of alerts.
+    """
+    payload: Dict = {
+        "executive_summary": "",
+        "insights": [],
+        "key_findings": [],
+        "risks": [],
+        "opportunities": [],
+        "actions": [],
+    }
+
+    try:
+        from app.engines.story_engine import generate_story
+        story = generate_story(df)
+        payload["executive_summary"] = story.executive_summary or ""
+        payload["key_findings"] = list(story.key_findings or [])
+        payload["risks"] = list(story.business_risks or [])
+        payload["opportunities"] = list(story.opportunities or [])
+        payload["actions"] = list(story.recommended_actions or [])
+    except Exception:
+        logger.warning("story engine failed while building the health report "
+                       "payload — narrative sections will be empty",
+                       exc_info=True)
+
+    payload["insights"] = build_full_insights(df, niche, max_cards=max_cards)
+    return payload
+
+
 def build_full_insights(df: pd.DataFrame, niche: str, max_cards: int = 12) -> List[Dict]:
     """Every insight the Health Report should carry, best-first.
 

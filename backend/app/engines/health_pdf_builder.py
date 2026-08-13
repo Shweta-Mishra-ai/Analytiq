@@ -30,11 +30,43 @@ from app.engines.pdf_primitives import truncate_label, is_id_col
 
 logger = logging.getLogger(__name__)
 
+
+def _clean_text(text: object) -> str:
+    """Make engine-authored text safe and clean for a reportlab Paragraph.
+
+    Engine strings carry markdown emphasis (**bold**) that reportlab does
+    not understand and would render literally, and may contain &, < or >
+    from column names — which reportlab parses as markup and which would
+    otherwise raise or silently swallow the rest of the paragraph.
+    """
+    s = str(text or "")
+    s = s.replace("**", "").replace(" ", " ")
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return s.strip()
+
 def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                      insights: list, fname: str,
-                     agency_name: str = "Analytiq") -> bytes:
-    """Premium 5-page health + business insights PDF report."""
+                     agency_name: str = "Analytiq",
+                     executive_summary: str = "",
+                     key_findings: Optional[List[str]] = None,
+                     risks: Optional[List[str]] = None,
+                     opportunities: Optional[List[str]] = None,
+                     actions: Optional[List[str]] = None) -> bytes:
+    """Client-facing data health + business insights PDF report.
+
+    The narrative arguments are optional and default to empty, so existing
+    two-positional-argument callers keep working. When supplied they add
+    the Executive Summary / Key Findings / Risks / Opportunities /
+    Recommendations sections that make this read as a consulting
+    deliverable rather than a list of alerts — and they carry analysis the
+    insight cards alone drop (several domain analyses emit findings and
+    risks but no card).
+    """
     agency_name = (agency_name or "Analytiq")[:40]
+    key_findings  = list(key_findings or [])
+    risks         = list(risks or [])
+    opportunities = list(opportunities or [])
+    actions       = list(actions or [])
     import io as _io
     from reportlab.lib.colors import white, black
     from reportlab.lib.enums import TA_JUSTIFY
@@ -268,6 +300,48 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         ("INNERGRID",     (0,0),(-1,-1), 0.3, HexColor("#E5E7EB")),
     ]))
     story.append(sum_tbl)
+
+    # ══════════════════════════════════════════════════════
+    # EXECUTIVE SUMMARY + NARRATIVE SECTIONS
+    # ══════════════════════════════════════════════════════
+    # Skipped entirely when no narrative was supplied, so the report never
+    # shows an empty heading.
+    if executive_summary or key_findings or risks or opportunities:
+        story.append(PageBreak())
+        story.append(Paragraph("Executive Summary", ST["h1"]))
+        story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=6))
+
+        if executive_summary:
+            story.append(Paragraph(_clean_text(executive_summary), ST["body"]))
+            story.append(Spacer(1, 5 * mm))
+
+        def _bullet_section(heading: str, items: list, bullet_hex: str,
+                            max_items: int = 8) -> None:
+            if not items:
+                return
+            story.append(Paragraph(heading, ST["h2"]))
+            rows = []
+            for item in items[:max_items]:
+                marker = Paragraph(
+                    '<font color="{}">■</font>'.format(bullet_hex),
+                    ParagraphStyle("bm", fontName=_BF, fontSize=7.5, leading=13))
+                text = Paragraph(_clean_text(item),
+                                 ParagraphStyle("bt", fontName=_BF, fontSize=9.5,
+                                                textColor=dark, leading=14))
+                rows.append([marker, text])
+            tbl = Table(rows, colWidths=[6 * mm, CW - 6 * mm])
+            tbl.setStyle(TableStyle([
+                ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+                ("TOPPADDING",    (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+            ]))
+            story.append(tbl)
+            story.append(Spacer(1, 4 * mm))
+
+        _bullet_section("Key Findings", key_findings, "#2563EB")
+        _bullet_section("Risks Identified", risks, "#DC2626")
+        _bullet_section("Opportunities", opportunities, "#059669")
 
     # ══════════════════════════════════════════════════════
     # PAGE 2: BUSINESS INSIGHTS
@@ -592,6 +666,42 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                         "is required to find drivers.", ST["body"]))
         except Exception:
             logger.warning("Health Report section failure", exc_info=True)
+
+    # ══════════════════════════════════════════════════════
+    # RECOMMENDED ACTIONS
+    # ══════════════════════════════════════════════════════
+    # Closing a client report on what to DO — not on a correlation table —
+    # is what separates a deliverable from a data dump.
+    if actions:
+        story.append(PageBreak())
+        story.append(Paragraph("Recommended Actions", ST["h1"]))
+        story.append(Paragraph(
+            "Prioritised from the findings above. Sequence reflects urgency "
+            "and expected impact, not effort.", ST["body"]))
+        story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=6))
+
+        rows = []
+        for idx, act in enumerate(actions[:10], 1):
+            num = Paragraph(
+                '<font color="{}"><b>{}</b></font>'.format(accent_hex, idx),
+                ParagraphStyle("an", fontName=_BB, fontSize=11,
+                               alignment=TA_CENTER, leading=15))
+            body = Paragraph(_clean_text(act),
+                             ParagraphStyle("ab", fontName=_BF, fontSize=9.5,
+                                            textColor=dark, leading=14.5))
+            rows.append([num, body])
+
+        act_tbl = Table(rows, colWidths=[10 * mm, CW - 10 * mm])
+        act_tbl.setStyle(TableStyle([
+            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING",    (0, 0), (-1, -1), 7),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 2),
+            ("LINEBELOW",     (0, 0), (-1, -2), 0.4, HexColor("#E5E7EB")),
+            ("BACKGROUND",    (0, 0), (-1, -1), light2),
+            ("BOX",           (0, 0), (-1, -1), 0.5, HexColor("#E5E7EB")),
+        ]))
+        story.append(act_tbl)
 
     # ── Disclaimer ────────────────────────────────────────
     story.append(Spacer(1, 8*mm))

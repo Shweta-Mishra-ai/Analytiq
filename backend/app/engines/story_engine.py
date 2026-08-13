@@ -116,6 +116,210 @@ def _detect_anomalies(df: pd.DataFrame, stats: Dict) -> List[str]:
 
 
 # ══════════════════════════════════════════════════════════
+#  EXECUTIVE NARRATIVE
+# ══════════════════════════════════════════════════════════
+# Ported from dataforge-ai. Synthesises one headline claim and
+# supporting sentences that connect back to it, instead of the
+# template sentence this module used to emit
+# ("This N-row X dataset analysis identified N critical issue(s)…"),
+# which read as filler in a client-facing report.
+
+def _is_tautological_pair(a: str, b: str) -> bool:
+    """
+    True when a correlation is mechanically obvious and therefore worthless as
+    a headline: senior people earn more (level~pay), tenure metrics track each
+    other (years~years), prices move together (price~mrp). Leading a report
+    with 'JobLevel and MonthlyIncome correlate' reads as AI padding.
+    """
+    a, b = a.lower(), b.lower()
+    tenure = ("year", "tenure", "month", "duration", "since", "age", "experience")
+    level  = ("level", "grade", "band", "seniority", "rank")
+    pay    = ("income", "salary", "pay", "wage", "compensation", "rate", "ctc")
+    price  = ("price", "mrp", "cost", "amount", "value", "revenue")
+
+    def has(s, kws):
+        return any(k in s for k in kws)
+
+    # Both tenure/duration-like
+    if has(a, tenure) and has(b, tenure):
+        return True
+    # One is a level, the other is pay (or vice versa)
+    if (has(a, level) and has(b, pay)) or (has(a, pay) and has(b, level)):
+        return True
+    # Both money/price-like
+    if has(a, price) and has(b, price):
+        return True
+    # Both are counts of the same thing
+    if ("count" in a and "count" in b) or ("total" in a and "total" in b):
+        return True
+    return False
+
+
+def _first_meaningful_corr(corrs: List[Dict]) -> Optional[Dict]:
+    """Strongest correlation that is NOT a tautology.
+
+    A near-perfect |r| (>= 0.99) is excluded regardless of column names: it
+    means the two columns are the same measurement stored twice (a
+    duplicated export column, an "actual" copied from "revenue", a unit
+    conversion). Reporting that as a discovered relationship is worse than
+    saying nothing — it tells a paying client something they already know
+    and signals the analysis is mechanical.
+    """
+    for c in corrs:
+        r = c.get("r")
+        if r is not None and abs(float(r)) >= 0.99:
+            logger.debug("skipping near-perfect correlation %s~%s (r=%.4f) — "
+                         "almost certainly a duplicated column",
+                         c.get("col_a"), c.get("col_b"), float(r))
+            continue
+        if c.get("strength") == "strong" and not _is_tautological_pair(c["col_a"], c["col_b"]):
+            return c
+    return None
+
+
+def _build_narrative_summary(
+    df: pd.DataFrame, domain: str, confidence: float,
+    deduped: List[Insight], corrs: List[Dict],
+    attrition: Optional[AttritionAnalysis], raw: Dict,
+) -> str:
+    """
+    Synthesises a single headline narrative claim instead of listing facts.
+    Priority order for the headline: attrition signal > critical insight >
+    strongest correlation > data quality. Supporting sentences follow,
+    each connecting back to the headline rather than standing alone.
+    """
+    n_crit = sum(1 for i in deduped if i.severity == "critical")
+    n_warn = sum(1 for i in deduped if i.severity == "warning")
+    miss   = round(df.isna().mean().mean() * 100, 1)
+    n_rows = len(df)
+
+    # ── HEADLINE: pick the single most important claim ─────────────────────
+    headline = None
+
+    if attrition is not None and attrition.severity in ("critical", "high"):
+        cohort_note = ""
+        if attrition.top_drivers:
+            d = attrition.top_drivers[0]
+            cohort_note = f", concentrated among {d.get('label', 'a specific cohort')}"
+        headline = (
+            f"The {attrition.rate:.1f}% attrition rate ({attrition.n_left:,} of "
+            f"{attrition.n_total:,} employees){cohort_note} is the dominant signal "
+            f"in this dataset and warrants immediate retention review."
+        )
+    elif n_crit > 0:
+        top_critical = next((i for i in deduped if i.severity == "critical"), None)
+        if top_critical:
+            headline = (
+                f"{top_critical.problem} This is the most urgent finding in the "
+                f"dataset — {n_crit} critical issue{'s' if n_crit > 1 else ''} total."
+            )
+
+    # A real business finding (even 'warning' severity) leads over a correlation.
+    if headline is None:
+        top_business = next(
+            (i for i in deduped
+             if i.severity in ("high", "warning")
+             and i.category not in ("correlation", "data_quality")),
+            None,
+        )
+        if attrition is not None and attrition.rate > 0:
+            headline = (
+                f"Attrition stands at {attrition.rate:.1f}% ({attrition.n_left:,} of "
+                f"{attrition.n_total:,}), the headline signal in this dataset; "
+                f"the sections below break it down by segment and driver."
+            )
+        elif top_business is not None:
+            headline = (
+                f"{top_business.problem} This is the most material finding in the "
+                f"dataset and is detailed, with evidence, in the sections below."
+            )
+
+    # Only fall back to a correlation if it is NOT a mechanical tautology.
+    if headline is None:
+        mc = _first_meaningful_corr(corrs)
+        if mc is not None:
+            headline = (
+                f"'{mc['col_a']}' and '{mc['col_b']}' show a strong "
+                f"{mc['direction']} relationship (Spearman r={mc['r']:+.2f}), "
+                f"explaining {mc['r']**2*100:.0f}% of shared variance — the clearest "
+                f"non-trivial structural pattern in this dataset."
+            )
+
+    if headline is None and miss > 15:
+        headline = (
+            f"Data completeness is the primary concern: {miss:.1f}% of values "
+            f"are missing across {n_rows:,} records, which will materially affect "
+            f"any downstream analysis or modelling."
+        )
+    if headline is None:
+        # Only claim a domain when detection is confident. Printing
+        # "HR domain (detection confidence: 7%)" in a client PDF both
+        # mislabels the data and advertises the uncertainty.
+        domain_phrase = (
+            f"in the {domain.upper()} domain " if confidence >= 0.4 else ""
+        )
+        headline = (
+            f"Analysis of {n_rows:,} records across {len(df.columns)} variables "
+            f"{domain_phrase}did not surface a single dominant risk — findings "
+            f"below are of comparable priority."
+        )
+
+    # ── SUPPORTING sentences — connect to headline, don't repeat it ────────
+    support = []
+
+    # Don't repeat attrition if the headline already covers it.
+    if attrition is not None and headline and "attrition" not in headline.lower()[:80]:
+        support.append(
+            f"Separately, attrition stands at {attrition.rate:.1f}% "
+            f"({attrition.severity} severity)."
+        )
+
+    if n_warn > 0:
+        support.append(
+            f"{n_warn} additional warning{'s' if n_warn > 1 else ''} "
+            f"{'requires' if n_warn == 1 else 'require'} review but "
+            f"{'is' if n_warn == 1 else 'are'} not urgent."
+        )
+
+    if miss > 0 and miss <= 15:
+        support.append(f"Data completeness is acceptable ({100-miss:.1f}% complete).")
+    elif miss == 0:
+        support.append("Data is fully complete with no missing values.")
+
+    if "Spearman r=" not in (headline or ""):
+        # First correlation that is real (not NaN from a constant column) and
+        # not a mechanical tautology — otherwise the summary prints
+        # "'Age' vs 'EmployeeCount' (r=+nan)" which looks broken.
+        import math
+        # Same exclusions as _first_meaningful_corr: skip NaN, tautological
+        # pairs, and near-perfect |r| (a duplicated column stored twice).
+        # This branch previously applied only the tautology check, so an
+        # exact-duplicate column still reached the summary as
+        # "Notable relationship: 'revenue' vs 'actual' (r=+1.00)".
+        top = next(
+            (c for c in corrs
+             if c.get("r") is not None and not math.isnan(c["r"])
+             and abs(float(c["r"])) < 0.99
+             and not _is_tautological_pair(c["col_a"], c["col_b"])),
+            None,
+        )
+        if top is not None and abs(top["r"]) >= 0.25:
+            support.append(
+                f"Notable relationship: '{top['col_a']}' vs '{top['col_b']}' "
+                f"(r={top['r']:+.2f}, {top['strength']})."
+            )
+
+    n_actions = len(raw.get("actions", []))
+    if n_actions:
+        support.append(
+            f"{n_actions} recommendation{'s' if n_actions > 1 else ''} "
+            f"{'follows' if n_actions == 1 else 'follow'} below."
+        )
+
+    return headline + (" " + " ".join(support) if support else "")
+
+
+# ══════════════════════════════════════════════════════════
 #  MAIN
 # ══════════════════════════════════════════════════════════
 
@@ -216,16 +420,27 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
         "CRITICAL" if i<2 else "SHORT TERM" if i<4 else "LONG TERM", a)
         for i, a in enumerate(raw["actions"][:8])]
 
-    # Executive summary
+    # Executive summary — a synthesised narrative that leads with the single
+    # most important claim, not a count of how many issues were found. The
+    # old template ("This N-row X dataset analysis identified N critical
+    # issue(s) and N risk(s)…") said nothing a reader couldn't see from the
+    # section headings, and reads as filler at the top of a paid report.
     n_crit = len(critical)
-    exec_s = "This {:,}-row {} dataset analysis identified {} critical issue(s) and {} risk(s). ".format(
-        len(df), domain, n_crit, len(risks_flat))
-    if attrition:
-        exec_s += "Attrition: {:.1f}% ({} severity). ".format(
-            attrition.rate, attrition.severity.upper())
-    if deduped:
-        exec_s += "Priority: {}. ".format(deduped[0].title)
-    exec_s += "{} actionable recommendations provided.".format(len(actions_flat))
+    try:
+        exec_s = _build_narrative_summary(
+            df=df, domain=domain, confidence=confidence,
+            deduped=deduped, corrs=corrs, attrition=attrition, raw=raw)
+    except Exception:
+        logger.warning("narrative summary failed — falling back to a factual "
+                       "summary line", exc_info=True)
+        exec_s = ""
+    if not exec_s:
+        parts = ["{:,} rows × {} columns analysed.".format(len(df), len(df.columns))]
+        if deduped:
+            parts.append("Most material finding: {}.".format(deduped[0].title))
+        if attrition:
+            parts.append("Attrition: {:.1f}%.".format(attrition.rate))
+        exec_s = " ".join(parts)
 
     headline = ("CRITICAL: " + critical[0].title) if critical else (
         deduped[0].title if deduped else "Analysis complete")
