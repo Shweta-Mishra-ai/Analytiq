@@ -11,6 +11,7 @@ import pandas as pd
 
 from app.engines.domains.base import (Insight, build_insight, col_stats,
                                infer_scale_bounds)
+from app.engines.domains.customer_analytics import run_customer_analytics
 from app.engines.industry_benchmarks import lookup_benchmark
 
 logger = logging.getLogger(__name__)
@@ -386,6 +387,9 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
 
     # ── Repeat Purchase Rate (derived from customer identifier) ─
     _repeat_purchase_insights(df, insights, findings, risks, opps)
+
+    # ── Customer-level analysis: cohorts, RFM, concentration ───
+    run_customer_analytics(df, insights, findings, risks, opps)
 
     return {"findings":findings, "risks":risks, "opportunities":opps,
             "actions":actions, "insights":insights}

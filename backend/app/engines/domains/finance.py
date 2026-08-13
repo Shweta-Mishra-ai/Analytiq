@@ -9,7 +9,10 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
+from scipy import stats as scipy_stats
+
 from app.engines.domains.base import Insight, build_insight, col_stats
+from app.services.stat_guards import MIN_N
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +315,366 @@ def _finance_revenue_concentration(df, cols, stats, insights, findings, risks, o
             logger.warning("Cost growth analysis failed", exc_info=True)
 
 
+# ══════════════════════════════════════════════════════════
+#  COST STRUCTURE AND BREAK-EVEN
+# ══════════════════════════════════════════════════════════
+
+def _finance_cost_structure(df, cols, stats, insights, findings, risks, opps) -> None:
+    """Split cost into its fixed and variable parts, and derive break-even.
+
+    Regressing total cost on revenue is the standard way to recover a cost
+    structure from a P&L extract: the intercept estimates cost that does
+    not move with trading, the slope estimates cost per unit of revenue.
+    Break-even revenue follows as fixed / (1 - variable rate).
+
+    The estimate is only reported when the line actually describes the
+    data. A high-intercept fit through a scattered cloud produces a
+    confident-looking break-even figure that is pure arithmetic on noise,
+    which is exactly the sort of number that discredits a report when the
+    client tests it against their own management accounts.
+    """
+    rev_col, cost_col = cols["rev"], cols["cost"]
+    if not (rev_col and cost_col) or rev_col == cost_col:
+        return
+    try:
+        pair = df[[rev_col, cost_col]].dropna()
+        pair = pair[(pair[rev_col] > 0) & (pair[cost_col] >= 0)]
+        n = len(pair)
+        if n < MIN_N:
+            return
+
+        x = pair[rev_col].astype(float).to_numpy()
+        y = pair[cost_col].astype(float).to_numpy()
+        if x.std() == 0 or y.std() == 0:
+            return
+
+        fit = scipy_stats.linregress(x, y)
+        r2 = float(fit.rvalue ** 2)
+        slope = float(fit.slope)
+        intercept = float(fit.intercept)
+
+        # A cost structure needs a line that fits, a variable rate between
+        # 0 and 1 (cost rising with revenue but not faster than it), and a
+        # non-negative fixed component. Outside that, the model does not
+        # describe a cost structure and no break-even is derivable.
+        if r2 < 0.50 or fit.pvalue >= 0.05 or not (0 < slope < 1) or intercept <= 0:
+            return
+
+        contribution_margin = 1.0 - slope
+        breakeven = intercept / contribution_margin
+        # Per-period fixed cost, so the figure is comparable to the revenue
+        # a period actually produces rather than to the whole extract.
+        mean_rev = float(x.mean())
+        headroom = (mean_rev - breakeven) / breakeven * 100 if breakeven > 0 else 0.0
+
+        findings.append(
+            f"Cost structure: {slope * 100:.0f}% of every unit of revenue is "
+            f"consumed by variable cost, leaving a {contribution_margin * 100:.0f}% "
+            f"contribution margin against {intercept:,.0f} of fixed cost per "
+            f"record (R²={r2:.2f}, n={n})"
+        )
+        findings.append(
+            f"Break-even revenue: {breakeven:,.0f} per record — current mean is "
+            f"{mean_rev:,.0f} ({headroom:+.0f}% against break-even)"
+        )
+
+        if headroom < 15:
+            sev = "critical" if headroom < 0 else "high"
+            risks.append(
+                f"Mean revenue per record sits {headroom:+.0f}% against an estimated "
+                f"break-even of {breakeven:,.0f}. At a {contribution_margin * 100:.0f}% "
+                f"contribution margin, a {abs(headroom) + 5:.0f}% revenue fall would "
+                "take the average record below cost."
+            )
+            insights.append(build_insight(
+                title=f"Break-even at {breakeven:,.0f} vs {mean_rev:,.0f} mean revenue",
+                problem=f"Average revenue per record is {headroom:+.0f}% against the "
+                        f"break-even implied by the fitted cost structure.",
+                cause=f"{slope * 100:.0f}% of revenue is absorbed by variable cost and "
+                      f"{intercept:,.0f} of cost per record does not move with trading. "
+                      "Which specific costs are genuinely fixed is not identifiable from "
+                      "this data — the split is inferred from how cost moves with revenue, "
+                      "not from a cost classification.",
+                evidence=f"OLS of {cost_col} on {rev_col}: slope={slope:.3f}, "
+                         f"intercept={intercept:,.0f}, R²={r2:.2f}, p={fit.pvalue:.2g}, n={n}",
+                action=f"1. Reconcile the {intercept:,.0f} fixed estimate against the actual "
+                       f"fixed-cost line items  2. Test the {contribution_margin * 100:.0f}% "
+                       "contribution margin on a known period  3. Set a revenue floor alert "
+                       f"at {breakeven * 1.15:,.0f}",
+                impact=f"Every unit of revenue above break-even contributes "
+                       f"{contribution_margin * 100:.0f}% to profit; every unit below it "
+                       "costs the same rate.",
+                severity=sev, category="finance_structure",
+            ))
+        else:
+            opps.append(
+                f"Operating leverage: with a {contribution_margin * 100:.0f}% contribution "
+                f"margin and break-even at {breakeven:,.0f}, each additional 10% of revenue "
+                f"above break-even adds roughly {mean_rev * 0.10 * contribution_margin:,.0f} "
+                "per record to profit — provided fixed cost holds."
+            )
+    except Exception:
+        logger.warning("Cost structure analysis failed", exc_info=True)
+
+
+# ══════════════════════════════════════════════════════════
+#  MARGIN STABILITY
+# ══════════════════════════════════════════════════════════
+
+def _period_label(value) -> str:
+    """A period as a reader would write it.
+
+    `str()` on a Timestamp gives "2023-07-01 00:00:00", and a midnight
+    time nobody supplied reads as machine output in a client report.
+    """
+    if isinstance(value, pd.Timestamp):
+        if value.hour or value.minute or value.second:
+            return value.strftime("%d %b %Y %H:%M")
+        return value.strftime("%d %b %Y")
+    return str(value)
+
+
+def _finance_margin_volatility(df, cols, stats, insights, findings, risks, opps) -> None:
+    """How much the margin moves between periods.
+
+    A 22% average margin built from periods of 40% and 4% is a different
+    business from a steady 22%, and only the second can be planned
+    against. The average alone hides that completely.
+    """
+    rev_col, cost_col, period_col = cols["rev"], cols["cost"], cols["period"]
+    if not (rev_col and cost_col and period_col):
+        return
+    try:
+        grouped = df.groupby(period_col)[[rev_col, cost_col]].sum()
+        grouped = grouped[grouped[rev_col] > 0]
+        if len(grouped) < 6:      # fewer periods than this cannot show a pattern
+            return
+
+        margin = ((grouped[rev_col] - grouped[cost_col]) / grouped[rev_col] * 100)
+        margin = margin.replace([np.inf, -np.inf], np.nan).dropna()
+        if len(margin) < 6:
+            return
+
+        mean_m = float(margin.mean())
+        sd_m = float(margin.std(ddof=1))
+        if abs(mean_m) < 1e-9:
+            return
+        cv = abs(sd_m / mean_m)
+        lo, hi = float(margin.min()), float(margin.max())
+        worst_period = _period_label(margin.idxmin())
+
+        findings.append(
+            f"Margin averages {mean_m:.1f}% across {len(margin)} periods but ranges "
+            f"{lo:.1f}% to {hi:.1f}% (SD {sd_m:.1f}pp, CV {cv:.2f})"
+        )
+
+        # A coefficient of variation above 0.30 means the period-to-period
+        # swing is comparable to the margin itself.
+        if cv > 0.30:
+            risks.append(
+                f"Margin varies by {sd_m:.1f} percentage points between periods "
+                f"(CV {cv:.2f}); the {mean_m:.1f}% average is not a number to plan "
+                f"against. Weakest period: {worst_period} at {lo:.1f}%."
+            )
+            insights.append(build_insight(
+                title=f"Margin swings {lo:.1f}%–{hi:.1f}% across {len(margin)} periods",
+                problem=f"The {mean_m:.1f}% average margin is drawn from periods ranging "
+                        f"{lo:.1f}% to {hi:.1f}%.",
+                cause="Period-to-period variation of this size usually traces to mix, "
+                      "one-off costs or seasonality. Which of these applies is not "
+                      "established by this data — it needs the period-level detail behind "
+                      f"{worst_period}.",
+                evidence=f"n={len(margin)} periods, mean {mean_m:.1f}%, SD {sd_m:.1f}pp, "
+                         f"CV {cv:.2f}, range {lo:.1f}%–{hi:.1f}%",
+                action=f"1. Open {worst_period} line by line against the strongest period  "
+                       "2. Separate one-off from recurring items  3. Plan on the lower "
+                       f"quartile ({float(margin.quantile(0.25)):.1f}%), not the mean",
+                impact="Planning on an average margin this unstable systematically "
+                       "overstates cash in the weak periods.",
+                severity="high" if cv > 0.50 else "warning",
+                category="finance_margin_stability",
+            ))
+        else:
+            opps.append(
+                f"Margin is stable at {mean_m:.1f}% (SD {sd_m:.1f}pp across "
+                f"{len(margin)} periods), so it can be used as a planning assumption."
+            )
+    except Exception:
+        logger.warning("Margin volatility analysis failed", exc_info=True)
+
+
+# ══════════════════════════════════════════════════════════
+#  LOSS-MAKING SEGMENTS
+# ══════════════════════════════════════════════════════════
+
+def _finance_loss_making_segments(df, cols, stats, insights, findings, risks, opps) -> None:
+    """Segments that lose money, sized against the total.
+
+    A profitable total routinely hides segments trading below cost. What
+    matters is not that a segment is negative but how much of the group's
+    profit it consumes, so the figure reported is the drag, not the rank.
+    """
+    rev_col, cost_col, profit_col, cat_col = (
+        cols["rev"], cols["cost"], cols["profit"], cols["cat"])
+    if not cat_col:
+        return
+    try:
+        if profit_col:
+            seg = df.groupby(cat_col)[profit_col].sum()
+        elif rev_col and cost_col:
+            g = df.groupby(cat_col)[[rev_col, cost_col]].sum()
+            seg = g[rev_col] - g[cost_col]
+        else:
+            return
+
+        seg = seg.dropna()
+        if len(seg) < 2:
+            return
+
+        losers = seg[seg < 0].sort_values()
+        if losers.empty:
+            return
+
+        total_positive = float(seg[seg > 0].sum())
+        drag = float(-losers.sum())
+        if total_positive <= 0:
+            return
+        drag_pct = drag / total_positive * 100
+        # Below this the segment is a rounding error on the group result.
+        if drag_pct < 1.0:
+            return
+
+        worst = str(losers.index[0])
+        worst_val = float(losers.iloc[0])
+        n_rows = {str(k): int(v) for k, v in df[cat_col].value_counts().items()}
+
+        findings.append(
+            f"{len(losers)} of {len(seg)} segments trade below cost, together "
+            f"consuming {drag:,.0f} — {drag_pct:.0f}% of the profit the other "
+            f"segments generate. Largest: '{worst}' at {worst_val:,.0f}."
+        )
+        risks.append(
+            f"'{worst}' loses {abs(worst_val):,.0f} across "
+            f"{n_rows.get(worst, 0):,} records. Group profit is "
+            f"{drag_pct:.0f}% lower than the profitable segments alone would give."
+        )
+        insights.append(build_insight(
+            title=f"{len(losers)} segments below cost, costing {drag:,.0f}",
+            problem=f"'{worst}' and {len(losers) - 1} other segment(s) trade at a loss, "
+                    f"offsetting {drag_pct:.0f}% of the profit earned elsewhere."
+            if len(losers) > 1 else
+            f"'{worst}' trades at a loss of {abs(worst_val):,.0f}, offsetting "
+            f"{drag_pct:.0f}% of the profit earned elsewhere.",
+            cause="Whether these segments are structurally unprofitable or carrying "
+                  "allocated cost that belongs elsewhere is not answerable from this "
+                  "extract; it needs the allocation basis.",
+            evidence="; ".join(
+                f"'{k}': {float(v):,.0f} over {n_rows.get(str(k), 0):,} records"
+                for k, v in losers.head(4).items()),
+            action=f"1. Confirm how shared cost is allocated to '{worst}'  "
+                   "2. Separate genuinely loss-making volume from allocation effects  "
+                   "3. Decide price, cost or exit per segment — in that order",
+            impact=f"Eliminating the drag entirely would raise group profit by "
+                   f"{drag_pct:.0f}%, before any revenue lost with the segment.",
+            severity="critical" if drag_pct > 25 else "high" if drag_pct > 10 else "warning",
+            category="finance_segment_loss",
+        ))
+    except Exception:
+        logger.warning("Loss-making segment analysis failed", exc_info=True)
+
+
+# ══════════════════════════════════════════════════════════
+#  BENFORD FIRST-DIGIT TEST
+# ══════════════════════════════════════════════════════════
+
+# Expected share of each leading digit under Benford's law.
+_BENFORD_P = np.log10(1 + 1 / np.arange(1, 10))
+
+
+def _finance_benford(df, cols, stats, insights, findings, risks, opps) -> None:
+    """First-digit conformity on a monetary column.
+
+    Naturally occurring transaction amounts follow Benford's law closely.
+    A departure is not evidence of anything on its own — rounded pricing,
+    a threshold, or a narrow value range all produce one — so this is
+    reported as a place to look, never as a finding of manipulation.
+
+    Nigrini's mean absolute deviation is used rather than the chi-square
+    p-value, because chi-square rejects conformity on almost any large
+    accounting population and would flag every sizeable dataset.
+    """
+    col = cols["rev"] or cols["cost"] or cols["actual"]
+    if not col:
+        return
+    try:
+        s = pd.to_numeric(df[col], errors="coerce").dropna()
+        s = s[s > 0]
+        if len(s) < 300:      # below this the digit shares are too noisy
+            return
+        # Benford applies to values spanning orders of magnitude. A column
+        # of prices between 90 and 110 will fail the test while being
+        # entirely legitimate.
+        span = np.log10(float(s.max()) / float(s.min())) if s.min() > 0 else 0
+        if span < 2:
+            return
+
+        lead = s.astype(str).str.replace(r"[^1-9]", "", regex=True).str[:1]
+        lead = lead[lead != ""].astype(int)
+        if len(lead) < 300:
+            return
+
+        observed = np.array([(lead == d).sum() for d in range(1, 10)], dtype=float)
+        n = observed.sum()
+        expected_share = _BENFORD_P
+        observed_share = observed / n
+        mad = float(np.abs(observed_share - expected_share).mean())
+
+        # Nigrini's published thresholds for first-digit MAD.
+        if mad < 0.006:
+            conformity = "close conformity"
+        elif mad < 0.012:
+            conformity = "acceptable conformity"
+        elif mad < 0.015:
+            conformity = "marginal conformity"
+        else:
+            conformity = "non-conformity"
+
+        worst_i = int(np.argmax(np.abs(observed_share - expected_share)))
+        worst_digit = worst_i + 1
+        obs_pct = observed_share[worst_i] * 100
+        exp_pct = expected_share[worst_i] * 100
+
+        findings.append(
+            f"Leading-digit distribution of {col} shows {conformity} with Benford's law "
+            f"(MAD {mad:.4f}, n={int(n):,})"
+        )
+
+        if mad >= 0.015:
+            insights.append(build_insight(
+                title=f"{col} leading digits deviate from Benford (MAD {mad:.3f})",
+                problem=f"Digit {worst_digit} leads {obs_pct:.1f}% of values against "
+                        f"{exp_pct:.1f}% expected — the largest departure across the nine "
+                        "digits.",
+                cause="Rounded pricing, an approval threshold, a fixed fee schedule and a "
+                      "narrow value band all produce this pattern, as does data entered "
+                      "rather than transacted. This test cannot distinguish between them "
+                      "and is not, on its own, an indication of anything improper.",
+                evidence="; ".join(
+                    f"{d}: {observed_share[d - 1] * 100:.1f}% vs {expected_share[d - 1] * 100:.1f}%"
+                    for d in range(1, 10)) + f" (n={int(n):,}, MAD {mad:.4f})",
+                action=f"1. Check whether values starting {worst_digit} cluster at a "
+                       "threshold or a standard price  2. Confirm the population is "
+                       "transactional rather than budgeted or rounded  3. Only if neither "
+                       "explains it, sample those records for review",
+                impact="Where an operational explanation exists, none. Where it does not, "
+                       "the population warrants a sample check before the figures are "
+                       "relied on.",
+                severity="warning", category="finance_integrity",
+            ))
+    except Exception:
+        logger.warning("Benford analysis failed", exc_info=True)
+
+
 def _insights_finance(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     """
     Finance domain orchestrator.
@@ -334,6 +697,10 @@ def _insights_finance(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     _finance_budget_variance(df, cols, stats, insights, findings, risks, opps)
     _finance_cost_concentration(df, cols, stats, insights, findings, risks, opps)
     _finance_revenue_concentration(df, cols, stats, insights, findings, risks, opps)
+    _finance_cost_structure(df, cols, stats, insights, findings, risks, opps)
+    _finance_margin_volatility(df, cols, stats, insights, findings, risks, opps)
+    _finance_loss_making_segments(df, cols, stats, insights, findings, risks, opps)
+    _finance_benford(df, cols, stats, insights, findings, risks, opps)
 
     actions.extend([
         "Investigate the top 3 cost drivers — understand fixed vs variable split",
