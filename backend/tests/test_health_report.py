@@ -8,7 +8,31 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.engines.health_engine import build_insights, compute_health
+from app.engines.health_engine import (
+    build_full_insights,
+    build_insights,
+    compute_health,
+)
+
+
+@pytest.fixture()
+def signal_sales_df():
+    """Sales data with deliberate, findable signal: one region badly
+    underperforming, and a slice of loss-making deals."""
+    rng = np.random.default_rng(7)
+    n = 600
+    region = rng.choice(["North", "South", "East", "West"], n, p=[.3, .3, .25, .15])
+    revenue = (np.where(region == "West", 28000, 52000)
+               + rng.normal(0, 8000, n)).round(2)
+    return pd.DataFrame({
+        "deal_id": range(n),
+        "region": region,
+        "revenue": revenue,
+        "quota": np.full(n, 55000.0),
+        "profit": (revenue * rng.uniform(-0.05, 0.25, n)).round(2),
+        "product": rng.choice(["Basic", "Pro", "Enterprise"], n),
+        "sales_rep": rng.choice([f"Rep {i}" for i in range(8)], n),
+    })
 
 _INSIGHT_KEYS = {"tag", "title", "body", "action", "severity"}
 _VALID_SEVERITIES = {"critical", "warning", "positive", "info"}
@@ -88,6 +112,64 @@ def test_build_insights_survives_a_minimal_frame():
 def test_build_insights_survives_an_all_text_frame():
     df = pd.DataFrame({"name": list("abcdefghij"), "dept": ["x", "y"] * 5})
     assert isinstance(build_insights(df, "hr"), list)
+
+
+# ══════════════════════════════════════════════════════════
+#  Full insight set — domain engines + data-quality cards
+# ══════════════════════════════════════════════════════════
+
+def test_full_insights_are_deeper_than_the_quality_cards_alone(signal_sales_df):
+    """Regression: the report used to render only this module's own niche
+    cards, producing a SINGLE card for a sales dataset even when the domain
+    engine had found several critical findings in the same file. A
+    one-card report is not something a client will pay for."""
+    shallow = build_insights(signal_sales_df, "sales")
+    full = build_full_insights(signal_sales_df, "sales")
+    assert len(full) > len(shallow), (
+        f"full set ({len(full)}) is no deeper than the quality cards "
+        f"({len(shallow)}) — the domain engines are not being used")
+    assert len(full) >= 3
+
+
+def test_full_insights_surface_planted_critical_findings(signal_sales_df):
+    """The regional gap and the loss-making deals are both real and severe;
+    they must appear, and must be ranked critical rather than demoted."""
+    full = build_full_insights(signal_sales_df, "sales")
+    blob = " ".join(f"{c['title']} {c['body']}" for c in full).lower()
+    assert "region" in blob, "the planted regional performance gap was missed"
+    assert any(c["severity"] == "critical" for c in full), \
+        "no finding ranked critical despite planted severe signal"
+
+
+def test_full_insights_keep_the_card_contract(signal_sales_df, hr_df):
+    for df, niche in [(signal_sales_df, "sales"), (hr_df, "hr")]:
+        for c in build_full_insights(df, niche):
+            assert _INSIGHT_KEYS <= set(c)
+            assert c["severity"] in _VALID_SEVERITIES, (
+                f"severity {c['severity']!r} is outside the set the PDF "
+                "renders — it would silently fall back to a neutral card")
+            for key in ("title", "body", "action"):
+                assert isinstance(c[key], str) and c[key].strip()
+
+
+def test_full_insights_are_ranked_worst_first(signal_sales_df):
+    order = {"critical": 0, "warning": 1, "info": 2, "positive": 3}
+    ranks = [order[c["severity"]] for c in build_full_insights(signal_sales_df, "sales")]
+    assert ranks == sorted(ranks), "cards are not ordered by severity"
+
+
+def test_full_insights_deduplicate_titles(hr_df):
+    titles = [c["title"].strip().lower() for c in build_full_insights(hr_df, "hr")]
+    assert len(titles) == len(set(titles)), "duplicate insight titles in the report"
+
+
+def test_full_insights_respect_the_cap(signal_sales_df):
+    assert len(build_full_insights(signal_sales_df, "sales", max_cards=2)) <= 2
+
+
+def test_full_insights_survive_a_degenerate_frame():
+    df = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": ["x", "y", "z"]})
+    assert isinstance(build_full_insights(df, "general"), list)
 
 
 # ══════════════════════════════════════════════════════════

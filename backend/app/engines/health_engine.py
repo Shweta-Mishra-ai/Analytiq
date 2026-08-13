@@ -497,3 +497,95 @@ def build_insights(df: pd.DataFrame, niche: str) -> list:
         ))
 
     return insights
+
+
+# ══════════════════════════════════════════════════════════
+#  FULL INSIGHT SET  (domain engines + data-quality cards)
+# ══════════════════════════════════════════════════════════
+
+# The domain engines emit a richer severity ladder than the report's card
+# renderer understands. Anything unmapped would fall back to "info" and be
+# rendered as a neutral blue card, quietly demoting a critical finding.
+_SEVERITY_TO_CARD = {
+    "critical": "critical",
+    "high":     "critical",
+    "warning":  "warning",
+    "medium":   "warning",
+    "info":     "info",
+    "low":      "info",
+    "positive": "positive",
+}
+
+_CARD_COLORS = {
+    "critical": ("#ef4444", "rgba(239,68,68,0.08)"),
+    "warning":  ("#f97316", "rgba(249,115,22,0.08)"),
+    "positive": ("#22d3a5", "rgba(34,211,165,0.08)"),
+    "info":     ("#3b82f6", "rgba(59,130,246,0.08)"),
+}
+
+
+def _insight_to_card(ins) -> Dict:
+    """Adapt a domains/*.Insight dataclass into the flat card dict the
+    Health Report renders.
+
+    The engines already write in Problem → Cause → Evidence → Action →
+    Impact form, which maps cleanly onto the report's
+    What → Why it matters → What to do layout.
+    """
+    severity = _SEVERITY_TO_CARD.get(str(ins.severity).lower(), "info")
+    border, bg = _CARD_COLORS[severity]
+
+    body_parts = [p for p in (ins.problem, ins.cause, ins.evidence) if p]
+    body = " ".join(str(p).strip() for p in body_parts)
+    if ins.impact:
+        body = f"{body} Impact: {str(ins.impact).strip()}"
+
+    tag = str(getattr(ins, "category", "") or severity).upper().replace("_", " ")
+    return {"tag": tag, "title": str(ins.title), "body": body,
+            "action": str(ins.action), "severity": severity,
+            "border": border, "bg": bg, "tag_color": border,
+            "confidence": str(getattr(ins, "confidence", "") or "")}
+
+
+def build_full_insights(df: pd.DataFrame, niche: str, max_cards: int = 12) -> List[Dict]:
+    """Every insight the Health Report should carry, best-first.
+
+    Sources, in priority order:
+      1. the per-domain engines in app/engines/domains/ — the deep business
+         analysis (regional gaps, loss-making segments, quota attainment,
+         rep spread, cohort/retention effects, …)
+      2. this module's own niche cards — data-quality angles the domain
+         engines don't cover (skew warnings, "use median not mean", …)
+
+    Previously the report used source 2 alone, which produced a single
+    insight card for a sales/ecommerce/finance dataset even when the domain
+    engine found several critical findings in the same file. A one-card
+    report is not a deliverable a client will pay for.
+    """
+    cards: List[Dict] = []
+
+    try:
+        from app.engines.story_engine import generate_story
+        story = generate_story(df)
+        for ins in story.top_insights:
+            cards.append(_insight_to_card(ins))
+    except Exception:
+        logger.warning("domain insight engines failed for the health report — "
+                       "falling back to data-quality cards only", exc_info=True)
+
+    try:
+        cards.extend(build_insights(df, niche))
+    except Exception:
+        logger.warning("niche data-quality cards failed", exc_info=True)
+
+    # De-duplicate on title; keep the first (domain engines rank higher).
+    seen, unique = set(), []
+    for c in cards:
+        key = c["title"].strip().lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(c)
+
+    order = {"critical": 0, "warning": 1, "info": 2, "positive": 3}
+    unique.sort(key=lambda c: order.get(c["severity"], 9))
+    return unique[:max_cards]

@@ -200,7 +200,7 @@ def health_summary(ds_id: str, owner: str = Depends(current_owner)):
     """Health score, grade and the niche insight cards as JSON — the same
     content the Health Report PDF renders, for previewing before download."""
     df = _df_or_404(owner, ds_id)
-    from app.engines.health_engine import compute_health, build_insights
+    from app.engines.health_engine import compute_health, build_full_insights
     from app.engines.story_engine import detect_domain
 
     health = compute_health(df)
@@ -210,7 +210,7 @@ def health_summary(ds_id: str, owner: str = Depends(current_owner)):
         logger.warning("detect_domain failed for health summary", exc_info=True)
         domain_name = "general"
     try:
-        insights = build_insights(df, domain_name)
+        insights = build_full_insights(df, domain_name)
     except Exception:
         logger.exception("build_insights failed for health summary")
         insights = []
@@ -226,7 +226,7 @@ def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
     meta = store.get_meta(owner, ds_id)
     filename = meta.filename if meta else f"{ds_id}.csv"
 
-    from app.engines.health_engine import compute_health, build_insights
+    from app.engines.health_engine import compute_health, build_full_insights
     from app.engines.health_pdf_builder import build_health_pdf
     from app.engines.story_engine import detect_domain
 
@@ -238,7 +238,7 @@ def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
 
     try:
         health = compute_health(df)
-        insights = build_insights(df, domain_name)
+        insights = build_full_insights(df, domain_name)
         pdf_bytes = build_health_pdf(df, domain_name, health, insights,
                                       filename, agency_name=req.agency_name)
     except Exception as e:
