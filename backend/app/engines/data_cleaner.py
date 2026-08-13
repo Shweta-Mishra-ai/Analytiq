@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
+from app.services.dtypes import is_text_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
     s = df[col]
 
     # ── 5a. Strip string whitespace ────────────────────────
-    if s.dtype == object:
+    if is_text_dtype(s):
         stripped = s.str.strip() if hasattr(s.str, "strip") else s
         ws_count = (s != stripped).sum()
         if ws_count > 0:
@@ -163,7 +164,7 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
                                extreme, extreme, extreme)
 
     # ── 5d. Normalize boolean-like text columns ────────────
-    if df[col].dtype == object and col in df.columns:
+    if is_text_dtype(df[col]) and col in df.columns:
         s3 = df[col].dropna().str.lower().str.strip()
         bool_vals = {"yes", "no", "true", "false", "1", "0", "y", "n"}
         if set(s3.unique()) <= bool_vals and s3.nunique() <= 4:

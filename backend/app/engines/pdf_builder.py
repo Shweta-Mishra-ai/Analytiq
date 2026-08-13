@@ -40,6 +40,7 @@ from reportlab.platypus import (
     Image, HRFlowable, PageBreak, KeepTogether,
 )
 from reportlab.pdfgen import canvas as CV
+from app.services.dtypes import is_text_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -722,7 +723,7 @@ def _benchmark_section(story, s, T, domain, CW, df=None):
         def _num_mean(series):
             """Mean robust to Yes/No/True/False string encodings."""
             s = series
-            if s.dtype == object:
+            if is_text_dtype(s):
                 mapped = s.astype(str).str.strip().str.lower().map(
                     {"yes": 1, "no": 0, "true": 1, "false": 0,
                      "y": 1, "n": 0, "1": 1, "0": 0})
