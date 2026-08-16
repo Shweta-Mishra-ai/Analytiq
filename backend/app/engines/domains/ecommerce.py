@@ -217,11 +217,15 @@ def _rating_revenue_evidence(df: pd.DataFrame, rating_col, rev_col,
         med_low, med_high = float(low.median()), float(high.median())
         if med_low <= 0 or med_high <= 0:
             return ""
+        # `%g` printed a median of 120 as "1.2e+02". A revenue figure is
+        # written the way every other one in the report is written.
+        from app.services.numfmt import human_number
+
         return ("In this catalog, median revenue for top-rated products is "
-                "{:.2g} vs {:.2g} for low-rated ones ({:.1f}× difference, "
+                "{} vs {} for low-rated ones ({:.1f}× difference, "
                 "n={:,}/{:,}) — an association in this data, not a proven "
-                "cause.".format(med_high, med_low, med_high / med_low,
-                                 len(high), len(low)))
+                "cause.".format(human_number(med_high), human_number(med_low),
+                                med_high / med_low, len(high), len(low)))
     except Exception:
         logger.warning("rating-revenue evidence failed", exc_info=True)
         return ""

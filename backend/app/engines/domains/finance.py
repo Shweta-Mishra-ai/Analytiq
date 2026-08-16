@@ -805,9 +805,10 @@ def _finance_margin_trend(df, cols, stats, insights, findings, risks, opps) -> N
                        "segment  3. Compare against the same periods last "
                        "year, not against a sector range",
                 impact="Holding the opening margin across the closing "
-                       "period's revenue would be worth about {:,.0f}."
-                       .format(abs(change) / 100 * float(
-                           by_period[rev_col].iloc[-window:].sum())),
+                       "period's revenue would be worth about {:,.0f} — the "
+                       "arithmetic of the gap, not a forecast.".format(
+                           abs(change) / 100 * float(
+                               by_period[rev_col].iloc[-window:].sum())),
                 severity=severity, category="finance_margin",
             ))
             risks.append(

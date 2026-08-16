@@ -22,7 +22,16 @@ def chunk_passages(passages: List[dict]) -> List[dict]:
     """Split extracted passages into overlapping chunks, keeping source refs."""
     chunks = []
     for p in passages:
-        text = p["text"].strip()
+        # An extractor that returns a passage with no text — a blank PDF
+        # page, an image with nothing recognised — used to raise KeyError
+        # or AttributeError here and take the whole ingest down with it.
+        # One unreadable page is not a reason to reject the document.
+        if not isinstance(p, dict):
+            continue
+        raw = p.get("text")
+        if not isinstance(raw, str):
+            continue
+        text = raw.strip()
         if not text:
             continue
         if len(text) <= CHUNK_CHARS:

@@ -72,8 +72,15 @@ def train(ds_id: str, req: TrainRequest, owner: str = Depends(current_owner)):
     if req.target not in df.columns:
         raise HTTPException(422, f"Target '{req.target}' not in dataset")
     from app.engines.ml_engine import run_ml_pipeline
+    from app.services.load_guard import TRAINING, Busy
+
     try:
-        report = run_ml_pipeline(df, req.target)
+        with TRAINING.slot():
+            report = run_ml_pipeline(df, req.target)
+    except Busy as e:
+        # 503 with Retry-After, not 500: nothing failed, the server is
+        # simply full, and the client should know it is worth retrying.
+        raise HTTPException(503, str(e), headers={"Retry-After": "60"})
     except Exception as e:
         raise HTTPException(500, f"Training failed: {e}")
     store.cache_set(owner, ds_id, f"ml_{req.target}", report)

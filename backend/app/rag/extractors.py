@@ -40,8 +40,70 @@ VIDEO_PROMPT = """You are a senior data analyst. Analyze this video:
 Be factual — never invent values that are not shown or said."""
 
 
+class UnreadableFile(ValueError):
+    """A file we accepted but could not read. Carries a message for the
+    person who uploaded it, not the one the library raised."""
+
+
+# What a reader can actually do about each parser failure. The raw
+# exceptions — "PDFium: Data format error", "File is not a zip file",
+# "No columns to parse from file" — name the library's problem, not the
+# user's, and none of them says what to try next.
+_HINTS = {
+    ".pdf": "The PDF could not be opened. It may be corrupt, or it may be "
+            "password-protected — remove the password and upload again.",
+    ".docx": "The .docx could not be opened. A file saved as .doc and "
+             "renamed to .docx is the usual cause; re-save it from Word "
+             "as .docx.",
+    ".csv": "The CSV could not be parsed. Check the delimiter and that "
+            "the file is not an HTML page or an error message saved with "
+            "a .csv extension.",
+    ".tsv": "The TSV could not be parsed. Check that the columns are "
+            "separated by tabs.",
+    ".xlsx": "The spreadsheet could not be opened. Re-save it from Excel "
+             "as .xlsx and upload again.",
+}
+
+
+def _readable_error(filename: str, ext: str, exc: Exception) -> UnreadableFile:
+    hint = _HINTS.get(ext, "The file could not be read. Check that it "
+                           "opens on your own machine and is not empty.")
+    if not data_looks_present(exc):
+        hint = "The file is empty — nothing was uploaded."
+    return UnreadableFile("'{}' could not be read. {}".format(
+        os.path.basename(filename) or "the file", hint))
+
+
+def data_looks_present(exc: Exception) -> bool:
+    """False when the failure is simply that there was nothing there."""
+    text = str(exc).lower()
+    return not any(k in text for k in
+                   ("no columns to parse", "empty", "0 bytes",
+                    "cannot read an empty"))
+
+
 def extract(filename: str, data: bytes) -> List[dict]:
     ext = os.path.splitext(filename.lower())[1]
+    if not data:
+        raise UnreadableFile(
+            "'{}' is empty — nothing was uploaded.".format(
+                os.path.basename(filename) or "the file"))
+    try:
+        return _extract(filename, data, ext)
+    except (UnreadableFile, ValueError) as exc:
+        # A ValueError raised deliberately below ("Unsupported file
+        # type") already reads as a message; a ValueError out of a
+        # parser does not.
+        if isinstance(exc, UnreadableFile) or "Unsupported file type" in str(exc):
+            raise
+        logger.info("extract failed for %s", filename, exc_info=True)
+        raise _readable_error(filename, ext, exc) from exc
+    except Exception as exc:
+        logger.info("extract failed for %s", filename, exc_info=True)
+        raise _readable_error(filename, ext, exc) from exc
+
+
+def _extract(filename: str, data: bytes, ext: str) -> List[dict]:
     if ext == ".pdf":
         return _pdf(filename, data)
     if ext == ".docx":
@@ -85,15 +147,34 @@ def _docx(name: str, data: bytes) -> List[dict]:
     return [{"text": text, "source": name, "locator": "document"}] if text.strip() else []
 
 
+def decode_text(data: bytes) -> str:
+    """Decode bytes without losing characters where we can avoid it.
+
+    Excel on Windows exports cp1252 and Excel on a Mac exports mac-roman;
+    neither is valid UTF-8. Decoding with errors="replace" turned every
+    accented character into U+FFFD — silent information loss on a file
+    that was perfectly readable — and reading a CSV as UTF-8 raised
+    outright. Each encoding is tried in turn and the first clean decode
+    wins; the replacement pass is the last resort, not the first.
+    """
+    for encoding in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def _plain(name: str, data: bytes) -> List[dict]:
-    text = data.decode("utf-8", errors="replace")
+    text = decode_text(data)
     return [{"text": text, "source": name, "locator": "file"}] if text.strip() else []
 
 
 def _table(name: str, data: bytes) -> List[dict]:
     import pandas as pd
     sep = "\t" if name.lower().endswith(".tsv") else ","
-    df = pd.read_csv(io.BytesIO(data), sep=sep, on_bad_lines="skip")
+    df = pd.read_csv(io.StringIO(decode_text(data)), sep=sep,
+                     on_bad_lines="skip")
     desc = [f"Table {name}: {len(df)} rows, columns: {', '.join(map(str, df.columns))}"]
     num = df.select_dtypes(include="number")
     if not num.empty:

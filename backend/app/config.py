@@ -62,6 +62,13 @@ class AppConfig(BaseSettings):
     rag_max_kbs_per_owner: int = Field(default=25, alias="RAG_MAX_KBS")
     rag_max_files_per_kb: int = Field(default=100, alias="RAG_MAX_FILES")
     rag_max_chunks_per_kb: int = Field(default=8000, alias="RAG_MAX_CHUNKS")
+    # How much heavy work may run at once in this process. Measured on
+    # a small container: one ML pipeline is ~10s and ~250MB, so an
+    # unbounded threadpool turns ten simultaneous "train" clicks into an
+    # out-of-memory kill — which takes down every request in flight, not
+    # just the ones that caused it.
+    max_concurrent_training: int = Field(default=2, alias="MAX_CONCURRENT_TRAINING")
+    max_concurrent_analysis: int = Field(default=6, alias="MAX_CONCURRENT_ANALYSIS")
     max_rows_preview: int = 100_000
     max_rows_llm_context: int = 50
     max_cols_llm_context: int = 20

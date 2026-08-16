@@ -125,10 +125,19 @@ def trend_over_time(df: pd.DataFrame, insights: List, findings: List,
                       "this data — a trend line establishes that the level "
                       "changed, not why. Splitting the same series by segment "
                       "is the next step.",
+                # `%g` on the slope printed "+1.2e+02" — a hundred and
+                # twenty, written in a notation nobody uses for a rate of
+                # change. The p-value keeps exponent form because that is
+                # how a p-value is written; a slope is a quantity and gets
+                # the same treatment as every other figure in the report.
                 evidence="Least-squares fit over {:,} observations: R²={:.2f} "
                          "(the line explains {:.0f}% of the variation), "
-                         "p={:.2g}, slope {:+,.4g} per day.".format(
-                             len(work), r2, r2 * 100, fit.pvalue, per_day),
+                         "p{}, slope {} per day.".format(
+                             len(work), r2, r2 * 100,
+                             "<0.001" if fit.pvalue < 0.001
+                             else "={:.3f}".format(fit.pvalue),
+                             ("+" if per_day >= 0 else "-")
+                             + human_number(abs(per_day))),
                 action="1. Split '{}' by your main segment column and refit  "
                        "2. Check whether the change is a step or a drift  "
                        "3. Compare against the same period last year if you "

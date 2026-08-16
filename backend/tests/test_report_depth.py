@@ -93,10 +93,15 @@ def test_the_report_leads_with_the_erosion():
 
 
 def test_the_impact_is_arithmetic_not_a_forecast():
+    """Banning the word "forecast" was the wrong test: the house
+    standard requires a quantified upside to *say* it is arithmetic and
+    not a forecast, so the disclaimer contains the word it was banning.
+    What matters is that the figure is not presented as a prediction."""
     hit = next(i for i in _story(_eroding()).top_insights
                if "Margin Down" in i.title)
     assert any(ch.isdigit() for ch in hit.impact)
-    assert "forecast" not in hit.impact.lower()
+    assert "not a forecast" in hit.impact.lower(), hit.impact
+    assert "will " not in hit.impact.lower(), hit.impact
 
 
 def test_too_few_periods_says_nothing():
