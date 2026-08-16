@@ -54,25 +54,78 @@ logger = logging.getLogger(__name__)
 # have to agree; if the interface palette changes, change it here in the
 # same commit.
 
-INK = "#f2f4f7"        # --color-ink
-INK2 = "#c9d1dc"       # --color-ink2
-MUTE = "#8b93a1"       # --color-mute
-GRID = "#22262e"       # --color-edge
-AXIS = "#2d323c"       # --color-edge2
-
-# Categorical series. Ordered so the first two — the ones most charts
-# actually use — are the app's accent and teal.
-PALETTE = ["#5b8def", "#2dd4a7", "#f0a44a", "#a78bfa",
-           "#f4676b", "#7aa5f5", "#38bdf8", "#fbbf24"]
-
-# A single-hue ramp for the one case that needs a continuous scale: a
-# correlation matrix, where the value genuinely maps to colour.
-DIVERGING = [[0.0, "#f4676b"], [0.5, "#161a1f"], [1.0, "#5b8def"]]
-
 FONT = "IBM Plex Sans, system-ui, -apple-system, Segoe UI, sans-serif"
 MONO = "IBM Plex Mono, ui-monospace, SFMono-Regular, monospace"
 
+# Two palettes, because the app and the deliverable are read in
+# different places. The interface is dark; a document that goes to a
+# client is read on a laptop in a meeting, printed, and pasted into a
+# deck, and a dark chart survives none of those. The light one is the
+# default for anything exported.
+PALETTES = {
+    "dark": {
+        "ink": "#f2f4f7", "ink2": "#c9d1dc", "mute": "#8b93a1",
+        "grid": "#22262e", "axis": "#2d323c", "hover": "#161a1f",
+        "series": ["#5b8def", "#2dd4a7", "#f0a44a", "#a78bfa",
+                   "#f4676b", "#7aa5f5", "#38bdf8", "#fbbf24"],
+        "diverging": [[0.0, "#f4676b"], [0.5, "#161a1f"], [1.0, "#5b8def"]],
+        "on_fill": "#0b0d10",
+    },
+    "light": {
+        "ink": "#1a1d23", "ink2": "#3d434e", "mute": "#6b7280",
+        "grid": "#e8eaee", "axis": "#d4d8e0", "hover": "#ffffff",
+        # Amber leads, as in a printed finance pack: it reads as the
+        # subject colour on white where a mid-blue reads as a hyperlink.
+        # The rest are chosen to stay distinguishable in greyscale, since
+        # these get printed.
+        "series": ["#f0a11e", "#1f6feb", "#0f9d6e", "#7c4dff",
+                   "#e5484d", "#f7c948", "#0891b2", "#c2410c"],
+        "diverging": [[0.0, "#e5484d"], [0.5, "#f6f7f9"], [1.0, "#1f6feb"]],
+        "on_fill": "#ffffff",
+    },
+}
+
+# The interface is dark, so that stays the module default; the export
+# passes "light".
+_ACTIVE = "dark"
+
+INK = PALETTES["dark"]["ink"]
+INK2 = PALETTES["dark"]["ink2"]
+MUTE = PALETTES["dark"]["mute"]
+GRID = PALETTES["dark"]["grid"]
+AXIS = PALETTES["dark"]["axis"]
+PALETTE = PALETTES["dark"]["series"]
+DIVERGING = PALETTES["dark"]["diverging"]
+
 TEMPLATE = "plotly_dark"
+
+
+def palette(theme: str = None) -> dict:
+    return PALETTES.get(theme or _ACTIVE, PALETTES["dark"])
+
+
+class use_theme:
+    """Render inside a palette. `with use_theme("light"): ...`
+
+    A context manager rather than a parameter on every builder: the
+    figure builders are called from six places and threading a theme
+    argument through all of them is how one of them ends up forgotten
+    and renders a dark chart into a light document.
+    """
+
+    def __init__(self, theme: str):
+        self.theme = theme if theme in PALETTES else "dark"
+
+    def __enter__(self):
+        global _ACTIVE
+        self._previous = _ACTIVE
+        _ACTIVE = self.theme
+        return self
+
+    def __exit__(self, *_exc):
+        global _ACTIVE
+        _ACTIVE = self._previous
+        return False
 
 
 def _style(fig: go.Figure, message: str = "", subtitle: str = "") -> go.Figure:
@@ -82,42 +135,43 @@ def _style(fig: go.Figure, message: str = "", subtitle: str = "") -> go.Figure:
     background, a border and a radius. A figure that paints its own
     rectangle inside that shows a seam on every tile.
     """
+    p = palette()
     title = None
     if message:
         title = dict(
             text=("<b>{}</b>".format(message)
                   + ("<br><span style='font-size:11px;color:{}'>{}</span>"
-                     .format(MUTE, subtitle) if subtitle else "")),
+                     .format(p["mute"], subtitle) if subtitle else "")),
             x=0, xanchor="left", y=0.97, yanchor="top",
-            font=dict(size=13, color=INK),
+            font=dict(size=13, color=p["ink"]),
         )
     elif subtitle:
         title = dict(text=subtitle, x=0, xanchor="left",
-                     font=dict(size=13, color=INK))
+                     font=dict(size=13, color=p["ink"]))
 
     fig.update_layout(
         title=title,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family=FONT, color=INK2, size=11),
+        font=dict(family=FONT, color=p["ink2"], size=11),
         margin=dict(l=8, r=12, t=54 if title else 12, b=8),
         hoverlabel=dict(font=dict(family=MONO, size=11),
-                        bgcolor="#161a1f", bordercolor=AXIS),
+                        bgcolor=p["hover"], bordercolor=p["axis"]),
         legend=dict(orientation="h", yanchor="bottom", y=-0.22,
                     xanchor="left", x=0,
-                    font=dict(size=10, color=MUTE),
+                    font=dict(size=10, color=p["mute"]),
                     bgcolor="rgba(0,0,0,0)"),
-        colorway=PALETTE,
+        colorway=p["series"],
         separators=".,",
     )
     # Horizontal rules only. Vertical gridlines between categories mark
     # nothing — a bar sitting on "region" has no x scale to read against.
-    fig.update_xaxes(showgrid=False, zeroline=False, linecolor=AXIS,
-                     tickfont=dict(family=MONO, size=10, color=MUTE),
-                     title=dict(font=dict(size=10, color=MUTE)))
-    fig.update_yaxes(gridcolor=GRID, zeroline=False, showline=False,
-                     tickfont=dict(family=MONO, size=10, color=MUTE),
-                     title=dict(font=dict(size=10, color=MUTE)))
+    fig.update_xaxes(showgrid=False, zeroline=False, linecolor=p["axis"],
+                     tickfont=dict(family=MONO, size=10, color=p["mute"]),
+                     title=dict(font=dict(size=10, color=p["mute"])))
+    fig.update_yaxes(gridcolor=p["grid"], zeroline=False, showline=False,
+                     tickfont=dict(family=MONO, size=10, color=p["mute"]),
+                     title=dict(font=dict(size=10, color=p["mute"])))
     return fig
 
 
@@ -213,7 +267,7 @@ def make_bar(df, x, y, title="", top_n: int = 25):
     # One colour. Colouring bars by their own height restates the y-axis
     # and adds a legend for a variable already on the chart.
     fig.update_traces(
-        marker_color=PALETTE[0],
+        marker_color=palette()["series"][0],
         marker_line_width=0,
         hovertemplate="<b>%{x}</b><br>" + str(y) + ": %{y:,.0f}<extra></extra>",
     )
@@ -244,7 +298,7 @@ def make_line(df, x, y, title="", max_points: int = 120):
             work = work.tail(max_points)
     fig = px.line(work, x=x, y=y)
     fig.update_traces(
-        line=dict(color=PALETTE[0], width=2),
+        line=dict(color=palette()["series"][0], width=2),
         hovertemplate="%{x}<br>" + str(y) + ": %{y:,.0f}<extra></extra>",
     )
     _style(fig, line_message(df, x, y), title or "{} over {}".format(y, x))
@@ -254,7 +308,7 @@ def make_line(df, x, y, title="", max_points: int = 120):
 
 def make_scatter(df, x, y, color=None, title=""):
     fig = px.scatter(df.head(3000), x=x, y=y, color=color,
-                     color_discrete_sequence=PALETTE, opacity=0.65)
+                     color_discrete_sequence=palette()["series"], opacity=0.65)
     fig.update_traces(marker=dict(size=6, line=dict(width=0)))
     _style(fig, "", title or "{} against {}".format(y, x))
     _human_ticks(fig)
@@ -264,7 +318,7 @@ def make_scatter(df, x, y, color=None, title=""):
 
 def make_histogram(df, col, nbins=40, title=""):
     fig = px.histogram(df, x=col, nbins=nbins)
-    fig.update_traces(marker_color=PALETTE[0], marker_line_width=0)
+    fig.update_traces(marker_color=palette()["series"][0], marker_line_width=0)
     s = pd.to_numeric(df[col], errors="coerce").dropna()
     if len(s):
         # The median, not the mean: on a skewed column the mean sits
@@ -273,10 +327,10 @@ def make_histogram(df, col, nbins=40, title=""):
         median = float(s.median())
         fig.add_vline(
             x=median, line_width=1.5, line_dash="dash",
-            line_color=PALETTE[2],
+            line_color=palette()["series"][2],
             annotation_text="median {}".format(human_number(median)),
             annotation_position="top",
-            annotation_font=dict(size=10, color=MUTE, family=MONO),
+            annotation_font=dict(size=10, color=palette()["mute"], family=MONO),
         )
     _style(fig, histogram_message(df, col),
            title or "Distribution of {}".format(col))
@@ -291,9 +345,10 @@ def make_pie(df, names_col, values_col, title=""):
              .head(10))
     fig = px.pie(agg, names=names_col, values=values_col, hole=0.55)
     fig.update_traces(
-        marker=dict(colors=PALETTE, line=dict(color="#101215", width=2)),
+        marker=dict(colors=palette()["series"],
+                    line=dict(color=palette()["on_fill"], width=2)),
         textposition="inside", textinfo="percent",
-        insidetextfont=dict(color="#0b0d10", size=11),
+        insidetextfont=dict(color=palette()["on_fill"], size=11),
         hovertemplate="<b>%{label}</b><br>%{value:,.0f} (%{percent})"
                       "<extra></extra>",
     )
@@ -315,15 +370,63 @@ def make_heatmap(df):
     # carrying no information.
     np.fill_diagonal(matrix, np.nan)
     fig = px.imshow(matrix, x=cols, y=cols, text_auto=".2f",
-                    color_continuous_scale=DIVERGING, zmin=-1, zmax=1)
+                    color_continuous_scale=palette()["diverging"], zmin=-1, zmax=1)
     fig.update_traces(
         xgap=2, ygap=2,
         hovertemplate="%{y} vs %{x}: %{z:.2f}<extra></extra>",
     )
     fig.update_layout(coloraxis_colorbar=dict(
         thickness=8, len=0.6, outlinewidth=0,
-        tickfont=dict(size=9, color=MUTE, family=MONO)))
+        tickfont=dict(size=9, color=palette()["mute"], family=MONO)))
     _style(fig, heatmap_message(df, cols), "Correlation matrix")
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=False, autorange="reversed")
+    return fig
+
+
+def make_comparison(df, x, y, y2, title="", top_n: int = 25):
+    """Two measures side by side — actual against plan, this year against
+    last.
+
+    The finance dashboard had a "revenue against budget" tile that
+    plotted revenue alone: the builder took a single `y`, so the tile
+    promised a comparison and delivered one series. A chart whose title
+    names two things and shows one is worse than no chart, because the
+    reader takes the shape of the bars as the answer to the question in
+    the title.
+    """
+    p = palette()
+    agg = (df.groupby(x, dropna=True)[[y, y2]].sum()
+             .reset_index()
+             .sort_values(y, ascending=False)
+             .head(top_n))
+    if pd.api.types.is_datetime64_any_dtype(agg[x]):
+        agg = agg.sort_values(x)
+
+    fig = go.Figure()
+    for name, colour in ((y, p["series"][0]), (y2, p["series"][1])):
+        fig.add_bar(x=agg[x], y=agg[name], name=str(name),
+                    marker_color=colour, marker_line_width=0,
+                    hovertemplate="<b>%{x}</b><br>" + str(name)
+                                  + ": %{y:,.0f}<extra></extra>")
+    fig.update_layout(barmode="group", bargap=0.25, bargroupgap=0.05)
+
+    total_a = float(agg[y].sum())
+    total_b = float(agg[y2].sum())
+    message = ""
+    if total_b:
+        variance = (total_a - total_b) / abs(total_b) * 100
+        message = ("{} came in {:+.0f}% against {} — {} versus {}".format(
+            y, variance, y2, human_number(total_a), human_number(total_b)))
+        # Where it landed matters less than where it did not: naming the
+        # worst group is the part a reader can act on.
+        gaps = agg[y] - agg[y2]
+        if len(gaps) > 1 and gaps.min() < 0:
+            worst = agg.loc[gaps.idxmin()]
+            message += ", with {} the furthest behind".format(
+                str(worst[x])[:24])
+    _style(fig, message, title or "{} against {}".format(y, y2))
+    _human_ticks(fig)
+    # Two series need a legend; the shared style hides it below the plot.
+    fig.update_layout(showlegend=True)
     return fig

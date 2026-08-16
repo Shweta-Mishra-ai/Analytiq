@@ -24,6 +24,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import re
 from typing import Dict, List
 
 import pandas as pd
@@ -56,11 +57,15 @@ def _plotly_runtime() -> str:
         return ""
 
 
+# The exported page is light. The interface is dark because it is a tool
+# someone stares at for an hour; this is a document that gets read on a
+# laptop in a meeting, printed, and pasted into a deck, and a dark
+# dashboard survives none of the three.
 _CSS = """
 :root {
-  --bg:#08090b; --panel:#101215; --panel2:#161a1f; --edge:#22262e;
-  --edge2:#2d323c; --ink:#f2f4f7; --ink2:#c9d1dc; --mute:#8b93a1;
-  --faint:#5c6472; --accent:#5b8def; --teal:#2dd4a7;
+  --bg:#f6f7f9; --panel:#ffffff; --panel2:#f1f3f6; --edge:#e4e7ec;
+  --edge2:#d4d8e0; --ink:#1a1d23; --ink2:#3d434e; --mute:#6b7280;
+  --faint:#9aa1ac; --accent:#f0a11e; --accent2:#1f6feb;
 }
 * { box-sizing:border-box; }
 body {
@@ -76,6 +81,7 @@ aside {
   width:210px; flex:none; background:var(--panel);
   border:1px solid var(--edge); border-radius:12px; overflow:hidden;
   position:sticky; top:24px; max-height:calc(100vh - 48px); overflow-y:auto;
+  box-shadow:0 1px 2px rgba(16,24,40,.05);
 }
 aside h2 {
   margin:0; padding:10px 12px; font-size:11px; letter-spacing:.06em;
@@ -95,13 +101,28 @@ aside h2 {
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
 .slicer button:hover { background:var(--panel2); color:var(--ink2); }
-.slicer button.on { background:rgba(91,141,239,.15); color:var(--accent); font-weight:500; }
+.slicer button.on {
+  background:rgba(240,161,30,.16); color:#8a5a00; font-weight:600;
+}
 main { flex:1; min-width:0; }
 .kpis {
   display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
   gap:12px; margin-bottom:16px;
 }
-.kpi { background:var(--panel); border:1px solid var(--edge); border-radius:12px; padding:12px 16px; }
+.kpi {
+  background:var(--panel); border:1px solid var(--edge); border-radius:12px;
+  padding:12px 16px 12px 18px; position:relative; overflow:hidden;
+  box-shadow:0 1px 2px rgba(16,24,40,.05);
+}
+/* A coloured spine on each card, so the KPI row reads as a row of
+   figures rather than four identical white boxes. */
+.kpi::before {
+  content:''; position:absolute; left:0; top:0; bottom:0; width:3px;
+  background:var(--accent);
+}
+.kpi:nth-child(2)::before { background:var(--accent2); }
+.kpi:nth-child(3)::before { background:#0f9d6e; }
+.kpi:nth-child(4)::before { background:#7c4dff; }
 .kpi span {
   display:block; font-size:11px; letter-spacing:.05em; text-transform:uppercase;
   color:var(--mute); font-weight:500;
@@ -115,6 +136,19 @@ main { flex:1; min-width:0; }
 .tile {
   background:var(--panel); border:1px solid var(--edge); border-radius:12px;
   padding:10px 4px 4px; min-height:320px; overflow:hidden;
+  box-shadow:0 1px 2px rgba(16,24,40,.05);
+}
+/* The question the tile answers, under its label. A dashboard where
+   every tile states what it is for reads as a considered document; one
+   that just names its axes reads as a chart dump. */
+.tile > small {
+  display:block; padding:0 10px 4px; font-size:11.5px; color:var(--mute);
+}
+/* The finding, as HTML rather than inside the figure — Plotly titles do
+   not wrap, so on a half-width tile the sentence was cut off. */
+.tile > strong {
+  display:block; padding:2px 10px 8px; font-size:13px; font-weight:600;
+  line-height:1.35; color:var(--ink);
 }
 .tile > em {
   display:block; padding:0 10px 2px; font-style:normal; font-size:11px;
@@ -126,10 +160,15 @@ footer {
 }
 .note {
   margin:0 0 14px; padding:9px 13px; border-radius:9px; font-size:12.5px;
-  background:rgba(91,141,239,.10); border:1px solid rgba(91,141,239,.3);
-  color:var(--accent); display:none;
+  background:rgba(240,161,30,.10); border:1px solid rgba(240,161,30,.35);
+  color:#8a5a00; display:none;
 }
 .note.show { display:block; }
+@media print {
+  body { background:#fff; }
+  aside, .note { display:none; }
+  .tile { break-inside:avoid; box-shadow:none; }
+}
 @media (max-width:900px) {
   .wrap { flex-direction:column; }
   aside { width:100%; position:static; max-height:none; }
@@ -162,6 +201,17 @@ def _slicer_values(df: pd.DataFrame, max_fields: int = 8,
     return out
 
 
+def _finding_text(layout: Dict) -> str:
+    """The message out of a Plotly title, without its markup."""
+    title = (layout.get("title") or {}).get("text", "")
+    if not title:
+        return ""
+    # The builder writes "<b>finding</b><br><span…>axes</span>"; only the
+    # bold part is the finding, the rest repeats the tile label.
+    head = title.split("<br>")[0]
+    return re.sub(r"<[^>]+>", "", head).strip()
+
+
 def build_dashboard_html(
     df: pd.DataFrame,
     tiles: List[Dict],
@@ -181,15 +231,34 @@ def build_dashboard_html(
         if fig is None:
             continue
         spec = json.loads(pio.to_json(fig)) if not isinstance(fig, dict) else fig
+        layout = dict(spec.get("layout", {}))
         width = int(tile.get("w", 6))
+        question = str(tile.get("question", "")).strip()
+
+        # Plotly titles do not wrap, so on a half-width tile the finding
+        # was cut off mid-sentence — "Retail leads gross_profit at 10.8m
+        # — 1.5x the next group and 46% of the tota". Lifting it out of
+        # the figure and into the tile's own markup lets it wrap, and
+        # gives the plot back the vertical space the title was using.
+        finding = _finding_text(layout)
+        layout.pop("title", None)
+        margin = dict(layout.get("margin") or {})
+        margin["t"] = 8
+        layout["margin"] = margin
+
+        head = '<em>{}</em>'.format(html.escape(str(tile.get("title", ""))))
+        if question:
+            head += '<small>{}</small>'.format(html.escape(question))
+        if finding:
+            head += '<strong>{}</strong>'.format(html.escape(finding))
+        height = 300 - (18 if question else 0) - (34 if finding else 0)
         tile_html.append(
-            '<div class="tile" style="grid-column:span {}">'
-            '<em>{}</em><div id="t{}" style="height:290px"></div></div>'.format(
-                max(3, min(12, width)), html.escape(str(tile.get("title", ""))), i))
+            '<div class="tile" style="grid-column:span {}">{}'
+            '<div id="t{}" style="height:{}px"></div></div>'.format(
+                max(3, min(12, width)), head, i, max(180, height)))
         tile_js.append(
             "Plotly.newPlot('t{}', {}, {}, {{displayModeBar:false, responsive:true}});"
-            .format(i, json.dumps(spec.get("data", [])),
-                    json.dumps(spec.get("layout", {}))))
+            .format(i, json.dumps(spec.get("data", [])), json.dumps(layout)))
 
     kpi_html = "".join(
         '<div class="kpi"><span>{}</span><b>{}</b></div>'.format(

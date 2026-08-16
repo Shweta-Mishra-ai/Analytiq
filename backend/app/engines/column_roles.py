@@ -90,6 +90,15 @@ PRODUCT_NOUNS = frozenset({"product", "sku", "item", "article", "catalogue",
 REGION_NOUNS = frozenset({"region", "territory", "zone", "area", "market",
                           "country", "state", "city", "district", "branch",
                           "location", "site", "store"})
+# The organisational grouping a business reports along: department, cost
+# centre, team, business unit. Distinct from `product` — a P&L is cut by
+# cost centre and a catalogue is cut by category, and calling both
+# "product" left the HR and finance dashboards with nothing to group by,
+# so each came out with two tiles on it.
+UNIT_NOUNS = frozenset({"department", "dept", "team", "function", "division",
+                        "unit", "centre", "center", "cc", "group", "office",
+                        "practice", "business"})
+
 PERSON_NOUNS = frozenset({"rep", "salesperson", "agent", "owner", "seller",
                           "consultant", "advisor", "manager", "employee",
                           "staff", "operator", "analyst"})
@@ -127,6 +136,7 @@ class Roles:
     rating: Optional[str] = None
     period: Optional[str] = None
     attrition: Optional[str] = None
+    unit: Optional[str] = None
     reason: Dict[str, str] = None      # role -> why that column
 
     def get(self, role: str) -> Optional[str]:
@@ -277,7 +287,9 @@ def resolve(df: pd.DataFrame) -> Roles:
 
     _take("product", _pick(df, PRODUCT_NOUNS, numeric=False, max_unique=60,
                            block=(NOT_A_PRODUCT,)))
-    _take("region", _pick(df, REGION_NOUNS, numeric=False, max_unique=60))
+    _take("unit", _pick(df, UNIT_NOUNS, numeric=False, max_unique=60))
+    _take("region", _pick(df, REGION_NOUNS, numeric=False, max_unique=60,
+                          exclude=[c for c in (found.get("unit"),) if c]))
     _take("person", _pick(df, PERSON_NOUNS, numeric=False, max_unique=300))
 
     found_left = left_mask(df)
