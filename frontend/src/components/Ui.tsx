@@ -181,6 +181,7 @@ export function Btn({
   variant = 'primary',
   size = 'md',
   className = '',
+  title,
 }: {
   children: ReactNode
   onClick?: () => void
@@ -188,6 +189,8 @@ export function Btn({
   variant?: 'primary' | 'ghost' | 'danger' | 'subtle'
   size?: 'sm' | 'md'
   className?: string
+  /** Native tooltip. An icon-only button with no title is a guess. */
+  title?: string
 }) {
   const styles = {
     primary: 'btn-primary text-white',
@@ -203,6 +206,7 @@ export function Btn({
     <button
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={`rounded-lg font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${styles[variant]} ${sizes[size]} ${className}`}
     >
       {children}

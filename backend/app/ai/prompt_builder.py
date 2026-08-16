@@ -59,13 +59,7 @@ RULES:
 """
 
 
-def get_df_summary(df: pd.DataFrame) -> str:
-    num_cols = df.select_dtypes(include="number").columns.tolist()
-    lines = [
-        f"Rows: {len(df):,}",
-        f"Columns: {list(df.columns)}",
-        f"Missing: {df.isnull().sum().sum():,}",
-    ]
-    if num_cols:
-        lines.append(df[num_cols].describe().round(2).to_string())
-    return "\n".join(lines)
+# `get_df_summary` was here — a second dataset summariser, never
+# called. `build_chat_system_prompt` above already embeds the frame's
+# shape in the system prompt, and two summaries that could disagree
+# about the same dataframe is worse than one.

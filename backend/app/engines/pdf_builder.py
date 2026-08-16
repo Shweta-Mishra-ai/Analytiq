@@ -26,13 +26,12 @@ import io
 import os
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.lib.colors import HexColor, white, black
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
+from reportlab.lib.colors import HexColor
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import (
     BaseDocTemplate, CondPageBreak, Frame, PageTemplate,
@@ -544,7 +543,12 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
     ]], colWidths=[20*mm, CW - 20*mm])
     hdr.setStyle(TableStyle([
         ("BACKGROUND", (0,0), (0,0), HexColor(col)),
-        ("BACKGROUND", (1,0), (1,0), _c(T["bg_light"])),
+        # `bg` — the per-severity tint — was computed on every card and
+        # then never used, so a critical finding was drawn on exactly the
+        # same pale panel as an informational one. The severity word in
+        # the badge was the only thing separating them, which is not
+        # something a reader scanning a page picks up.
+        ("BACKGROUND", (1,0), (1,0), _c(bg)),
         ("VALIGN",     (0,0), (-1,-1), "MIDDLE"),
         ("ALIGN",      (0,0), (0,0),  "CENTER"),
         ("TOPPADDING", (0,0), (-1,-1), 7),

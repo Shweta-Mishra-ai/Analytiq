@@ -13,9 +13,9 @@ warnings.filterwarnings("ignore")
 from scipy import stats as scipy_stats
 from scipy.stats import (
     shapiro, normaltest, kstest, anderson,
-    ttest_ind, mannwhitneyu, f_oneway, kruskal,
-    chi2_contingency, pointbiserialr, spearmanr, pearsonr,
-    levene, bartlett
+    f_oneway, kruskal,
+    spearmanr, pearsonr,
+    levene
 )
 
 from app.services.dtypes import MONTH_END, text_columns
@@ -489,16 +489,33 @@ def analyze_group_comparison(
 
     # Choose test
     if is_normal and n_groups >= 2:
-        # Check variance homogeneity first
+        # Levene decides which test is valid, and the answer was thrown
+        # away: `equal_var` was computed and never read, so a one-way
+        # ANOVA ran regardless. ANOVA assumes equal variances, and on
+        # groups that violate that — a large, tight group beside a small,
+        # spread one, which is the normal shape of a segment
+        # comparison — it reports significance far more often than the
+        # stated 5%. The report then asserted "these segments differ" on
+        # the strength of a test that was not entitled to say so.
         try:
             _, lev_p = levene(*group_arrays)
             equal_var = lev_p > 0.05
         except Exception:
+            logger.debug("Levene test failed; assuming equal variances",
+                         exc_info=True)
             equal_var = True
 
         try:
-            stat, p   = f_oneway(*group_arrays)
-            test_name = "One-Way ANOVA"
+            if equal_var:
+                stat, p   = f_oneway(*group_arrays)
+                test_name = "One-Way ANOVA"
+            else:
+                # Kruskal-Wallis compares distributions without assuming
+                # equal spread. It is the conservative choice here, and
+                # being named in the report lets a reader see why.
+                stat, p   = kruskal(*group_arrays)
+                test_name = ("Kruskal-Wallis (unequal variances, "
+                             "Levene p={:.3f})".format(lev_p))
         except Exception:
             stat, p   = kruskal(*group_arrays)
             test_name = "Kruskal-Wallis"
@@ -581,7 +598,6 @@ def analyze_vif(df: pd.DataFrame) -> List[MulticollinearityResult]:
     VIF > 10 = serious multicollinearity.
     """
     from sklearn.linear_model import LinearRegression
-    from sklearn.preprocessing import StandardScaler
     from sklearn.impute import SimpleImputer
 
     num_cols = df.select_dtypes(include="number").columns.tolist()

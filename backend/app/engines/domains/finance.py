@@ -11,7 +11,7 @@ import pandas as pd
 
 from scipy import stats as scipy_stats
 
-from app.engines.domains.base import Insight, build_insight, col_stats
+from app.engines.domains.base import build_insight
 from app.services.stat_guards import MIN_N
 
 from app.engines.column_roles import resolve

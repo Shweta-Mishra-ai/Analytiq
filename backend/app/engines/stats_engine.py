@@ -2,7 +2,7 @@ import logging
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from scipy import stats as scipy_stats
 
 logger = logging.getLogger(__name__)

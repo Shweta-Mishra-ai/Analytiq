@@ -94,7 +94,9 @@ def last_report(ds_id: str, target: Optional[str] = None,
 
 @router.post("/{ds_id}/what-if")
 def what_if(ds_id: str, req: WhatIfRequest, owner: str = Depends(current_owner)):
-    df = _df_or_404(owner, ds_id)
+    # Called for the 404 it raises when the dataset is gone; the frame
+    # itself is not needed, the trained model carries what is.
+    _df_or_404(owner, ds_id)
     report = store.cache_get(owner, ds_id, f"ml_{req.target}") \
         or store.cache_get(owner, ds_id, "ml_last")
     if report is None:

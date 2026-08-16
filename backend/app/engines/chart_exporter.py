@@ -5,7 +5,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 
 from app.engines.chart_message import human_number as _human_num
 from app.engines.domains.base import is_id_column

@@ -5,27 +5,20 @@ Single responsibility: given health dict + df, produce PDF bytes.
 Call: build_health_pdf(df, niche, health, config) -> bytes
 """
 from __future__ import annotations
-import io
-import os
 import datetime
 import logging
-import tempfile
-from typing import Dict, List, Optional, Any
+from typing import List, Optional
 
-import numpy as np
 import pandas as pd
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.lib.utils import ImageReader
 from reportlab.lib.colors import HexColor
 from reportlab.platypus import (
     BaseDocTemplate, Frame, PageTemplate, Paragraph, Spacer,
     Table, TableStyle, KeepTogether, HRFlowable,
 )
 from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
-from reportlab.pdfgen import canvas as rl_canvas
-from pypdf import PdfReader, PdfWriter
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from app.engines.pdf_primitives import truncate_label, is_id_col
 
 logger = logging.getLogger(__name__)
@@ -68,13 +61,12 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     opportunities = list(opportunities or [])
     actions       = list(actions or [])
     import io as _io
-    from reportlab.lib.colors import white, black
+    from reportlab.lib.colors import white
     from reportlab.lib.enums import TA_JUSTIFY
     from reportlab.platypus import (
         PageBreak, Image,
     )
     from reportlab.pdfgen import canvas as CV
-    from reportlab.lib import colors as rl_colors
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt

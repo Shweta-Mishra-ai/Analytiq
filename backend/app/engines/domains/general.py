@@ -11,8 +11,7 @@ import numpy as np
 import pandas as pd
 
 from app.engines.domains.base import (
-    Insight, build_insight, col_stats, correlations,
-    outliers_explained_by_group,
+    build_insight, outliers_explained_by_group,
 )
 from app.engines.domains.general_depth import run_general_depth
 from app.services.numfmt import human_number

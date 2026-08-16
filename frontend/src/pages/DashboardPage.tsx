@@ -21,8 +21,8 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import GridLayout, { type LayoutItem } from 'react-grid-layout'
-import { GripVertical, Plus, RefreshCw, Trash2 } from 'lucide-react'
-import { apiGet, apiPost, type Field, type Kpi } from '../api/client'
+import { Download, GripVertical, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { apiBlob, apiGet, apiPost, type Field, type Kpi } from '../api/client'
 import type { Figure } from '../types'
 import { useApp } from '../store/app'
 import FilterBar from '../components/FilterBar'
@@ -64,6 +64,7 @@ export default function DashboardPage() {
   const [showBuilder, setShowBuilder] = useState(false)
   const [error, setError] = useState('')
   const [width, setWidth] = useState(1200)
+  const [exporting, setExporting] = useState(false)
 
   const ds = dataset?.dataset_id
 
@@ -161,6 +162,51 @@ export default function DashboardPage() {
     [fields],
   )
 
+  /**
+   * The dashboard as one self-contained HTML file.
+   *
+   * A PDF is finished — the reader sees the cuts we chose, and wanting
+   * the same view for one region means coming back to ask. This opens
+   * from a file:// path with no server and no network, so it can be
+   * attached to an email and still work in a year.
+   *
+   * The tile specs go with the request so the file matches what is on
+   * screen, including anything added through the tile builder.
+   */
+  const exportHtml = async () => {
+    if (!ds || exporting) return
+    setExporting(true)
+    setError('')
+    try {
+      const blob = await apiBlob(`/api/charts/${ds}/export/html`, 'POST', {
+        filters,
+        title: dataset?.filename?.replace(/\.[^.]+$/, '') || 'Dashboard',
+        subtitle: `${tiles.length} views${
+          filters.length ? ` — filtered on ${filters.length} field(s)` : ''
+        }`,
+        tiles: tiles.map((t) => ({
+          type: t.type,
+          x: t.x,
+          y: t.y,
+          agg: t.agg ?? 'sum',
+          title: t.title,
+        })),
+      })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${(dataset?.filename ?? 'dashboard').replace(/\.[^.]+$/, '')}-dashboard.html`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const handlePointClick = (t: TileSpec) => (pt: Record<string, unknown>) => {
     const col = t.x
     if (!col || !catFields.has(col)) return
@@ -182,6 +228,17 @@ export default function DashboardPage() {
           <div className="flex gap-2">
             <Btn variant="ghost" onClick={() => tiles.forEach(loadTile)}>
               <RefreshCw className="h-4 w-4" />
+            </Btn>
+            <Btn
+              variant="ghost"
+              disabled={exporting || !tiles.length}
+              onClick={exportHtml}
+              title="Download this dashboard as one self-contained HTML file"
+            >
+              <span className="flex items-center gap-1.5">
+                <Download className="h-4 w-4" />
+                {exporting ? 'Building…' : 'Export'}
+              </span>
             </Btn>
             <Btn onClick={() => setShowBuilder(true)}>
               <span className="flex items-center gap-1.5">

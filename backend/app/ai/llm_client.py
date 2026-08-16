@@ -187,10 +187,9 @@ class LLMClient:
             logger.warning(f"Gemini call failed: {e}")
             return None
 
-    @staticmethod
-    def _load_secret(key: str) -> str:
-        return os.environ.get(key, "").strip()
-
+    # `_load_secret` was removed — an unused second path to the API key,
+    # alongside the one this class actually uses. Two ways to load a
+    # credential is two things to audit.
 
 # ─────────────────────────────────────────────────────────
 #  SINGLETON — used by report_narrator.py

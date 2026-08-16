@@ -7,14 +7,16 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
 
-from app.engines.domains.base import (Insight, AttritionAnalysis, build_insight,
-                               col_stats, correlations, infer_scale_bounds)
+from app.engines.domains.base import (AttritionAnalysis, build_insight,
+                               infer_scale_bounds)
 from app.services.dtypes import is_text_dtype
 from app.services.stat_guards import apply_fdr, chi2_association
+
+from app.engines.column_roles import left_mask as role_left_mask
+from app.engines.domain_detect import tokenise
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +26,14 @@ _infer_scale_bounds = infer_scale_bounds
 
 
 def _find_left_mask(df: pd.DataFrame):
-    """Boolean 'employee left' mask, or None if no attrition column exists."""
-    attr_col = next((c for c in df.columns
-                     if "attrition" in c.lower()
-                     or c.lower() in ["left", "churned", "resigned"]), None)
-    if attr_col is None:
-        return None
-    return df[attr_col].astype(str).str.lower().str.strip().isin(
-        ["yes", "1", "1.0", "true", "left"])
+    """Boolean 'employee left' mask, or None if no attrition column exists.
+
+    One definition, in engines/column_roles. There were four, with four
+    different keyword lists and two different ideas about how to read the
+    column.
+    """
+    found = role_left_mask(df)
+    return found[1] if found else None
 
 
 def _segment_attrition_evidence(df: pd.DataFrame, segment_mask, segment_label: str) -> str:
@@ -79,7 +81,8 @@ def compute_flight_risk(df: pd.DataFrame, left_mask=None):
 
     n_total = len(df)
     n_left = int(left_mask.sum())
-    sat_col = next((c for c in df.columns if "satisfaction" in c.lower()), None)
+    sat_col = next((c for c in df.columns
+                    if "satisfaction" in tokenise(c)), None)
     n_flight = 0
     if sat_col and sat_col in df.columns:
         sv = df.loc[~left_mask, sat_col].dropna()
@@ -91,14 +94,10 @@ def compute_flight_risk(df: pd.DataFrame, left_mask=None):
 
 
 def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
-    attr_col = next((c for c in df.columns
-                     if "attrition" in c.lower()
-                     or c.lower() in ["left","churned","resigned"]), None)
-    if attr_col is None:
+    found = role_left_mask(df)
+    if not found:
         return None
-
-    left_mask = df[attr_col].astype(str).str.lower().str.strip().isin(
-        ["yes","1","1.0","true","left"])
+    attr_col, left_mask = found
     n_left  = int(left_mask.sum())
     n_total = len(df)
     if n_left == 0:
@@ -184,9 +183,9 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
 
     # Segment breakdown
     dept_col = next((c for c in df.columns
-                     if "department" in c.lower() or "dept" in c.lower()), None)
+                     if {"department", "dept"} & set(tokenise(c))), None)
     sal_col  = next((c for c in df.columns
-                     if "salary" in c.lower() and is_text_dtype(df[c])), None)
+                     if "salary" in tokenise(c) and is_text_dtype(df[c])), None)
 
     dept_attrition = {}
     if dept_col:

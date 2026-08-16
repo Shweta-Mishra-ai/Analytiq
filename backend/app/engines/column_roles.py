@@ -95,6 +95,17 @@ PERSON_NOUNS = frozenset({"rep", "salesperson", "agent", "owner", "seller",
                           "staff", "operator", "analyst"})
 RATING_NOUNS = frozenset({"rating", "score", "csat", "nps", "satisfaction",
                           "stars"})
+ATTRITION_NOUNS = frozenset({"attrition", "churn", "churned", "left",
+                            "resigned", "exited", "terminated", "leaver",
+                            "turnover"})
+
+# Values that mean "this record left". Shared so a Yes/No column, a 0/1
+# column and a True/False column all read the same way — four separate
+# copies of this list disagreed, and two of them called `.mean()` on the
+# raw column, which is only correct for the 0/1 spelling.
+_LEFT_VALUES = frozenset({"yes", "y", "1", "1.0", "true", "t", "left",
+                          "churned", "resigned", "exited", "terminated",
+                          "attrited", "voluntary", "involuntary"})
 
 
 @dataclass(frozen=True)
@@ -115,10 +126,48 @@ class Roles:
     person: Optional[str] = None
     rating: Optional[str] = None
     period: Optional[str] = None
+    attrition: Optional[str] = None
     reason: Dict[str, str] = None      # role -> why that column
 
     def get(self, role: str) -> Optional[str]:
         return getattr(self, role, None)
+
+
+def left_mask(df: pd.DataFrame):
+    """(column, boolean 'this one left') for an attrition column, or None.
+
+    Four engines found this column for themselves, with four different
+    keyword lists — `_find_left_mask` and `_run_attrition` in the HR
+    engine, and twice more in `insights_builder`. They also disagreed
+    about how to read it: the HR engine normalised "Yes"/"No" to a
+    boolean, while both copies in `insights_builder` called `.mean()` on
+    the raw column, which is right for a 0/1 spelling and silently wrong
+    — or an exception — for the Yes/No one that is at least as common in
+    an HRIS export.
+    """
+    col = None
+    for c in df.columns:
+        if set(tokenise(c)) & ATTRITION_NOUNS:
+            col = c
+            break
+    if col is None:
+        return None
+    s = df[col]
+    if pd.api.types.is_bool_dtype(s):
+        return col, s.fillna(False).astype(bool)
+    if pd.api.types.is_numeric_dtype(s):
+        # 0/1 only. A tenure-in-months column called `months_to_exit` is
+        # not a flag, and averaging it as one produces a 43% attrition
+        # rate out of nowhere.
+        values = set(pd.to_numeric(s, errors="coerce").dropna().unique())
+        if not values <= {0, 1}:
+            return None
+        return col, s.fillna(0).astype(float).eq(1)
+    normalised = s.astype("string").str.strip().str.lower()
+    mask = normalised.isin(_LEFT_VALUES)
+    if not mask.any():
+        return None
+    return col, mask.fillna(False)
 
 
 def _is_numeric(df: pd.DataFrame, col: str) -> bool:
@@ -230,6 +279,14 @@ def resolve(df: pd.DataFrame) -> Roles:
                            block=(NOT_A_PRODUCT,)))
     _take("region", _pick(df, REGION_NOUNS, numeric=False, max_unique=60))
     _take("person", _pick(df, PERSON_NOUNS, numeric=False, max_unique=300))
+
+    found_left = left_mask(df)
+    if found_left:
+        found["attrition"] = found_left[0]
+        reason["attrition"] = "'{}' reads as a left/stayed flag".format(
+            found_left[0])
+    else:
+        found["attrition"] = None
 
     dates = df.select_dtypes(include="datetime").columns.tolist()
     if dates:

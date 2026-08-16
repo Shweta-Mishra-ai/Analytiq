@@ -7,26 +7,26 @@ Drop this file in core/ and import in 8_Reports.py
 
 from __future__ import annotations
 import logging
-import numpy as np
 import pandas as pd
-from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
+from app.engines.column_roles import left_mask as role_left_mask
 from app.services.dtypes import text_columns
 
 
-@dataclass
-class Insight:
-    severity: str          # critical | high | warning | info
-    title: str
-    problem: str
-    cause: str
-    evidence: str
-    action: str
-    impact: str
+# A second Insight dataclass lived here, identical to the one in
+# domains/base except that it had no `category` field — and every one of
+# the ten `Insight(...)` calls in this module passes `category=`. So each
+# of them raised TypeError. Nothing caught it, because the function
+# returns early whenever the story engine produced insights of its own,
+# which it almost always does; the fallback path this whole file exists
+# to provide was dead on arrival, and the dict-conversion branch at the
+# top raised on any caller that passed dicts.
+#
+# Re-exported under the old name so existing importers keep working.
+from app.engines.domains.base import Insight  # noqa: E402
 
 
 def build_top_insights(
@@ -102,11 +102,15 @@ def build_top_insights(
 
     # ── Auto-detect attrition from df if no attrition object ─────────────────
     elif domain in ("hr",) and attrition is None:
-        atr_col = next((c for c in df.columns
-                        if c.lower() in ("left","attrition","churned","exited")), None)
-        if atr_col:
-            rate = float(df[atr_col].mean()) * 100
-            n_left = int(df[atr_col].sum())
+        # This called `.mean()` on the raw column, which is correct only
+        # if attrition is stored as 0/1. On the Yes/No spelling that an
+        # HRIS export normally uses it raised, so the HR headline simply
+        # never appeared on half the files it was written for.
+        found = role_left_mask(df)
+        if found:
+            mask = found[1]
+            rate = float(mask.mean()) * 100
+            n_left = int(mask.sum())
             if rate > 0:
                 sev = "critical" if rate > 20 else "high" if rate > 15 else "warning"
                 insights.append(Insight(
@@ -212,12 +216,14 @@ def build_top_insights(
     # (profile object not available here, skip)
 
     # ── Low salary attrition insight (HR) ────────────────────────────────────
-    sal_col = next((c for c in cat_cols if c.lower() in ("salary","salary_band")), None)
-    atr_col = next((c for c in df.columns
-                    if c.lower() in ("left","attrition","churned")), None)
-    if sal_col and atr_col and len(insights) < 5:
+    sal_col = next((c for c in cat_cols
+                    if c.lower() in ("salary", "salary_band")), None)
+    found_atr = role_left_mask(df)
+    if sal_col and found_atr and len(insights) < 5:
         try:
-            sal_atr = df.groupby(sal_col)[atr_col].mean() * 100
+            work = pd.DataFrame({"_band": df[sal_col].astype(str).str.lower(),
+                                 "_left": found_atr[1]})
+            sal_atr = work.groupby("_band")["_left"].mean() * 100
             if "low" in sal_atr.index and "high" in sal_atr.index:
                 low_r = sal_atr["low"]
                 hi_r  = sal_atr["high"]

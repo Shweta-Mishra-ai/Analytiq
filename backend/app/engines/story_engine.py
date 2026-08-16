@@ -15,13 +15,11 @@ replacing it.
 """
 import logging
 import pandas as pd
-import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
-from scipy import stats as scipy_stats
 
 from app.engines.domains.base import (
-    Insight, AttritionAnalysis, build_insight, col_stats, correlations,
+    Insight, AttritionAnalysis, col_stats, correlations,
 )
 from app.engines.domains.hr        import _insights_hr, _run_attrition
 from app.engines.domains.ecommerce import _insights_ecommerce
@@ -492,7 +490,6 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
     # old template ("This N-row X dataset analysis identified N critical
     # issue(s) and N risk(s)…") said nothing a reader couldn't see from the
     # section headings, and reads as filler at the top of a paid report.
-    n_crit = len(critical)
     try:
         exec_s = _build_narrative_summary(
             df=df, domain=domain, confidence=confidence,

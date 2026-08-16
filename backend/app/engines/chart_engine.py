@@ -222,8 +222,26 @@ def make_bar(df, x, y, title="", top_n: int = 25):
     return fig
 
 
-def make_line(df, x, y, title=""):
+def make_line(df, x, y, title="", max_points: int = 120):
+    """A trend, at a grain a reader can actually see.
+
+    Plotting every row put 600 daily points on a tile 400 pixels wide:
+    a solid band of zig-zag with a faint upward drift somewhere inside
+    it. The finding — revenue rose 66% — was in the title and nowhere in
+    the picture. Dense date axes are rolled up to weeks or months, which
+    is what makes a trend line a trend line rather than a noise floor.
+    """
     work = df[[x, y]].dropna().sort_values(x)
+    if (pd.api.types.is_datetime64_any_dtype(work[x])
+            and len(work) > max_points):
+        span_days = (work[x].max() - work[x].min()).days or 1
+        rule = ("D" if span_days <= max_points
+                else "W" if span_days <= max_points * 7
+                else "ME" if span_days <= max_points * 31 else "QE")
+        work = (work.set_index(x)[y].resample(rule).sum()
+                    .reset_index().dropna())
+        if len(work) > max_points:
+            work = work.tail(max_points)
     fig = px.line(work, x=x, y=y)
     fig.update_traces(
         line=dict(color=PALETTE[0], width=2),

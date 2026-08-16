@@ -16,13 +16,12 @@ from sklearn.model_selection import cross_val_score, train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
+from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifier
 from sklearn.metrics import (
     r2_score, mean_absolute_error, mean_squared_error,
-    accuracy_score, f1_score, roc_auc_score,
-    classification_report
+    accuracy_score, f1_score, roc_auc_score
 )
 
 from app.services.dtypes import is_text_dtype, text_columns

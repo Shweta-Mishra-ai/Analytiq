@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 
 import json
-from typing import List, Optional
+from typing import List
 
 import plotly.io as pio
 from fastapi import APIRouter, Depends, HTTPException
