@@ -238,7 +238,11 @@ def export_html(ds_id: str, body: ExportBody,
     tiles: List[dict] = []
     # Light, because this is the artefact that gets read in a meeting,
     # printed, and pasted into a deck. The interface stays dark.
-    with chart_engine.use_theme("light"):
+    # The domain's own palette, so a workforce review and a P&L are not
+    # indistinguishable across a desk.
+    from app.engines.domain_detect import detect as _detect_domain
+    domain = _detect_domain(_df(owner, ds_id)).domain
+    with chart_engine.use_theme(chart_engine.theme_for(domain)):
         for spec, width, question in zip(specs, widths, questions):
             try:
                 built = build(ds_id, spec, owner=owner)
@@ -262,7 +266,7 @@ def export_html(ds_id: str, body: ExportBody,
         df, tiles, kpis(ds_id, FiltersBody(filters=body.filters),
                         owner=owner)["kpis"],
         title=body.title, subtitle=body.subtitle,
-        prepared_by=body.prepared_by)
+        prepared_by=body.prepared_by, domain=domain)
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "-"
                    for ch in (body.title or "dashboard")).strip("-") or "dashboard"
     return HTMLResponse(page, headers={

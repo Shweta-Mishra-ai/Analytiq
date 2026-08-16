@@ -39,6 +39,8 @@ import pandas as pd
 
 from app.engines.column_roles import Roles, resolve
 
+from app.services.dtypes import dedupe_columns
+
 logger = logging.getLogger(__name__)
 
 # A dashboard is a page someone reads in a meeting. Past about eight
@@ -300,6 +302,12 @@ def build_spec(df: pd.DataFrame, domain: str = "general",
                roles: Optional[Roles] = None,
                max_tiles: int = MAX_TILES) -> List[Tile]:
     """The tiles this dataset can actually support, best first."""
+    # Duplicate column names make `df[name]` return a DataFrame
+    # instead of a Series, and every `.dtype` / `.nunique()` /
+    # `to_numeric` call below then raises. Guarded here as well as
+    # at the loader and the store, because this is a public entry
+    # point and a caller can hand it any frame.
+    df = dedupe_columns(df)
     roles = roles or resolve(df)
     candidates = DASHBOARDS.get(str(domain or "").strip().lower(), GENERAL)
 

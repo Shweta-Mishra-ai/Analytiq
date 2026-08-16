@@ -198,15 +198,26 @@ def auto_clean(df: pd.DataFrame) -> tuple[pd.DataFrame, CleaningReport]:
     Returns (cleaned_df, CleaningReport).
     Every action is logged — nothing silent.
     """
-    df = df.copy()
+    from app.services.dtypes import dedupe_columns
+
+    df = dedupe_columns(df).copy()
     report = CleaningReport(
         original_shape=df.shape,
         cleaned_shape=df.shape,
     )
+    if df.empty and not len(df.columns):
+        # A file that parsed to nothing still has to come back as a
+        # report rather than a traceback — that is the moment the user
+        # most needs to be told what happened.
+        report.add("dataset", "no columns parsed", "nothing to clean",
+                   "", "", 0)
+        return df, report
 
     # ── 1. Strip whitespace from column names ──────────────
     old_cols = df.columns.tolist()
-    df.columns = df.columns.str.strip()
+    # `.str` on an empty or non-string Index raises; go through str()
+    # per name, which is what the intent was anyway.
+    df.columns = [str(c).strip() for c in df.columns]
     renamed = [(o, n) for o, n in zip(old_cols, df.columns) if o != n]
     for old, new in renamed:
         report.add("column_name", "leading/trailing whitespace",

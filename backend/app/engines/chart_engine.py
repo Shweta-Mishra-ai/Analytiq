@@ -41,7 +41,7 @@ from app.engines.chart_message import (
     line_message,
     pie_message,
 )
-from app.services.dtypes import text_columns
+from app.services.dtypes import text_columns, dedupe_columns
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +85,47 @@ PALETTES = {
     },
 }
 
+# Each domain reads in its own colour, the way a practice has house
+# colours for the kind of work it does: a workforce review and a P&L
+# should not be indistinguishable at a glance across a desk. Only the
+# accent and the second series change — the neutrals, the grid and the
+# text stay fixed, because that is what keeps five palettes looking like
+# one system rather than five templates.
+#
+# Each lead is checked against white for text contrast and against its
+# own neighbour for separation; the later entries repeat across domains
+# on purpose, since a chart with six series is rare and the first two
+# are what a reader actually distinguishes.
+DOMAIN_ACCENTS = {
+    "finance":    ("#f0a11e", "#1f6feb"),   # amber, as in a printed pack
+    "hr":         ("#1f6feb", "#0f9d6e"),   # blue — the workforce convention
+    "sales":      ("#0f9d6e", "#f0a11e"),   # green, against target
+    "ecommerce":  ("#e8590c", "#1f6feb"),   # orange, retail
+    "marketing":  ("#7c4dff", "#0891b2"),
+    "operations": ("#0891b2", "#f0a11e"),
+    "saas":       ("#7c4dff", "#0f9d6e"),
+    "healthcare": ("#0e9f9f", "#1f6feb"),
+    "general":    ("#1f6feb", "#f0a11e"),
+}
+
+# Filled in below, one light palette per domain.
+_TAIL = ["#7c4dff", "#e5484d", "#f7c948", "#0891b2", "#c2410c", "#0f9d6e"]
+for _domain, (_lead, _second) in DOMAIN_ACCENTS.items():
+    _base = dict(PALETTES["light"])
+    _series = [_lead, _second] + [c for c in _TAIL if c not in (_lead, _second)]
+    _base["series"] = _series[:8]
+    _base["diverging"] = [[0.0, "#e5484d"], [0.5, "#f6f7f9"], [1.0, _lead]]
+    PALETTES["light-" + _domain] = _base
+
+
+def theme_for(domain: str, mode: str = "light") -> str:
+    """The palette name for a domain, falling back to the plain one."""
+    key = "{}-{}".format(mode, str(domain or "").strip().lower())
+    return key if key in PALETTES else mode
+
+
 # The interface is dark, so that stays the module default; the export
-# passes "light".
+# passes a domain palette.
 _ACTIVE = "dark"
 
 INK = PALETTES["dark"]["ink"]
@@ -209,6 +248,12 @@ def recommend_charts(df: pd.DataFrame) -> List[Tuple[str, go.Figure]]:
     views of whichever column happened to be first — on a real export,
     the order ID.
     """
+    # Duplicate column names make `df[name]` return a DataFrame
+    # instead of a Series, and every `.dtype` / `.nunique()` /
+    # `to_numeric` call below then raises. Guarded here as well as
+    # at the loader and the store, because this is a public entry
+    # point and a caller can hand it any frame.
+    df = dedupe_columns(df)
     num_cols = rank_measures(df)
     cat_cols = _cat_columns(df)
     date_cols = df.select_dtypes(include="datetime").columns.tolist()

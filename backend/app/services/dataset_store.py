@@ -156,11 +156,21 @@ class DatasetStore:
 
     # ── dataframes ───────────────────────────────────────
     def get_df(self, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
-        """Active (possibly cleaned) dataframe."""
-        return self._load("active", owner, ds_id)
+        """Active (possibly cleaned) dataframe.
+
+        Column names are made unique on the way out. The loader does this
+        on upload, but a dataset pickled before that fix, or one written
+        by a cleaning step that pivoted, would otherwise reach the
+        engines with duplicates and take six of them down.
+        """
+        from app.services.dtypes import dedupe_columns
+
+        return dedupe_columns(self._load("active", owner, ds_id))
 
     def get_raw_df(self, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
-        return self._load("raw", owner, ds_id)
+        from app.services.dtypes import dedupe_columns
+
+        return dedupe_columns(self._load("raw", owner, ds_id))
 
     def update_active(self, owner: str, ds_id: str, df: pd.DataFrame) -> None:
         mkey = self._mkey(owner, ds_id)
@@ -250,7 +260,17 @@ class DatasetStore:
         return df
 
     def _touch_mem(self, owner: str, ds_id: str, **entry) -> None:
+        """Keep the most recently used datasets in memory.
+
+        Re-assigning an existing dict key does not move it — Python keeps
+        insertion order — so the dataset someone was actively working on
+        stayed wherever it first landed and was the next one evicted,
+        while a dataset nobody had touched in an hour survived. It only
+        cost a reload from disk, but it meant the eviction policy was the
+        opposite of the one the name claims.
+        """
         mkey = self._mkey(owner, ds_id)
+        self._mem.pop(mkey, None)
         self._mem[mkey] = entry
         while len(self._mem) > self._MEM_LIMIT:
             oldest = next(iter(self._mem))
@@ -260,9 +280,37 @@ class DatasetStore:
 
     @staticmethod
     def _hash_df(df: pd.DataFrame) -> str:
-        sig = f"{df.shape}|{list(df.columns)}|{list(df.dtypes.astype(str))}"
-        sample = df.head(100).to_json(default_handler=str)
-        return hashlib.md5((sig + sample).encode()).hexdigest()
+        """A fingerprint of the whole frame, not of its first page.
+
+        This used to hash the shape, the column names, the dtypes and
+        `df.head(100)`. Every cleaning operation that changes values
+        without changing the frame's shape — capping outliers, filling
+        medians, stripping whitespace, correcting a typo — produced an
+        identical fingerprint whenever the affected rows sat past the
+        hundredth. On a 5,000-row file, capping outliers changed 2,990
+        values and the hash did not move, so `cache_get` handed back the
+        story, the ML report and the charts computed *before* the clean.
+        The user cleaned their data and the report kept showing the old
+        numbers, with nothing anywhere to say so.
+
+        `hash_pandas_object` reads every value. It is O(n) rather than
+        O(1), which is the correct trade: a cache that is fast and wrong
+        is worse than no cache.
+        """
+        sig = "{}|{}|{}".format(df.shape, list(df.columns),
+                                list(df.dtypes.astype(str)))
+        try:
+            values = pd.util.hash_pandas_object(df, index=True).values
+            digest = hashlib.md5(values.tobytes())
+        except Exception:
+            # Object columns holding unhashable values (a list in a cell)
+            # fall back to a full serialisation rather than to a sample —
+            # slower, but it still sees every row.
+            logger.debug("hash_pandas_object failed; serialising instead",
+                         exc_info=True)
+            digest = hashlib.md5(df.to_json(default_handler=str).encode())
+        digest.update(sig.encode())
+        return digest.hexdigest()
 
 
 store = DatasetStore()

@@ -65,7 +65,9 @@ _CSS = """
 :root {
   --bg:#f6f7f9; --panel:#ffffff; --panel2:#f1f3f6; --edge:#e4e7ec;
   --edge2:#d4d8e0; --ink:#1a1d23; --ink2:#3d434e; --mute:#6b7280;
-  --faint:#9aa1ac; --accent:#f0a11e; --accent2:#1f6feb;
+  --faint:#9aa1ac; --accent:__A1__; --accent2:__A2__;
+  --accent-soft:__A1__22; --accent-line:__A1__59;
+  --accent-ink:__AINK__; --accent3:__A3__; --accent4:__A4__;
 }
 * { box-sizing:border-box; }
 body {
@@ -102,7 +104,7 @@ aside h2 {
 }
 .slicer button:hover { background:var(--panel2); color:var(--ink2); }
 .slicer button.on {
-  background:rgba(240,161,30,.16); color:#8a5a00; font-weight:600;
+  background:var(--accent-soft); color:var(--accent-ink); font-weight:600;
 }
 main { flex:1; min-width:0; }
 .kpis {
@@ -121,8 +123,8 @@ main { flex:1; min-width:0; }
   background:var(--accent);
 }
 .kpi:nth-child(2)::before { background:var(--accent2); }
-.kpi:nth-child(3)::before { background:#0f9d6e; }
-.kpi:nth-child(4)::before { background:#7c4dff; }
+.kpi:nth-child(3)::before { background:var(--accent3); }
+.kpi:nth-child(4)::before { background:var(--accent4); }
 .kpi span {
   display:block; font-size:11px; letter-spacing:.05em; text-transform:uppercase;
   color:var(--mute); font-weight:500;
@@ -160,8 +162,8 @@ footer {
 }
 .note {
   margin:0 0 14px; padding:9px 13px; border-radius:9px; font-size:12.5px;
-  background:rgba(240,161,30,.10); border:1px solid rgba(240,161,30,.35);
-  color:#8a5a00; display:none;
+  background:var(--accent-soft); border:1px solid var(--accent-line);
+  color:var(--accent-ink); display:none;
 }
 .note.show { display:block; }
 @media print {
@@ -212,6 +214,19 @@ def _finding_text(layout: Dict) -> str:
     return re.sub(r"<[^>]+>", "", head).strip()
 
 
+def _darken(hex_colour: str, factor: float = 0.55) -> str:
+    """A readable text colour on a tint of the accent.
+
+    A pill filled with 13% accent needs its label darker than the accent
+    itself, or the two sit at the same lightness and the text disappears.
+    """
+    h = hex_colour.lstrip("#")
+    if len(h) != 6:
+        return "#3d434e"
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return "#{:02x}{:02x}{:02x}".format(*(int(c * factor) for c in (r, g, b)))
+
+
 def build_dashboard_html(
     df: pd.DataFrame,
     tiles: List[Dict],
@@ -220,8 +235,30 @@ def build_dashboard_html(
     title: str = "Dashboard",
     subtitle: str = "",
     prepared_by: str = "",
+    domain: str = "general",
 ) -> str:
-    """One self-contained HTML page. `tiles` is [{title, figure}, ...]."""
+    """One self-contained HTML page. `tiles` is [{title, figure}, ...].
+
+    The page takes the domain's accent so a workforce review and a P&L
+    are not indistinguishable across a desk; the neutrals stay fixed, so
+    the set still reads as one system.
+    """
+    from app.engines.chart_engine import palette, theme_for
+    from app.services.dtypes import dedupe_columns
+
+    # Duplicate column names make `df[name]` a DataFrame, and the slicer
+    # scan below then evaluates a Series as a boolean.
+    df = dedupe_columns(df)
+    colours = palette(theme_for(domain))["series"]
+    css = _CSS
+    for token, value in (
+        ("__A1__", colours[0]),
+        ("__A2__", colours[1] if len(colours) > 1 else colours[0]),
+        ("__A3__", colours[2] if len(colours) > 2 else colours[0]),
+        ("__A4__", colours[3] if len(colours) > 3 else colours[0]),
+        ("__AINK__", _darken(colours[0])),
+    ):
+        css = css.replace(token, value)
     runtime = _plotly_runtime()
 
     tile_html: List[str] = []
@@ -280,7 +317,7 @@ def build_dashboard_html(
     return _PAGE.format(
         title=html.escape(title),
         subtitle=html.escape(subtitle),
-        css=_CSS,
+        css=css,
         runtime=runtime,
         kpis=kpi_html,
         slicers=('<aside><h2>Filters</h2>{}</aside>'.format(slicer_html)

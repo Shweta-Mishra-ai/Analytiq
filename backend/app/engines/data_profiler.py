@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 #  DATA CLASSES
 # ══════════════════════════════════════════════════════════
 
-from app.services.dtypes import text_columns
+from app.services.dtypes import text_columns, dedupe_columns
 
 
 @dataclass
@@ -466,6 +466,14 @@ def _generate_recommendations(
         )
 
     # Positive finding
+    if not profiles:
+        # A frame with no columns reached this and divided by zero. It
+        # happens on an upload that parsed to nothing — a header-only
+        # CSV, a wrong delimiter — which is exactly the moment the user
+        # needs a message rather than a stack trace.
+        return recs + ["No columns could be profiled. The file may have "
+                       "parsed with the wrong delimiter, or contain only "
+                       "a header row."]
     good_cols = [p for p in profiles if p.quality_score >= 95]
     if len(good_cols) >= len(profiles) * 0.7:
         recs.append(
@@ -487,6 +495,12 @@ def profile_dataset(df: pd.DataFrame) -> DatasetProfile:
     Handles any dataset — HR, Ecommerce, Finance, Healthcare, General.
     Robust to: mixed types, inf values, large files, dirty data.
     """
+    # Duplicate column names make `df[name]` return a DataFrame
+    # instead of a Series, and every `.dtype` / `.nunique()` /
+    # `to_numeric` call below then raises. Guarded here as well as
+    # at the loader and the store, because this is a public entry
+    # point and a caller can hand it any frame.
+    df = dedupe_columns(df)
     # ── Pre-clean: replace infinities globally ─────────────
     try:
         df = df.copy()

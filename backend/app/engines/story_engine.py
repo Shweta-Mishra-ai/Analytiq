@@ -27,6 +27,8 @@ from app.engines.domains.sales     import _insights_sales
 from app.engines.domains.finance   import _insights_finance
 from app.engines.domains.general   import _insights_general
 
+from app.services.dtypes import dedupe_columns
+
 logger = logging.getLogger(__name__)
 
 # Re-exported so existing importers of these names keep working.
@@ -365,6 +367,12 @@ def _build_narrative_summary(
 # ══════════════════════════════════════════════════════════
 
 def generate_story(df: pd.DataFrame) -> StoryReport:
+    # Duplicate column names make `df[name]` return a DataFrame
+    # instead of a Series, and every `.dtype` / `.nunique()` /
+    # `to_numeric` call below then raises. Guarded here as well as
+    # at the loader and the store, because this is a public entry
+    # point and a caller can hand it any frame.
+    df = dedupe_columns(df)
     domain, confidence = detect_domain(df)
 
     num_cols  = df.select_dtypes(include="number").columns.tolist()

@@ -339,14 +339,39 @@ def assess_readiness(df: pd.DataFrame) -> ReadinessReport:
         report.summary = "This dataset is empty."
         return report
 
+    from app.services.dtypes import dedupe_columns
+
+    df = dedupe_columns(df)
+
     issues: List[ReadinessIssue] = []
+    failed: List[str] = []
     for check in (_check_shape, _check_types, _check_missing,
                   _check_duplicates, _check_mixed_types):
         try:
             check(df, issues)
         except Exception:
+            # A check that raised was silently dropped, and the report
+            # still came back saying the data was ready — a verdict
+            # reached by not running the tests that would have
+            # contradicted it. If a check cannot run, the reader is told,
+            # and "ready" is withheld.
             logger.warning("readiness check %s failed", check.__name__,
                            exc_info=True)
+            failed.append(check.__name__.lstrip("_").replace("_", " "))
+
+    if failed:
+        issues.append(ReadinessIssue(
+            column="(whole dataset)",
+            issue="{} readiness check(s) could not run: {}".format(
+                len(failed), ", ".join(failed)),
+            consequence="The checks those cover have not been made, so "
+                        "nothing here rules out the problems they look "
+                        "for. A pass from the remaining checks is not a "
+                        "pass overall.",
+            fix="Re-upload the file, or send it as CSV — this usually "
+                "means a column the parser could not read consistently.",
+            blocking=True,
+        ))
 
     report.issues = issues
     report.ready = not any(i.blocking for i in issues)

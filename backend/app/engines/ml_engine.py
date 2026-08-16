@@ -749,6 +749,11 @@ def run_ml_pipeline(
     5. Generate insights
     Returns MLReport.
     """
+    from app.services.dtypes import dedupe_columns
+
+    # Two columns of the same name make `df[target]` a frame,
+    # and every dtype check below then raises.
+    df = dedupe_columns(df)
     # Sample if large
     if len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)

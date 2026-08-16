@@ -46,6 +46,8 @@ import pandas as pd
 from app.engines.domain_detect import tokenise
 from app.engines.domains.base import is_id_column
 
+from app.services.dtypes import dedupe_columns
+
 logger = logging.getLogger(__name__)
 
 
@@ -238,6 +240,12 @@ def _pick(df: pd.DataFrame, nouns: frozenset, *,
 
 def resolve(df: pd.DataFrame) -> Roles:
     """Assign each role at most one column, with the reason recorded."""
+    # Duplicate column names make `df[name]` return a DataFrame
+    # instead of a Series, and every `.dtype` / `.nunique()` /
+    # `to_numeric` call below then raises. Guarded here as well as
+    # at the loader and the store, because this is a public entry
+    # point and a caller can hand it any frame.
+    df = dedupe_columns(df)
     if df is None or df.empty and not len(df.columns):
         return Roles(reason={})
 

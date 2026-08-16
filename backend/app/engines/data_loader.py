@@ -227,6 +227,40 @@ def _clean_columns(df: pd.DataFrame):
                 counter += 1
         df.columns = new_cols
 
+    # Duplicate names are common in real exports — two "Revenue" columns
+    # from a join, or a sheet where a header repeats. `df["revenue"]`
+    # then returns a DataFrame instead of a Series, and every engine that
+    # calls `.dtype`, `.nunique()` or `pd.to_numeric` on it raises. A fuzz
+    # pass over the pipeline found this breaking six of nine entry points
+    # — profiling, the story engine, both chart paths, the dashboard spec
+    # and the HTML export — from one upload.
+    #
+    # Suffixing rather than dropping: the second column holds data the
+    # user gave us, and silently discarding a column is the one thing a
+    # loader must never do.
+    counts: dict = {}
+    renamed: list = []
+    final: list = []
+    for name in df.columns:
+        if name in counts:
+            counts[name] += 1
+            new = "{}_{}".format(name, counts[name])
+            while new in counts:
+                counts[name] += 1
+                new = "{}_{}".format(name, counts[name])
+            renamed.append(name)
+            counts[new] = 0
+            final.append(new)
+        else:
+            counts[name] = 0
+            final.append(name)
+    if renamed:
+        df.columns = final
+        warnings.append(
+            "{} duplicate column name(s) ({}) were suffixed to keep them "
+            "distinct — no data was dropped.".format(
+                len(renamed), ", ".join(sorted(set(renamed))[:4])))
+
     return df, warnings
 
 

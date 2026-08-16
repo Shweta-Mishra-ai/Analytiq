@@ -100,3 +100,42 @@ def is_categorical_like(obj) -> bool:
     except Exception:
         logger.debug("is_categorical_like: unrecognised dtype %r", dtype, exc_info=True)
     return is_text_dtype(dtype)
+
+
+def dedupe_columns(df):
+    """Make every column name unique, in place-safe fashion.
+
+    The loader already suffixes duplicates on upload, but a frame can
+    reach an engine from the cache, from a cleaning step that pivoted, or
+    from a caller that built one itself. With two columns named the same,
+    `df[name]` hands back a DataFrame instead of a Series and every
+    engine that calls `.dtype`, `.nunique()` or `pd.to_numeric` on it
+    raises — a fuzz pass found one duplicated header breaking six of nine
+    entry points. This is the guard at the analysis boundary; the loader
+    is the one that reports it to the user.
+    """
+    import pandas as _pd
+
+    if df is None or not isinstance(df, _pd.DataFrame):
+        return df
+    names = list(df.columns)
+    if len(set(map(str, names))) == len(names):
+        return df
+    seen: dict = {}
+    out = []
+    for name in names:
+        key = str(name)
+        if key in seen:
+            seen[key] += 1
+            candidate = "{}_{}".format(key, seen[key])
+            while candidate in seen:
+                seen[key] += 1
+                candidate = "{}_{}".format(key, seen[key])
+            seen[candidate] = 0
+            out.append(candidate)
+        else:
+            seen[key] = 0
+            out.append(key)
+    df = df.copy()
+    df.columns = out
+    return df

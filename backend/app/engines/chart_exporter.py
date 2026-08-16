@@ -9,7 +9,7 @@ from typing import List, Tuple
 
 from app.engines.chart_message import human_number as _human_num
 from app.engines.domains.base import is_id_column
-from app.services.dtypes import MONTH_END
+from app.services.dtypes import MONTH_END, dedupe_columns
 
 logger = logging.getLogger(__name__)
 
@@ -536,6 +536,12 @@ def generate_all_charts(
     max_charts: int = 5,
 ) -> List[Tuple[str, bytes]]:
     """Auto-generate best charts for this dataset."""
+    # Duplicate column names make `df[name]` return a DataFrame
+    # instead of a Series, and every `.dtype` / `.nunique()` /
+    # `to_numeric` call below then raises. Guarded here as well as
+    # at the loader and the store, because this is a public entry
+    # point and a caller can hand it any frame.
+    df = dedupe_columns(df)
     # include="object" alone misses pandas 3's `str` dtype in some paths;
     # ask for both so categorical columns are found on either version.
     raw_num = df.select_dtypes(include="number").columns.tolist()
