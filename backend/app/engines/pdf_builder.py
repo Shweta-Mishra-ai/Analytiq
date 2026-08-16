@@ -944,6 +944,15 @@ def _sql_escape(text: str) -> str:
 #  INDUSTRY BENCHMARKS (HR domain)
 # ══════════════════════════════════════════════════════════
 
+# "Published hr ranges" reads as machine output. Acronym domains keep
+# their capitalisation; the rest are title-cased.
+_DOMAIN_LABELS = {
+    "hr": "HR", "saas": "SaaS", "ecommerce": "e-commerce",
+    "finance": "finance", "sales": "sales", "marketing": "marketing",
+    "operations": "operations", "healthcare": "healthcare",
+}
+
+
 def _has_reference_ranges(domain, df) -> bool:
     """Whether this dataset has any metric with a published range.
 
@@ -1028,7 +1037,7 @@ def _benchmark_section(story, s, T, domain, CW, df=None):
 
     _sec(story, s, T, "Performance Against Published Ranges",
          "Published {} ranges, against the figures in this dataset".format(
-             domain))
+             _DOMAIN_LABELS.get(domain, domain.title())))
     story.append(Paragraph(
         "These are general, publicly-cited ranges, not a licensed benchmark "
         "set, and they move with sector, company size and region. They "

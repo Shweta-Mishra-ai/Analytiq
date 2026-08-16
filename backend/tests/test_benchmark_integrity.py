@@ -224,3 +224,10 @@ def test_the_position_against_the_range_is_stated(hr_df):
     text = _pdf_text(hr_df, "hr")
     assert ("within the range" in text or "above the range" in text
             or "below the range" in text)
+
+
+def test_the_domain_is_named_the_way_a_reader_writes_it(hr_df):
+    """"Published hr ranges" reads as machine output."""
+    text = _pdf_text(hr_df, "hr")
+    assert "Published HR ranges" in text
+    assert "Published hr ranges" not in text
