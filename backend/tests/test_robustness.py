@@ -268,3 +268,68 @@ def test_cleaning_an_empty_frame_returns_a_report():
     out, report = auto_clean(pd.DataFrame())
     assert out.empty
     assert report is not None
+
+
+# ══════════════════════════════════════════════════════════
+#  Average order value — per order, not per line
+# ══════════════════════════════════════════════════════════
+
+def _orders(lines_per_order: int = 3, n_orders: int = 400, seed: int = 9):
+    rng = np.random.default_rng(seed)
+    n = lines_per_order * n_orders
+    return pd.DataFrame({
+        "order_id": np.repeat(np.arange(n_orders), lines_per_order),
+        "customer_id": rng.integers(1, 200, n),
+        "category": rng.choice(["Home", "Beauty"], n),
+        "revenue": rng.normal(100, 15, n).round(2),
+    })
+
+
+def test_average_order_value_sums_the_lines_of_an_order():
+    """A flat export has one row per line item, so the mean of the
+    revenue column is the average line. On a file averaging three lines
+    an order, quoting that as AOV understates it threefold."""
+    from app.engines.domains.base import col_stats
+    from app.engines.domains.ecommerce import _insights_ecommerce
+
+    df = _orders(lines_per_order=3)
+    stats = {c: col_stats(df[c])
+             for c in df.select_dtypes(include="number").columns}
+    out = _insights_ecommerce(df, {c: s for c, s in stats.items() if s}, [])
+    aov = [f for f in out["findings"] if "Average order value" in f]
+    assert aov, out["findings"]
+
+    expected = df.groupby("order_id")["revenue"].sum().mean()
+    per_line = df["revenue"].mean()
+    assert expected > per_line * 2, "fixture does not exercise the bug"
+    # Written in human units, so check the leading digits rather than
+    # the exact string.
+    assert "{:,.0f}".format(expected)[:2] in aov[0], (aov[0], expected)
+
+
+def test_without_an_order_column_the_figure_is_named_for_what_it_is():
+    """Calling a per-row average "average order value" is the error the
+    function exists to avoid."""
+    from app.engines.domains.base import col_stats
+    from app.engines.domains.ecommerce import _insights_ecommerce
+
+    df = _orders().drop(columns=["order_id"])
+    stats = {c: col_stats(df[c])
+             for c in df.select_dtypes(include="number").columns}
+    out = _insights_ecommerce(df, {c: s for c, s in stats.items() if s}, [])
+    joined = " ".join(out["findings"])
+    assert "Average order value" not in joined, joined
+    assert "per row" in joined, joined
+    assert any("order identifier" in r for r in out["risks"]), out["risks"]
+
+
+def test_the_row_count_is_not_called_an_order_count():
+    from app.engines.domains.base import col_stats
+    from app.engines.domains.ecommerce import _insights_ecommerce
+
+    df = _orders().drop(columns=["order_id"])
+    stats = {c: col_stats(df[c])
+             for c in df.select_dtypes(include="number").columns}
+    out = _insights_ecommerce(df, {c: s for c, s in stats.items() if s}, [])
+    line = next(f for f in out["findings"] if "per row" in f)
+    assert "{:,} rows".format(len(df)) in line, line

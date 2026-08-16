@@ -101,6 +101,102 @@ def _repeat_purchase_insights(df: pd.DataFrame, insights: List, findings: List,
         logger.warning("repeat purchase rate analysis failed", exc_info=True)
 
 
+def _aov_insights(df: pd.DataFrame, insights: List, findings: List,
+                  risks: List, opps: List) -> None:
+    """Average order value — the number an e-commerce operator quotes
+    first, and the one the engine never computed.
+
+    The subtlety that makes it worth its own function: a flat export has
+    one row per *line item*, so the mean of the revenue column is the
+    average line, not the average order. On a file averaging three lines
+    an order that understates AOV threefold. Orders are summed by their
+    identifier first, and where there is no order column the figure is
+    named for what it actually measures rather than being passed off as
+    AOV.
+    """
+    from app.engines.column_roles import resolve
+    from app.services.numfmt import human_number
+
+    roles = resolve(df)
+    rev_col = roles.money
+    if not rev_col or rev_col not in df.columns:
+        return
+
+    order_col = next(
+        (c for c in df.columns
+         if any(k in str(c).lower().replace(" ", "_")
+                for k in ("order_id", "orderid", "order_number",
+                          "transaction_id", "invoice_id", "invoice_no",
+                          "receipt_id"))), None)
+    try:
+        revenue = pd.to_numeric(df[rev_col], errors="coerce")
+        if order_col:
+            per_order = revenue.groupby(df[order_col]).sum().dropna()
+            basis = "per order, summed across {:,} line items".format(len(df))
+            label = "Average order value"
+            unit = "orders"
+        else:
+            per_order = revenue.dropna()
+            basis = ("per row — this file has no order identifier, so a "
+                     "multi-line order cannot be rolled up")
+            label = "Average revenue per row"
+            # Counting rows and calling them orders is the error this
+            # whole function exists to avoid; the noun has to follow.
+            unit = "rows"
+        per_order = per_order[per_order > 0]
+        if len(per_order) < 20:
+            return
+
+        mean_v = float(per_order.mean())
+        median_v = float(per_order.median())
+        p90 = float(per_order.quantile(0.90))
+        skewed = median_v > 0 and (mean_v - median_v) / median_v > 0.15
+
+        findings.append(
+            "{} is {} ({:,} {}); the median is {} and the top decile "
+            "begins at {}.".format(
+                label, human_number(mean_v), len(per_order), unit,
+                human_number(median_v), human_number(p90)))
+
+        insights.append(build_insight(
+            title="{} {}".format(label, human_number(mean_v)),
+            problem="{} across {:,} {}, against a median of {}.".format(
+                human_number(mean_v), len(per_order), unit,
+                human_number(median_v)),
+            cause="Order value is set by basket size and price point "
+                  "together. Which of the two moves it is not separable "
+                  "from this data alone.",
+            evidence="Measured {}. Mean {}, median {}, 90th percentile "
+                     "{}.{}".format(
+                         basis, human_number(mean_v), human_number(median_v),
+                         human_number(p90),
+                         " The mean sits {:.0f}% above the median, so it is "
+                         "pulled by large orders and the median is the "
+                         "fairer description of a typical basket.".format(
+                             (mean_v - median_v) / median_v * 100)
+                         if skewed else ""),
+            action="1. Track this against the same period last year, not "
+                   "against a published range — it is vertical-specific  "
+                   "2. Split it by channel and by new against returning "
+                   "customers before acting on the level  "
+                   "3. Test whether basket size or price point moves it",
+            impact="A {} lift in {} across {:,} {} is worth about {} — "
+                   "the arithmetic, not a forecast.".format(
+                       human_number(median_v * 0.05), label.lower(),
+                       len(per_order), unit,
+                       human_number(median_v * 0.05 * len(per_order))),
+            severity="info", category="aov",
+        ))
+
+        if not order_col:
+            risks.append(
+                "There is no order identifier in this file, so every "
+                "per-order figure here is really per line item. Add the "
+                "order column before quoting average order value.")
+    except Exception:
+        logger.warning("average order value failed", exc_info=True)
+
+
 def _rating_revenue_evidence(df: pd.DataFrame, rating_col, rev_col,
                              low_thr: float, high_thr: float) -> str:
     """
@@ -396,6 +492,7 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         actions.append("Segment your data by product type or channel — subgroup performance often tells a different story than averages")
 
     # ── Repeat Purchase Rate (derived from customer identifier) ─
+    _aov_insights(df, insights, findings, risks, opps)
     _repeat_purchase_insights(df, insights, findings, risks, opps)
 
     # ── Customer-level analysis: cohorts, RFM, concentration ───
