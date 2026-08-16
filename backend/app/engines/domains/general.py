@@ -11,8 +11,15 @@ import numpy as np
 import pandas as pd
 
 from app.engines.domains.base import Insight, build_insight, col_stats, correlations
+from app.engines.domains.general_depth import run_general_depth
 
 logger = logging.getLogger(__name__)
+
+# A segment gap has to clear one of these to be worth a client's attention:
+# either the groups differ by a quarter, or by a quarter of the column's own
+# spread. Below both, the difference is real and irrelevant.
+MIN_SEGMENT_RATIO = 1.25
+MIN_SEGMENT_EFFECT = 0.25
 
 
 def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
@@ -157,6 +164,9 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         except Exception:
             logger.warning("concentration check failed for %s", col, exc_info=True)
 
+    # ── Trend, outlier concentration, segment sufficiency ────
+    run_general_depth(df, insights, findings, risks, opps)
+
     actions.extend([
         "Validate all outliers before analysis or modeling",
         "Use median for skewed distributions in executive reports",
@@ -216,6 +226,20 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
                 if hi == lo:
                     continue
                 ratio = abs(hi / lo) if lo != 0 else float("inf")
+
+                # Significance alone is not a finding. On a few hundred
+                # rows Kruskal-Wallis returns p<0.001 for a 6% median
+                # difference, and the report then says one segment
+                # "underperforms" over a gap nobody would act on — often
+                # produced by a handful of outliers in the other group.
+                # The effect has to be large enough to matter as well as
+                # unlikely enough to be real.
+                spread = float(sub[num].std())
+                if spread <= 0:
+                    continue
+                standardised = abs(hi - lo) / spread
+                if ratio < MIN_SEGMENT_RATIO and standardised < MIN_SEGMENT_EFFECT:
+                    continue
                 score = float(h)
                 if best is None or score > best["h"]:
                     best = {
