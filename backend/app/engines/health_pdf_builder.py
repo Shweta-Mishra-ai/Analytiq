@@ -305,6 +305,13 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         logger.warning("chart generation failed for the health report",
                        exc_info=True)
 
+    # The findings section carries the name the domain's reader uses, so
+    # a workforce report does not open a section called "Meaningful
+    # Business Insights" — a heading that tells the reader nothing and
+    # reads as a template's default.
+    from app.engines.report_blueprints import blueprint_for
+    _insights_heading = "{} — Findings".format(blueprint_for(niche).label)
+
     _toc_entries = ["Data Health Overview"]
     _sub = [n for n, present in (("Key Findings", key_findings),
                                   ("Risks Identified", risks),
@@ -312,7 +319,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     if executive_summary or _sub:
         _toc_entries.append("Executive Summary")
     if insights:
-        _toc_entries.append("Meaningful Business Insights")
+        _toc_entries.append(_insights_heading)
     if _charts:
         _toc_entries.append("Visual Analysis")
     _toc_entries += ["Descriptive Statistics", "Column Quality Analysis"]
@@ -494,7 +501,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # PAGE 2: BUSINESS INSIGHTS
     # ══════════════════════════════════════════════════════
     story.append(PageBreak())
-    story.append(_section("Meaningful Business Insights"))
+    story.append(_section(_insights_heading))
     story.append(Paragraph(
         "Each insight follows the format: <b>What → Why it matters → What to do.</b> "
         "All figures are computed directly from the uploaded dataset.",

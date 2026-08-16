@@ -243,3 +243,39 @@ def test_the_references_say_what_they_are_worth(small_df):
 def test_a_report_with_no_findings_says_so_rather_than_going_quiet(small_df):
     text = _pdf_text(small_df, "general", [])
     assert "not an omission" in text or "found nothing it could support" in text
+
+
+# ══════════════════════════════════════════════════════════
+#  The health report follows the same naming
+# ══════════════════════════════════════════════════════════
+
+def _health_text(df, domain):
+    from app.engines.health_engine import build_report_payload, compute_health
+    from app.engines.health_pdf_builder import build_health_pdf
+
+    payload = build_report_payload(df, domain)
+    pdf = build_health_pdf(
+        df, domain, compute_health(df), payload["insights"], "data.csv",
+        agency_name="Shweta Analytics",
+        executive_summary=payload["executive_summary"],
+        key_findings=payload["key_findings"], risks=payload["risks"],
+        opportunities=payload["opportunities"], actions=payload["actions"])
+    return "\n".join((p.extract_text() or "")
+                     for p in pypdf.PdfReader(io.BytesIO(pdf)).pages)
+
+
+def test_the_health_report_names_its_findings_section_by_domain(small_df):
+    """"Meaningful Business Insights" tells the reader nothing and reads
+    as a template's default heading."""
+    text = _health_text(small_df, "finance")
+    assert "Financial Performance Review — Findings" in text
+    assert "Meaningful Business Insights" not in text
+
+
+def test_the_health_contents_page_matches_the_section_heading(small_df):
+    """Both read from the same list — if they drift, the numbering on the
+    contents page stops matching the sections."""
+    text = _health_text(small_df, "finance")
+    heading = "Financial Performance Review — Findings"
+    assert text.count(heading) >= 2, \
+        "the heading appears in only one of the contents page and the body"
