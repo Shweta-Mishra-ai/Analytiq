@@ -14,6 +14,8 @@ from app.engines.domains.base import (Insight, build_insight, col_stats,
 from app.engines.domains.customer_analytics import run_customer_analytics
 from app.engines.industry_benchmarks import lookup_benchmark
 
+from app.engines.column_roles import resolve
+
 logger = logging.getLogger(__name__)
 
 
@@ -169,10 +171,14 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                      and not any(x in c.lower() for x in
                                 ["price", "amount", "mrp", "value", "cost"])),
                     None)
-    cat_col    = next((c for c in df.select_dtypes(include=["object", "string"]).columns
-                       if "category" in c.lower() and df[c].nunique()<=30), None)
-    rev_col    = next((c for c in df.columns
-                       if any(k in c.lower() for k in ["revenue","sales","amount"]) and c in stats), None)
+    # `"category" in c.lower()` matched anything with the word in it, so
+    # `risk_category`, `age_category` and `customer_segment` were all read
+    # as the product catalogue — and the report then reasoned about
+    # "category performance" and "the long tail of the range" on a risk
+    # band. The resolver knows which uses of "category" are products.
+    _roles = resolve(df)
+    cat_col = _roles.product
+    rev_col = _roles.money if _roles.money in stats else None
 
     # ── Rating Analysis (scale-aware: works on 1-5, 1-10, 0-100) ──────
     if rating_col and rating_col in stats:

@@ -14,6 +14,8 @@ from scipy import stats as scipy_stats
 from app.engines.domains.base import Insight, build_insight, col_stats
 from app.services.stat_guards import MIN_N
 
+from app.engines.column_roles import resolve
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +39,8 @@ def _detect_finance_cols(df: pd.DataFrame) -> dict:
     # margin/variance figures.
     RATE_EXCL = ("percentage", "percent", "_pct", "rate", "ratio", "ppm")
 
+    _roles = resolve(df)
+
     return {
         "rev":    _find("revenue", "total_revenue", "income", "turnover", "net_sales",
                         excl=RATE_EXCL, numeric_only=True),
@@ -50,7 +54,15 @@ def _detect_finance_cols(df: pd.DataFrame) -> dict:
         "opex":   _find("opex", "operating_expense", "operating_cost", excl=RATE_EXCL,
                         numeric_only=True),
         "period": _find("month", "quarter", "period", "date", "year"),
-        "cat":    _find("category", "department", "account", "cost_centre", "segment"),
+        # `_find` matches substrings with no qualifier check, so
+        # `risk_category` and `forecast_category` were both eligible as
+        # the reporting segment and the whole segment-profitability
+        # section was then computed across a confidence band. The
+        # resolver is asked first; the local match stays as the fallback
+        # for the finance-specific names it knows about.
+        "cat":    (_roles.product
+                   or _find("department", "account", "cost_centre",
+                            "cost centre", "business_unit")),
     }
 
 
