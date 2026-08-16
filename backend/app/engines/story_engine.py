@@ -57,14 +57,16 @@ DOMAIN_KEYWORDS = {
 
 
 def detect_domain(df: pd.DataFrame) -> Tuple[str, float]:
-    col_text = " ".join(df.columns.str.lower().tolist())
-    scores   = {}
-    for domain, keywords in DOMAIN_KEYWORDS.items():
-        hits = sum(1 for kw in keywords if kw in col_text)
-        scores[domain] = hits / len(keywords)
-    best  = max(scores, key=scores.get)
-    score = scores[best]
-    return (best, round(score, 2)) if score > 0.04 else ("general", 0.0)
+    """What this dataset is about, or ("general", 0.0) when unclear.
+
+    Delegates to engines/domain_detect, which matches whole words rather
+    than substrings and requires a margin over the runner-up. The old
+    inline version read "reorder_point" as an order and "stockout_flag"
+    as stock, so a factory's production log was analysed as an
+    e-commerce catalogue.
+    """
+    from app.engines.domain_detect import detect_domain as _detect
+    return _detect(df)
 
 
 # ══════════════════════════════════════════════════════════

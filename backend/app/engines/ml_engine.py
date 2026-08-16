@@ -11,6 +11,7 @@ from typing import List, Dict, Optional, Tuple, Any
 import warnings
 warnings.filterwarnings("ignore")
 
+from sklearn.dummy import DummyClassifier, DummyRegressor
 from sklearn.model_selection import cross_val_score, train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.impute import SimpleImputer
@@ -77,6 +78,11 @@ class MLReport:
     n_rows_used:        int
     n_features:         int
     class_balance:      Optional[Dict] = None   # classification only
+    # What the same metric scores with no model at all: always predicting
+    # the majority class, or the mean. Without it a 0.65 accuracy on a
+    # 65/35 split reads as a working model when it has learned nothing.
+    baseline_score:     Optional[float] = None
+    skill_over_baseline: Optional[float] = None
     models:             List[ModelResult] = field(default_factory=list)
     best_model:         Optional[ModelResult] = None
     feature_importance: List[FeatureImportance] = field(default_factory=list)
@@ -188,11 +194,22 @@ def prepare_features(
         available = [c for c in selected_features if c in df.columns]
         df = df[available]
     else:
-        # Drop ID-like columns
+        # Drop ID-like and unusable columns.
+        #
+        # Identifiers were only dropped when they were high-cardinality
+        # *text*, so a numeric employee_id or order_id stayed in and the
+        # model learned from it — it came out as the second most important
+        # feature on a 500-row HR file. A model that keys off a row
+        # identifier scores well in testing and predicts nothing on data
+        # it has not seen, which is the worst of both.
+        from app.engines.domains.base import is_id_column
         drop_cols = []
         for col in df.columns:
-            s = df[col].dropna()
-            if len(s) == 0:
+            col_values = df[col].dropna()
+            if len(col_values) == 0:
+                drop_cols.append(col)
+                continue
+            if is_id_column(col, df[col]):
                 drop_cols.append(col)
                 continue
             # High cardinality string → drop
@@ -328,6 +345,24 @@ def train_models(
     scoring = "r2" if task == "regression" else "f1_weighted"
     results = []
 
+    # The floor every model has to clear. "Always answer the majority
+    # class" scores 0.65 accuracy on a 65/35 split; a model matching that
+    # has learned nothing, and presenting it as the best model is how a
+    # prediction feature loses a client's trust in one meeting.
+    try:
+        dummy = (DummyRegressor(strategy="mean") if task == "regression"
+                 else DummyClassifier(strategy="most_frequent"))
+        dummy.fit(X_train, y_train)
+        from sklearn.metrics import f1_score, r2_score
+        if task == "regression":
+            baseline = float(r2_score(y_test, dummy.predict(X_test)))
+        else:
+            baseline = float(f1_score(y_test, dummy.predict(X_test),
+                                      average="weighted", zero_division=0))
+    except Exception:
+        logger.warning("baseline model failed", exc_info=True)
+        baseline = None
+
     for name, model in _get_models(task):
         try:
             pipe = _make_pipeline(model, task)
@@ -396,7 +431,7 @@ def train_models(
     if results:
         results[0].is_best = True
 
-    return results, X_test, y_test, target_encoder
+    return results, X_test, y_test, target_encoder, baseline
 
 
 # ══════════════════════════════════════════════════════════
@@ -661,6 +696,45 @@ def _generate_insights(report: MLReport) -> List[str]:
 #  MAIN ENTRY POINT
 # ══════════════════════════════════════════════════════════
 
+def _baseline_warnings(best, baseline, task: str) -> List[str]:
+    """Say plainly when the model has not beaten guessing.
+
+    A model is worth using when it does better than the simplest possible
+    rule. Reporting "best model: Gradient Boosting, accuracy 0.65" on a
+    65/35 split, without saying that answering "no" every time also scores
+    0.65, is how a prediction feature loses a client's trust.
+    """
+    if best is None or baseline is None:
+        return []
+    # Judged on the cross-validated score less its spread, not on the
+    # single holdout. A 20% test split is noisy enough that a target of
+    # pure coin flips scored 0.68 against a 0.57 baseline on one split —
+    # which would have read as skill. Requiring the result to hold across
+    # folds, allowing for the variation between them, is what separates a
+    # signal from a lucky partition.
+    cv = float(getattr(best, "cv_score", best.test_score) or 0.0)
+    spread = float(getattr(best, "cv_std", 0.0) or 0.0)
+    gain = (cv - spread) - float(baseline)
+    metric = "R²" if task == "regression" else "weighted F1"
+    if gain <= 0.01:
+        return ["This data does not support prediction of that target. Across "
+                "cross-validation the best model scores {:.3f} ±{:.3f} on {}, "
+                "against {:.3f} for the simplest possible rule ({}) — the "
+                "difference does not survive the variation between folds. "
+                "Treat this as evidence that the available columns do not "
+                "explain the target, not as a predictor.".format(
+                    cv, spread, metric, baseline,
+                    "predicting the mean" if task == "regression"
+                    else "always answering the most common class")]
+    if gain < 0.10:
+        return ["The best model improves on the no-model baseline by only "
+                "{:.3f} once fold-to-fold variation is allowed for ({} "
+                "{:.3f} ±{:.3f} against {:.3f}). That is a weak signal — "
+                "usable for ranking, not for individual predictions."
+                .format(gain, metric, cv, spread, baseline)]
+    return []
+
+
 def run_ml_pipeline(
     df: pd.DataFrame,
     target_col: str,
@@ -732,7 +806,8 @@ def run_ml_pipeline(
         return report
 
     # Train models
-    model_results, X_test, y_test, target_encoder = train_models(X, y, task)
+    model_results, X_test, y_test, target_encoder, baseline = train_models(
+        X, y, task)
     best = next((m for m in model_results if m.is_best), None)
 
     # Feature importance
@@ -758,6 +833,10 @@ def run_ml_pipeline(
         n_rows_used=len(X),
         n_features=len(X.columns),
         class_balance=class_balance,
+        baseline_score=baseline,
+        skill_over_baseline=(
+            round(float(best.test_score) - float(baseline), 4)
+            if best is not None and baseline is not None else None),
         models=model_results,
         best_model=best,
         feature_importance=feat_importance,
@@ -769,7 +848,8 @@ def run_ml_pipeline(
         preprocessor=None,
         label_encoders=label_encoders,
         target_encoder=target_encoder,
-        warnings=[task_reason] + leakage_warnings,
+        warnings=([task_reason] + leakage_warnings
+                  + _baseline_warnings(best, baseline, task)),
     )
 
     # Suspiciously perfect scores usually mean leakage we couldn't detect
