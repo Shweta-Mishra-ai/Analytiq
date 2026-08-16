@@ -152,12 +152,28 @@ def _dedup(frame_paths: list[str], threshold: float) -> list[str]:
     return kept
 
 
+def extract_table_frames_with_budget(video_path: str) -> tuple:
+    """Frames, plus whether the frame budget cut the video short.
+
+    A three-minute screen recording scrolling through 500 rows produces
+    far more distinct views than MAX_FRAMES. Taking the first 8 and
+    saying nothing hands back a dataset that is a fraction of what the
+    user filmed, with no sign that anything is missing.
+    """
+    frames, truncated = _extract_frames(video_path)
+    return frames, truncated
+
+
 def extract_table_frames(video_path: str) -> list[bytes]:
     """Returns a small set of distinct JPEG frames (as bytes) most likely
     to each show a clear, distinguishable view of whatever table/
     spreadsheet/dashboard is in the video — for feeding one at a time
     into extract_table_from_image(). Raises FrameExtractionError with a
     clear message on any hard failure (missing ffmpeg, unreadable file)."""
+    return _extract_frames(video_path)[0]
+
+
+def _extract_frames(video_path: str) -> tuple:
     if not os.path.exists(video_path):
         raise FrameExtractionError("Video file not found")
 
@@ -179,10 +195,14 @@ def extract_table_frames(video_path: str) -> list[bytes]:
             raise FrameExtractionError(
                 "No readable frames could be extracted from this video")
 
-        frames = _dedup(frames, DEDUP_THRESHOLD)[:MAX_FRAMES]
+        distinct = _dedup(frames, DEDUP_THRESHOLD)
+        # More distinct views than the budget means the tail of the video
+        # is never looked at. The caller has to be able to say so.
+        truncated = max(0, len(distinct) - MAX_FRAMES)
+        frames = distinct[:MAX_FRAMES]
 
         out: list[bytes] = []
         for p in frames:
             with open(p, "rb") as f:
                 out.append(f.read())
-        return out
+        return out, truncated
