@@ -58,6 +58,10 @@ def build_top_insights(
                     evidence = item.get("evidence", ""),
                     action   = item.get("action", ""),
                     impact   = item.get("impact", ""),
+                    # Without this the report blueprint cannot tell an
+                    # attrition finding from a margin one, and every
+                    # finding lands under whichever heading comes first.
+                    category = item.get("category", "general"),
                 ))
         if insights:
             return insights[:6]
@@ -93,6 +97,7 @@ def build_top_insights(
             impact   = f"Each 1pp attrition reduction saves ${n_left//100 * avg_salary_k * 10:,.0f}K–"
                        f"${n_left//100 * avg_salary_k * 40:,.0f}K annually. "
                        f"Replacing all exits estimated at ${cost_lo:.0f}K–${cost_hi:.0f}K.",
+            category = "attrition",
         ))
 
     # ── Auto-detect attrition from df if no attrition object ─────────────────
@@ -117,6 +122,7 @@ def build_top_insights(
                     impact   = f"Reaching SHRM norm (15%) saves "
                                f"~${(rate-15)/100*len(df)*avg_salary_k*0.5:.0f}K–"
                                f"${(rate-15)/100*len(df)*avg_salary_k*2:.0f}K annually.",
+                    category = "attrition",
                 ))
 
     # ── Root cause insight (from bi_report or computed) ───────────────────────
@@ -144,6 +150,7 @@ def build_top_insights(
                            "planning — highest ROI lever per this dataset.",
                 impact   = "Addressing this gap can move key metrics significantly "
                            "more than any other single intervention.",
+                category = "driver",
             ))
 
     # ── Skew insight ─────────────────────────────────────────────────────────
@@ -167,6 +174,7 @@ def build_top_insights(
                                "Apply log-transform before any regression modeling.",
                     impact   = "Prevents misleading stakeholder reports. "
                                "Improves model accuracy if used as a predictive feature.",
+                    category = "quality",
                 ))
                 if len(insights) >= 5:
                     break
@@ -196,6 +204,7 @@ def build_top_insights(
                 impact   = "Gallup: highly engaged teams have 59% less turnover "
                            "and 21% higher productivity. "
                            "Reaching 0.70 benchmark estimated to reduce attrition 3–5pp.",
+                category = "satisfaction",
             ))
 
     # ── Duplicate data warning ────────────────────────────────────────────────
@@ -230,6 +239,7 @@ def build_top_insights(
                                    f"{min(low_r, 15):.0f}% retains ~"
                                    f"{int((low_r-15)/100 * (df[sal_col]=='low').sum()):,} employees. "
                                    "Gallup: 50–200% of annual salary per replacement.",
+                        category = "compensation",
                     ))
         except Exception:
             logger.debug("build_top_insights: suppressed exception", exc_info=True)
@@ -259,6 +269,7 @@ def build_top_insights(
                 impact   = "Amazon research: 1-star improvement in rating → 5–9% "
                            "increase in sales. Removing low-rated products improves "
                            "overall store credibility.",
+                category = "rating",
             ))
         if disc_col:
             mean_d = float(df[disc_col].mean())
@@ -276,6 +287,7 @@ def build_top_insights(
                            "Identify products where discount exceeds 50% — review pricing.",
                 impact   = "Every 1% reduction in unnecessary discounting improves "
                            "gross margin. Data-driven pricing can increase revenue 3–8%.",
+                category = "pricing",
             ))
 
     # ── Sales insights ────────────────────────────────────────────────────────
@@ -300,6 +312,7 @@ def build_top_insights(
                            "Set account diversification targets.",
                 impact   = "Reducing account concentration by 10% reduces revenue-at-risk "
                            "by estimated 15–25% in downside scenarios.",
+                category = "revenue",
             ))
 
     # ── Sort: critical → high → warning → info ───────────────────────────────

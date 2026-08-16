@@ -40,6 +40,7 @@ from reportlab.platypus import (
     Image, HRFlowable, PageBreak, KeepTogether,
 )
 from reportlab.pdfgen import canvas as CV
+from app.engines.report_blueprints import blueprint_for
 from app.services.dtypes import is_text_dtype, text_columns
 
 logger = logging.getLogger(__name__)
@@ -637,14 +638,50 @@ def _exec_summary(story, s, T, summary, findings, risks, opps, CW):
 #  TOP INSIGHTS
 # ══════════════════════════════════════════════════════════
 
-def _top_insights(story, s, T, insights, CW):
-    _sec(story, s, T, "Top Insights — Decision Summary",
-         "Each finding: Problem → Cause → Evidence → Action → Impact")
+def _top_insights(story, s, T, insights, CW, domain: str = "general"):
+    """Findings under the headings the domain's reader expects.
+
+    A flat "Top Insights" list is a tool's default output. A finance
+    director reads position, then cost structure, then variance; an HR
+    director reads workforce profile, then attrition. Grouping the same
+    findings under those headings is the difference between a report that
+    was written for them and one that was generated.
+    """
+    from app.engines.report_blueprints import blueprint_for, group_insights
+
+    bp = blueprint_for(domain)
     if not insights:
-        story.append(Paragraph("No structured insights available.", s["body"]))
+        _sec(story, s, T, "Findings",
+             "Each finding: Problem → Cause → Evidence → Action → Impact")
+        story.append(Paragraph(
+            "No finding in this dataset met the evidence threshold for "
+            "inclusion. That is a result, not an omission: the analysis "
+            "ran and found nothing it could support.", s["body"]))
         return
-    for i, ins in enumerate(insights[:6], 1):
-        _insight_card(story, s, T, ins, CW, num=i)
+
+    grouped = group_insights(bp, list(insights))
+    _sec(story, s, T, "{} — Findings".format(bp.label),
+         "Each finding: Problem → Cause → Evidence → Action → Impact")
+
+    num = 0
+    for section, items in grouped:
+        # The heading travels with its first finding. Left to flow, a
+        # section title lands at the foot of a page with its content
+        # overleaf, which is the kind of thing a reader registers as
+        # sloppy without being able to say why.
+        head = [Spacer(1, 2 * mm),
+                Paragraph(section.title, s["h3"]),
+                Paragraph(section.purpose, s["sm"])]
+        first: list = []
+        _insight_card(first, s, T, items[0], CW, num=num + 1)
+        story.append(KeepTogether(head + first))
+        num += 1
+
+        for ins in items[1:6]:
+            num += 1
+            _insight_card(story, s, T, ins, CW, num=num)
+        if num >= 10:
+            break
 
 
 # ══════════════════════════════════════════════════════════
@@ -1346,45 +1383,20 @@ def _appendix(story, s, T, config, CW, domain: str = "general"):
     # previously hardcoded to HR sources, so a finance or e-commerce report
     # cited SHRM attrition benchmarks and Gallup engagement data — an
     # immediate credibility failure for any reader who checks.
-    _SOURCES_BY_DOMAIN = {
-        "hr": [
-            "SHRM, State of the Workplace — voluntary attrition benchmarks and "
-            "direct replacement cost.",
-            "Gallup, State of the Global Workplace — engagement and preventable-exit "
-            "rates; replacement cost commonly modelled at 50–200% of salary.",
-            "Mercer, Global Talent Trends — career growth as the leading voluntary "
-            "exit driver.",
-        ],
-        "finance": [
-            "IFRS / GAAP presentation conventions for revenue, COGS and operating "
-            "expense classification.",
-            "CFA Institute, financial ratio conventions — gross margin, operating "
-            "expense ratio, and their standard interpretation bands.",
-            "Sector margin ranges vary widely; compare against the organisation's "
-            "own prior periods before comparing against any external range.",
-        ],
-        "sales": [
-            "Quota attainment and pipeline-coverage conventions as used in standard "
-            "sales-operations practice.",
-            "Win-rate and cycle-length ranges are highly sector-specific; the "
-            "internal top-quartile comparison in this report is the more reliable "
-            "reference.",
-        ],
-        "ecommerce": [
-            "Baymard Institute, cart-abandonment and checkout usability research.",
-            "Category-level conversion, return and rating norms differ sharply by "
-            "vertical and price point; treat any external figure as indicative only.",
-        ],
-    }
-    _sources = _SOURCES_BY_DOMAIN.get(
-        str(domain).lower(),
-        ["No external benchmark set applies to this dataset's domain. All "
-         "comparisons in this report are internal — each metric is measured "
-         "against its own distribution within the supplied data."],
-    )
+    # Sources come from the domain blueprint so a finance report cites
+    # finance conventions and an HR report cites HR bodies — the previous
+    # single list put SHRM and Gallup in the footer of every report
+    # regardless of what it was about.
+    _bp = blueprint_for(domain)
+    _sources = list(_bp.references) or [
+        "No external benchmark set applies to this dataset's domain. All "
+        "comparisons in this report are internal — each metric is measured "
+        "against its own distribution within the supplied data."]
     story.append(Paragraph("C. Reference Ranges & Sources", s["h3"]))
     for src in _sources:
         story.append(Paragraph("• " + src, s["bl"]))
+    if _bp.reference_note:
+        story.append(Paragraph(_bp.reference_note, s["note"]))
 
     story.append(Spacer(1, 4*mm))
     disc = Table([[Paragraph(
@@ -1519,7 +1531,8 @@ def build_pdf(
         _add_toc("Data Preparation")
     if domain in ("hr", "ecommerce", "sales"):
         _add_toc("Industry Benchmark Context")
-    _add_toc("Top Insights — Decision Summary")
+    _add_toc("{} — Findings".format(
+        blueprint_for(domain).label))
     if attrition:
         _add_toc("Attrition Deep Dive")
     _add_toc("Dataset Overview & Descriptive Statistics")
@@ -1552,7 +1565,7 @@ def build_pdf(
         _benchmark_section(story, s, T, domain, CW, df=df)
         story.append(PageBreak())
 
-    _top_insights(story, s, T, top_insights, CW)
+    _top_insights(story, s, T, top_insights, CW, domain=domain)
     story.append(PageBreak())
 
     if attrition:
