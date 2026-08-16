@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from typing import List, Tuple, Optional
 
+from app.engines.chart_message import human_number as _human_num
 from app.engines.domains.base import is_id_column
 from app.services.dtypes import MONTH_END
 
@@ -53,10 +54,19 @@ def _get_colors(theme_name: str) -> list:
     return LIGHT_COLORS
 
 
-def _apply_style(ax, style: dict):
+def _apply_style(ax, style: dict, axis: str = "both"):
+    """Grid behind the data, and only on the axis that carries a scale.
+
+    Two defaults made every chart look homemade. `ax.grid(True)` draws on
+    top of whatever is plotted, so gridlines ran across the face of each
+    bar; and gridding "both" axes puts vertical lines between categories,
+    which measure nothing — a bar sitting on `region` has no x scale to
+    read against.
+    """
     ax.set_facecolor(style["axes.facecolor"])
     ax.tick_params(colors=style["xtick.color"])
-    ax.grid(True, color=style["grid.color"],
+    ax.set_axisbelow(True)
+    ax.grid(True, axis=axis, color=style["grid.color"],
             alpha=style["grid.alpha"], linewidth=0.5)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -72,6 +82,44 @@ def fig_to_bytes(fig: plt.Figure, dpi: int = 150) -> bytes:
     data = buf.read()
     plt.close(fig)
     return data
+
+
+def _human_axis(ax, axis: str = "y") -> None:
+    """Ticks a reader can read, and no "1e6" in the corner.
+
+    matplotlib's offset notation puts a small "1e6" at the top-left of
+    the axes, where it collides with anything else drawn there — the
+    chart subtitle landed on top of it. Formatting the ticks in human
+    units removes the offset entirely and is what a reader expects to
+    see on a money axis anyway.
+    """
+    from matplotlib.ticker import FuncFormatter
+
+    target = ax.yaxis if axis == "y" else ax.xaxis
+    target.set_major_formatter(FuncFormatter(lambda v, _p: _human_num(v)))
+    try:
+        target.get_offset_text().set_visible(False)
+    except Exception:
+        logger.debug("could not hide the axis offset text", exc_info=True)
+
+
+def _headline(ax, style, message, label: str) -> None:
+    """Message as the headline, variable names as the subtitle.
+
+    The consulting convention, and the reason a deck reads faster than a
+    dashboard: the reader takes the finding from the title and uses the
+    axes only to check it. "revenue by region" says what is plotted and
+    nothing about what to take from it.
+    """
+    if message:
+        ax.set_title(message, fontsize=10.5, fontweight="bold",
+                     color=style["text.color"], pad=18, loc="left",
+                     wrap=True)
+        ax.text(0, 1.015, label, transform=ax.transAxes, fontsize=8,
+                color=style["axes.labelcolor"], va="bottom", zorder=5)
+    else:
+        ax.set_title(label, fontsize=11, fontweight="bold",
+                     color=style["text.color"], pad=10, loc="left")
 
 
 def make_bar_chart(
@@ -93,7 +141,7 @@ def make_bar_chart(
 
     fig, ax = plt.subplots(figsize=(10, 5))
     fig.patch.set_facecolor(style["figure.facecolor"])
-    _apply_style(ax, style)
+    _apply_style(ax, style, axis="y")
 
     bars = ax.bar(
         range(len(agg)), agg[y_col],
@@ -101,15 +149,22 @@ def make_bar_chart(
         edgecolor=style["axes.edgecolor"], linewidth=0.5
     )
 
+    # Labels in the same units as the axis. "3,242,612" printed above a
+    # bar on an axis reading "3.0m" makes the reader do the conversion
+    # themselves to check the two agree.
+    tallest = max((b.get_height() for b in bars), default=0.0)
     for bar in bars:
         h = bar.get_height()
         ax.text(
             bar.get_x() + bar.get_width() / 2,
-            h * 1.01,
-            "{:,.0f}".format(h),
+            h + tallest * 0.015,
+            _human_num(h),
             ha="center", va="bottom",
-            fontsize=7, color=style["text.color"]
+            fontsize=7.5, color=style["text.color"]
         )
+    if tallest > 0:
+        # Otherwise the label on the tallest bar is clipped by the frame.
+        ax.set_ylim(top=tallest * 1.12)
 
     ax.set_xticks(range(len(agg)))
     ax.set_xticklabels(
@@ -117,9 +172,10 @@ def make_bar_chart(
         rotation=35, ha="right", fontsize=8
     )
     ax.set_ylabel(y_col, fontsize=9, color=style["axes.labelcolor"])
-    ax.set_title(title or "{} by {}".format(y_col, x_col),
-                 fontsize=11, fontweight="bold",
-                 color=style["text.color"], pad=10)
+    from app.engines.chart_message import bar_message
+    _human_axis(ax)
+    _headline(ax, style, bar_message(df, x_col, y_col),
+              title or "{} by {}".format(y_col, x_col))
     fig.tight_layout()
     return fig_to_bytes(fig)
 
@@ -197,9 +253,10 @@ def make_line_chart(
     ax.set_xticklabels(labels[::step], rotation=35, ha="right", fontsize=8)
 
     ax.set_ylabel(y_col, fontsize=9, color=style["axes.labelcolor"])
-    ax.set_title(title or "{} Trend".format(y_col),
-                 fontsize=11, fontweight="bold",
-                 color=style["text.color"], pad=10)
+    from app.engines.chart_message import line_message
+    _human_axis(ax)
+    _headline(ax, style, line_message(df, x_col, y_col),
+              title or "{} Trend".format(y_col))
     fig.tight_layout()
     return fig_to_bytes(fig)
 
@@ -228,17 +285,23 @@ def make_histogram(
 
     ax.axvline(mean_val, color=colors[2],
                linestyle="--", linewidth=1.8,
-               label="Mean: {:.2f}".format(mean_val))
+               label="Mean: {}".format(_human_num(mean_val)))
     ax.axvline(median_val, color=colors[3] if len(colors) > 3 else colors[1],
                linestyle=":", linewidth=1.8,
-               label="Median: {:.2f}".format(median_val))
-    ax.legend(fontsize=8)
+               label="Median: {}".format(_human_num(median_val)))
+    # The default legend box is transparent, so it sat over the bars with
+    # the bar colour showing through the text.
+    ax.legend(fontsize=8, framealpha=0.92,
+              facecolor=style["figure.facecolor"],
+              edgecolor=style["axes.edgecolor"],
+              labelcolor=style["text.color"])
 
     ax.set_xlabel(col, fontsize=9, color=style["axes.labelcolor"])
     ax.set_ylabel("Frequency", fontsize=9, color=style["axes.labelcolor"])
-    ax.set_title(title or "Distribution: {}".format(col),
-                 fontsize=11, fontweight="bold",
-                 color=style["text.color"], pad=10)
+    from app.engines.chart_message import histogram_message
+    _human_axis(ax)
+    _headline(ax, style, histogram_message(df, col),
+              title or "Distribution: {}".format(col))
     fig.tight_layout()
     return fig_to_bytes(fig)
 
@@ -285,9 +348,9 @@ def make_pie_chart(
         framealpha=0,
         labelcolor=style["text.color"]
     )
-    ax.set_title(title or "{} by {}".format(values_col, names_col),
-                 fontsize=11, fontweight="bold",
-                 color=style["text.color"], pad=10)
+    from app.engines.chart_message import pie_message
+    _headline(ax, style, pie_message(df, names_col, values_col),
+              title or "{} by {}".format(values_col, names_col))
     fig.tight_layout()
     return fig_to_bytes(fig)
 
@@ -297,27 +360,50 @@ def make_correlation_heatmap(
     title: str = "Correlation Matrix",
     theme_name: str = "Corporate Light",
 ) -> bytes:
-    style    = _get_style(theme_name)
-    num_cols = df.select_dtypes(include="number").columns.tolist()
+    style = _get_style(theme_name)
+    # Identifiers belong nowhere near a correlation matrix. On a sales
+    # export ordered by date, `order_id` correlated 0.22 with revenue —
+    # an artefact of the row order, printed in the same grid and the same
+    # colour as the real relationships, with nothing marking it as
+    # meaningless.
+    num_cols = _rank_measures(df, df.select_dtypes(include="number")
+                              .columns.tolist())
 
     if len(num_cols) < 2:
         return None
 
-    corr = df[num_cols[:10]].corr().round(2)
+    cols = sorted(num_cols[:10])
+    corr = df[cols].corr().round(2)
     n    = len(corr)
 
     fig, ax = plt.subplots(figsize=(max(7, n), max(5, n - 1)))
     fig.patch.set_facecolor(style["figure.facecolor"])
     ax.set_facecolor(style["axes.facecolor"])
 
-    im = ax.imshow(corr.values, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+    # The diagonal is 1.00 by definition. Left in, it takes the strongest
+    # colour on the scale, so the eye lands on the one thing on the chart
+    # that carries no information.
+    matrix = corr.to_numpy(dtype=float, copy=True)
+    np.fill_diagonal(matrix, np.nan)
+    cmap = matplotlib.colormaps["RdBu_r"].with_extremes(
+        bad=style["axes.facecolor"])
+    im = ax.imshow(matrix, cmap=cmap, vmin=-1, vmax=1, aspect="auto")
 
     for i in range(n):
         for j in range(n):
-            val = corr.values[i, j]
+            if i == j:
+                continue
+            val = matrix[i, j]
+            # The cell colour comes from the colormap, not the theme, so
+            # the label has to be read against the cell. Using the theme's
+            # text colour drew near-white figures on the pale middle of
+            # the scale — every weak correlation was invisible on the dark
+            # theme, which is where most of the cells sit.
+            r, g, b, _a = cmap((val + 1) / 2)
+            dark_cell = (0.299 * r + 0.587 * g + 0.114 * b) < 0.55
             ax.text(j, i, "{:.2f}".format(val),
                     ha="center", va="center", fontsize=8,
-                    color="white" if abs(val) > 0.5 else style["text.color"])
+                    color="#ffffff" if dark_cell else "#101018")
 
     ax.set_xticks(range(n))
     ax.set_yticks(range(n))
@@ -326,8 +412,9 @@ def make_correlation_heatmap(
                        color=style["xtick.color"])
     ax.set_yticklabels([c[:10] for c in corr.index],
                        fontsize=8, color=style["ytick.color"])
-    ax.set_title(title, fontsize=11, fontweight="bold",
-                 color=style["text.color"], pad=10)
+    from app.engines.chart_message import heatmap_message
+    _headline(ax, style, heatmap_message(df, cols),
+              title or "Correlation Matrix")
 
     plt.colorbar(im, ax=ax, shrink=0.8)
     fig.tight_layout()
@@ -377,11 +464,26 @@ def _rank_measures(df: pd.DataFrame, cols: List[str]) -> List[str]:
     recognised measures (revenue, profit, cost, amount…) lead, then any
     column that actually varies.
     """
-    MEASURE_WORDS = (
-        "revenue", "sales", "profit", "margin", "cost", "expense", "amount",
-        "total", "price", "value", "spend", "budget", "income", "salary",
-        "score", "rating", "quantity", "qty", "units", "count", "rate",
-        "satisfaction", "tenure", "age", "duration", "balance", "opex",
+    # Ranked in tiers, because "is it a measure?" is not the question a
+    # reader asks — they ask which measure the business is about. Money
+    # first, then volume, then rates and scores.
+    #
+    # Scoring every measure word equally and breaking ties on coefficient
+    # of variation ranked `units` above `revenue` on a sales file, purely
+    # because unit counts are noisier than money. All five charts were
+    # then about units and revenue never appeared.
+    MONEY_WORDS = (
+        "revenue", "sales", "profit", "margin", "gmv", "turnover", "income",
+        "cost", "expense", "spend", "amount", "price", "value", "budget",
+        "salary", "opex", "capex", "balance", "fee", "charge",
+    )
+    VOLUME_WORDS = (
+        "quantity", "qty", "units", "count", "orders", "visits", "sessions",
+        "headcount", "volume", "transactions", "clicks", "impressions",
+    )
+    RATE_WORDS = (
+        "rate", "score", "rating", "satisfaction", "percent", "pct", "ratio",
+        "share", "index", "tenure", "age", "duration", "days", "hours",
     )
     scored = []
     for c in cols:
@@ -391,15 +493,29 @@ def _rank_measures(df: pd.DataFrame, cols: List[str]) -> List[str]:
         if s.empty or s.nunique() <= 1:
             continue          # constant column charts as a flat line — useless
         name = str(c).lower()
-        score = 0
-        if any(w in name for w in MEASURE_WORDS):
-            score += 10
-        # A column with real spread carries more information than a near-
-        # constant one; use CV so it is scale-independent.
+        # A rate marker demotes whatever else the name says: "margin_pct"
+        # is a percentage, not money, and charting it as the headline
+        # measure puts a ratio where the reader expects a total.
+        is_rate = any(m in name for m in
+                      ("_pct", "pct_", "percent", "_rate", "rate_", "ratio",
+                       "_share", "share_", "_index", "per_"))
+        if is_rate:
+            score = 100
+        elif any(w in name for w in MONEY_WORDS):
+            score = 300
+        elif any(w in name for w in VOLUME_WORDS):
+            score = 200
+        elif any(w in name for w in RATE_WORDS):
+            score = 100
+        else:
+            score = 0
+        # Spread separates columns within a tier only. A near-constant
+        # column carries less information than a varying one, but no
+        # amount of variance makes a unit count more important than
+        # revenue.
         mean = float(s.mean())
         if mean != 0:
-            cv = abs(float(s.std()) / mean)
-            score += min(cv, 2.0)
+            score += min(abs(float(s.std()) / mean), 2.0)
         scored.append((score, c))
     scored.sort(key=lambda t: -t[0])
     return [c for _, c in scored]
@@ -461,12 +577,15 @@ def generate_all_charts(
         except Exception:
             logger.debug("generate_all_charts: suppressed exception", exc_info=True)
 
-    # 3. Histogram — distribution
+    # 3. Histogram — distribution of the SECOND measure where there is
+    # one. Four views of a single column is not a chart pack: on a sales
+    # file every chart was about `units` and revenue never appeared.
+    dist_col = num_cols[1] if len(num_cols) > 1 else num_cols[0]
     if num_cols:
-        title = "Distribution: {}".format(num_cols[0])
+        title = "Distribution: {}".format(dist_col)
         try:
             charts.append((title, make_histogram(
-                df, num_cols[0], title, theme_name
+                df, dist_col, title, theme_name
             )))
         except Exception:
             logger.debug("generate_all_charts: suppressed exception", exc_info=True)
@@ -487,10 +606,12 @@ def generate_all_charts(
             None
         )
         if best_cat:
-            title = "{} Share by {}".format(num_cols[0], best_cat)
+            share_col = (num_cols[1] if len(num_cols) > 1
+                         and best_cat == cat_cols[0] else num_cols[0])
+            title = "{} Share by {}".format(share_col, best_cat)
             try:
                 charts.append((title, make_pie_chart(
-                    df, best_cat, num_cols[0], title, theme_name
+                    df, best_cat, share_col, title, theme_name
                 )))
             except Exception:
                 logger.debug("generate_all_charts: suppressed exception", exc_info=True)
