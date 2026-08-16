@@ -230,5 +230,12 @@ def test_a_substantial_segment_gap_is_still_reported():
     stats = {c: col_stats(df[c]) for c in df.columns
              if pd.api.types.is_numeric_dtype(df[c])}
     out = _insights_general(df, stats, [])
-    assert any("underperforms" in r for r in out["risks"]), \
-        "a two-fold gap was suppressed"
+    # The risk used to be worded as "'Alpha' underperforms on 'reading'".
+    # The insight beside it is careful to say that whether high is good
+    # depends on the metric — on a finance file the same line read
+    # "'Support' underperforms on 'revenue'", which is what a support cost
+    # centre is for. The gap must still be reported; calling one end of it
+    # underperformance is the part that was wrong.
+    reported = [r for r in out["risks"] if "'reading' differs" in r]
+    assert reported, ("a two-fold gap was suppressed", out["risks"])
+    assert "2.0×" in reported[0], reported

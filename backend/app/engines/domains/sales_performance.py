@@ -79,7 +79,12 @@ def find_outcome_col(df: pd.DataFrame) -> Optional[Tuple[str, pd.Series]]:
         decided = won | lost
         # Needs both outcomes present, and enough decided deals for the
         # remainder to be a real population rather than leftovers.
-        if won.any() and lost.any() and decided.mean() >= 0.5:
+        # Enough decided deals to analyse — as a count, not as a share of
+        # the file. Requiring half the rows to be decided rejected every
+        # live pipeline export, where most opportunities are open by
+        # definition, and win rate then never appeared in the report at
+        # all on the files that most obviously called for it.
+        if won.sum() >= 5 and lost.sum() >= 5 and decided.sum() >= 30:
             outcome = pd.Series(np.nan, index=s.index, dtype="object")
             outcome[won[won].index] = True
             outcome[lost[lost].index] = False

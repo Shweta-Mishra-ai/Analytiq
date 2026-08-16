@@ -190,7 +190,12 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         low_n  = int((df[rating_col].dropna() < poor).sum()) if rating_col in df.columns else 0
         rev_ev = _rating_revenue_evidence(df, rating_col, rev_col, weak, good)
         scale  = "{:.2f}/{:.0f}".format(mean_r, hi)
-        pt     = "{:.1f}".format(good)   # target, in scale units
+        # `good` is three-quarters of the way up whatever scale this
+        # column uses — a position on the scale, not a target anyone in
+        # the business agreed to. Calling it "Target 4.0+" in the title
+        # invented a commitment the data knows nothing about, which is
+        # the fastest way for a reader to catch a report out.
+        pt     = "{:.1f}".format(good)   # upper quartile of the scale
 
         if mean_r < weak:
             insights.append(build_insight(
@@ -200,7 +205,7 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                         "{:.0f}-point scale.".format(scale, low_n, poor, hi),
                 cause="Bottom-rated products are pulling the catalogue average down — "
                       "quality, description, or delivery mismatch worth investigating",
-                evidence=("Mean={:.2f} on a {:.0f}-{:.0f} scale. Planning target: {}+. "
+                evidence=("Mean={:.2f} on a {:.0f}-{:.0f} scale, where the top quarter begins at {}. "
                           "Bottom 25% rated below {:.1f}. {:,} critically low-rated "
                           "products. ".format(mean_r, lo, hi, pt, q1, low_n) + rev_ev),
                 action="1. Immediate audit of the lowest-rated products  "
@@ -216,12 +221,13 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                          "lower median revenue in this catalog".format(scale, low_n, poor))
         elif mean_r < good:
             insights.append(build_insight(
-                title="Rating Below Target: {} (Target {}+)".format(scale, pt),
+                title="Average Rating {} — Below the Top Quarter of the Scale ({}+)".format(scale, pt),
                 problem="{} average. Bottom 25% rated below {:.1f}. {:,} products below "
                         "{:.1f}.".format(scale, q1, low_n, poor),
                 cause="Bottom-quartile products dragging overall performance",
                 evidence=("Mean={:.2f} on a {:.0f}-{:.0f} scale. 25th percentile={:.1f}. "
-                          "Target: {}+. ".format(mean_r, lo, hi, q1, pt) + rev_ev),
+                          "The top quarter of this scale begins at {}. ".format(
+                              mean_r, lo, hi, q1, pt) + rev_ev),
                 action="1. Fix or remove bottom-quartile products  "
                        "2. Improve product descriptions and images  "
                        "3. Category-level quality audit",

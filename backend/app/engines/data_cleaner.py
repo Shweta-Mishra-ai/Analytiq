@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any
 from app.services.dtypes import is_text_dtype
 
+from app.services.numfmt import human_number
+
 logger = logging.getLogger(__name__)
 
 
@@ -338,7 +340,7 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
                       if missing_pct >= 20 else "")
             report.add(col,
                        "{} missing values ({:.1f}%)".format(missing, missing_pct),
-                       "filled with median ({:.4g}){}".format(median_val, caveat),
+                       "filled with median ({}){}".format(human_number(median_val), caveat),
                        "{} nulls".format(missing), 0, missing,
                        sql=("-- median of the non-null values, computed once and\n"
                             "-- written as a literal so the result is reproducible:\n"

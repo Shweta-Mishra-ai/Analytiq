@@ -137,7 +137,16 @@ def _is_tautological_pair(a: str, b: str) -> bool:
     tenure = ("year", "tenure", "month", "duration", "since", "age", "experience")
     level  = ("level", "grade", "band", "seniority", "rank")
     pay    = ("income", "salary", "pay", "wage", "compensation", "rate", "ctc")
-    price  = ("price", "mrp", "cost", "amount", "value", "revenue")
+    # "revenue vs cogs, r=+0.98" was reaching the executive summary of a
+    # financial review as a notable relationship. Gross profit is revenue
+    # minus cost of sales — the two move together by construction, and
+    # printing it as a discovery tells a finance reader the report does
+    # not understand a P&L.
+    price  = ("price", "mrp", "cost", "amount", "value", "revenue", "cogs",
+              "cog", "expense", "spend", "sales", "turnover", "profit",
+              "margin", "gross", "opex", "capex", "ebitda", "budget",
+              "billing", "gmv", "variance", "actual", "plan", "forecast",
+              "balance")
 
     def has(s, kws):
         return any(k in s for k in kws)
@@ -197,6 +206,9 @@ def _build_narrative_summary(
 
     # ── HEADLINE: pick the single most important claim ─────────────────────
     headline = None
+    # The insight the headline was built from, so the supporting
+    # sentences below do not count it a second time.
+    headline_insight = None
 
     if attrition is not None and attrition.severity in ("critical", "high"):
         cohort_note = ""
@@ -210,6 +222,7 @@ def _build_narrative_summary(
         )
     elif n_crit > 0:
         top_critical = next((i for i in deduped if i.severity == "critical"), None)
+        headline_insight = top_critical
         if top_critical:
             headline = (
                 f"{top_critical.problem} This is the most urgent finding in the "
@@ -218,12 +231,30 @@ def _build_narrative_summary(
 
     # A real business finding (even 'warning' severity) leads over a correlation.
     if headline is None:
-        top_business = next(
-            (i for i in deduped
-             if i.severity in ("high", "warning")
-             and i.category not in ("correlation", "data_quality")),
-            None,
-        )
+        candidates = [i for i in deduped
+                      if i.severity in ("high", "warning")
+                      and i.category not in ("correlation", "data_quality")]
+        # Where the domain is known, its own findings lead. The
+        # segment-difference check runs on every dataset and produced the
+        # opening sentence of a financial review — the revenue gap between
+        # a trading cost centre and a support one — ahead of margin, cost
+        # structure and budget variance. A finance director reads the P&L
+        # position first; a generic cross-tab is supporting material.
+        domain_key = str(domain or "").strip().lower()
+        if domain_key and domain_key != "general":
+            of_domain = [i for i in deduped
+                         if str(i.category or "").lower().startswith(domain_key)]
+            preferred = [i for i in candidates if i in of_domain]
+            # If the domain engine found nothing wrong, its headline
+            # measure still leads. A financial review opens on the P&L
+            # position whether the margin is healthy or not — opening
+            # instead on whichever generic cross-tab happened to score
+            # "warning" is what made these read as tool output.
+            if not preferred:
+                preferred = of_domain
+            candidates = preferred + [i for i in candidates
+                                      if i not in preferred]
+        top_business = candidates[0] if candidates else None
         if attrition is not None and attrition.rate > 0:
             headline = (
                 f"Attrition stands at {attrition.rate:.1f}% ({attrition.n_left:,} of "
@@ -231,10 +262,13 @@ def _build_narrative_summary(
                 f"the sections below break it down by segment and driver."
             )
         elif top_business is not None:
-            headline = (
-                f"{top_business.problem} This is the most material finding in the "
-                f"dataset and is detailed, with evidence, in the sections below."
-            )
+            tail = ("This is the position the rest of the report is read "
+                    "against, and is set out with its evidence below."
+                    if top_business.severity == "positive" else
+                    "This is the most material finding in the dataset and is "
+                    "detailed, with evidence, in the sections below.")
+            headline_insight = top_business
+            headline = "{} {}".format(top_business.problem, tail)
 
     # Only fall back to a correlation if it is NOT a mechanical tautology.
     if headline is None:
@@ -275,6 +309,13 @@ def _build_narrative_summary(
             f"Separately, attrition stands at {attrition.rate:.1f}% "
             f"({attrition.severity} severity)."
         )
+
+    # "additional" has to mean additional to the headline. On a sales
+    # report whose headline was the one warning in the file, the summary
+    # went on to say "1 additional warning requires review" — the same
+    # finding counted twice in consecutive sentences.
+    if headline_insight is not None and headline_insight.severity == "warning":
+        n_warn = max(0, n_warn - 1)
 
     if n_warn > 0:
         support.append(
@@ -380,7 +421,20 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
     # been pushed below "info" ones and dropped off the top-6 list.
     sev_order = {"critical":0,"high":1,"warning":2,"medium":2,
                  "info":3,"low":3,"positive":4}
-    insights  = sorted(insights, key=lambda x: sev_order.get(x.severity,99))
+    # Within a severity band, the domain engine's own findings come
+    # first. Sorting on severity alone put the generic segment-difference
+    # cross-tab — which runs on every dataset — at the top of a financial
+    # review's insight list, above margin and cost structure. It is a
+    # supporting result and it should read as one.
+    domain_key = str(domain or "").strip().lower()
+
+    def _rank(ins):
+        own = (0 if domain_key and domain_key != "general"
+               and str(ins.category or "").lower().startswith(domain_key)
+               else 1)
+        return (sev_order.get(ins.severity, 99), own)
+
+    insights = sorted(insights, key=_rank)
 
     # Deduplicate
     seen, deduped = set(), []
@@ -418,9 +472,20 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
 
     risks_flat    = raw["risks"][:6]
     opps_flat     = raw["opportunities"][:4]
-    actions_flat  = ["[{}] {}".format(
-        "CRITICAL" if i<2 else "SHORT TERM" if i<4 else "LONG TERM", a)
-        for i, a in enumerate(raw["actions"][:8])]
+    # Urgency was assigned by position: whatever landed first in the list
+    # was stamped CRITICAL, so a sales report with nothing critical in it
+    # closed with "[CRITICAL] Review attainment on the same cadence the
+    # targets are set". A reader who checks one urgency label against the
+    # finding behind it and finds nothing there stops trusting the rest.
+    # Nothing is marked critical unless a critical finding was actually
+    # established.
+    def _horizon(i: int) -> str:
+        if critical:
+            return "CRITICAL" if i < 2 else "SHORT TERM" if i < 4 else "LONG TERM"
+        return "SHORT TERM" if i < 3 else "LONG TERM"
+
+    actions_flat = ["[{}] {}".format(_horizon(i), a)
+                    for i, a in enumerate(raw["actions"][:8])]
 
     # Executive summary — a synthesised narrative that leads with the single
     # most important claim, not a count of how many issues were found. The

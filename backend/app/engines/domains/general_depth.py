@@ -36,6 +36,8 @@ from app.engines.domains.base import build_insight, is_id_column
 from app.services.dtypes import text_columns
 from app.services.stat_guards import MIN_N
 
+from app.services.numfmt import human_number
+
 logger = logging.getLogger(__name__)
 
 # A trend explaining less than this of the variance is a line through
@@ -217,6 +219,21 @@ def outlier_concentration(df: pd.DataFrame, insights: List, findings: List,
         if p >= 0.05:
             return
 
+        # A group can hold nearly all the extremes simply by sitting at a
+        # different level: on a retail file, 99% of Electronics rows were
+        # "extreme values" in `unit_price` because Electronics costs
+        # twenty times what Grocery does. That is the shape of the
+        # catalogue, not a collection fault, and calling it one sent the
+        # reader looking for a problem that does not exist.
+        from app.engines.domains.base import outliers_explained_by_group
+        if outliers_explained_by_group(df, target) == seg_col:
+            findings.append(
+                "'{}' sits at a different level in '{}' than elsewhere, so "
+                "most of its records fall outside a range computed across the "
+                "whole file. Within '{}' they are unremarkable — the column "
+                "should be read per group.".format(str(worst), seg_col, seg_col))
+            return
+
         findings.append(
             "Extreme values in '{}' concentrate in '{}': {:.1f}% of its {:,} "
             "records against {:.1f}% overall (Fisher exact p={:.3g}).".format(
@@ -233,9 +250,10 @@ def outlier_concentration(df: pd.DataFrame, insights: List, findings: List,
                   "a different unit of measure, or a data-entry route that "
                   "differs for that group. Which of the three applies is not "
                   "in this data.",
-            evidence="Outliers defined as beyond 3×IQR ({:.4g} to {:.4g}). "
+            evidence="Outliers defined as beyond 3×IQR ({} to {}). "
                      "Fisher exact test of '{}' against the rest: "
-                     "p={:.3g}.".format(lo, hi, str(worst), p),
+                     "p={:.3g}.".format(human_number(lo), human_number(hi),
+                                        str(worst), p),
             action="1. Pull ten of the extreme '{}' records and read them  "
                    "2. Confirm the unit and the collection route match the "
                    "other groups  3. Exclude and re-run to see what the "

@@ -51,6 +51,64 @@ _ID_NAME_TOKENS = ("id", "ids", "uuid", "guid", "index", "idx", "code",
                    "ref", "reference", "key", "number", "no", "sku", "rowid")
 
 
+def outliers_explained_by_group(df, col: str, min_drop: float = 0.5):
+    """The categorical column, if any, that accounts for `col`'s outliers.
+
+    A single IQR fence across a mixed catalogue is not an outlier test.
+    On a retail export where Electronics averages 258 and Grocery 12,
+    `unit_price` came back "21% outliers", `revenue` "15% outliers", and
+    a third insight announced that "99% of 'Electronics' records are
+    extreme values". All three were flagged as data-quality risks —
+    "verify before using it in any decision" — on a column that was
+    entirely correct. Three of the six headline insights on that report
+    were the same artefact, and they displaced real findings.
+
+    Returns the grouping column when computing the fence within groups
+    removes at least `min_drop` of the flagged rows, or None. The caller
+    should then describe the column as multi-modal by that grouping —
+    which is a finding — rather than as dirty.
+    """
+    import pandas as _pd
+
+    try:
+        s = _pd.to_numeric(df[col], errors="coerce")
+        if s.notna().sum() < 30:
+            return None
+        q1, q3 = s.quantile(0.25), s.quantile(0.75)
+        iqr = q3 - q1
+        if not iqr or _pd.isna(iqr):
+            return None
+        flagged = ((s < q1 - 1.5 * iqr) | (s > q3 + 1.5 * iqr))
+        n_flagged = int(flagged.sum())
+        if n_flagged == 0:
+            return None
+
+        best, best_drop = None, 0.0
+        for cat in df.columns:
+            if cat == col or _pd.api.types.is_numeric_dtype(df[cat]):
+                continue
+            if not 2 <= df[cat].nunique(dropna=True) <= 25:
+                continue
+            within = _pd.Series(False, index=df.index)
+            for _key, idx in df.groupby(cat, observed=True).groups.items():
+                g = s.loc[idx]
+                if g.notna().sum() < 8:
+                    continue
+                gq1, gq3 = g.quantile(0.25), g.quantile(0.75)
+                giqr = gq3 - gq1
+                if not giqr or _pd.isna(giqr):
+                    continue
+                within.loc[idx] = ((g < gq1 - 1.5 * giqr)
+                                   | (g > gq3 + 1.5 * giqr))
+            drop = (n_flagged - int(within.sum())) / n_flagged
+            if drop > best_drop:
+                best, best_drop = cat, drop
+        return best if best_drop >= min_drop else None
+    except Exception:
+        logger.debug("outlier grouping check failed for %r", col, exc_info=True)
+        return None
+
+
 def is_id_column(col: str, series=None) -> bool:
     """
     True when a column is an identifier, not a measure. Identifiers must be

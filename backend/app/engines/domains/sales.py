@@ -10,7 +10,10 @@ import numpy as np
 import pandas as pd
 
 from app.engines.domains.base import Insight, build_insight, col_stats
-from app.engines.domains.sales_performance import run_sales_performance
+from app.engines.domains.sales_performance import (
+    find_outcome_col,
+    run_sales_performance,
+)
 from app.engines.industry_benchmarks import lookup_benchmark, format_benchmark_context
 
 logger = logging.getLogger(__name__)
@@ -95,6 +98,236 @@ def _sales_cycle_insights(df: pd.DataFrame, insights: List, findings: List,
         logger.warning("sales cycle length analysis failed", exc_info=True)
 
 
+def _outcome_column(df: pd.DataFrame):
+    """(column, won mask, lost mask) for the outcome column, or None.
+
+    Delegates the detection to `sales_performance.find_outcome_col` so
+    there is one definition of "was this deal won" in the codebase, and
+    unpacks its tri-state series — True won, False lost, NaN still open —
+    into the two masks the callers here need. Open opportunities appear in
+    neither: a deal that has not been decided is not a loss, and counting
+    it as one halves every win rate on a live pipeline.
+    """
+    found = find_outcome_col(df)
+    if not found:
+        return None
+    col, outcome = found
+    won  = outcome.eq(True).reindex(df.index, fill_value=False)
+    lost = outcome.eq(False).reindex(df.index, fill_value=False)
+    return col, won, lost
+
+
+def _win_rate_insights(df: pd.DataFrame, rev_col, rep_col, insights: List,
+                       findings: List, risks: List, opps: List) -> None:
+    """Win rate — the first number anyone running a sales team asks for.
+
+    The engine computed revenue distribution, cycle length and rep spread
+    and never computed this, on files that carried a `deal_stage` column
+    with "Closed Won" and "Closed Lost" in it.
+    """
+    found = _outcome_column(df)
+    if not found:
+        return
+    col, won, lost = found
+    decided = int(won.sum() + lost.sum())
+    if decided < 30:
+        return
+    rate = won.sum() / decided * 100
+    open_n = len(df) - decided
+
+    value_note = ""
+    if rev_col and rev_col in df.columns:
+        won_value  = float(df.loc[won, rev_col].sum())
+        lost_value = float(df.loc[lost, rev_col].sum())
+        if won_value + lost_value > 0:
+            value_rate = won_value / (won_value + lost_value) * 100
+            # Where the two diverge, the team is winning a different size
+            # of deal than it is losing — which is the finding, not the
+            # count-based rate on its own.
+            value_note = (" By value the rate is {:.0f}% ({:,.0f} won against "
+                          "{:,.0f} lost), so the deals being won are {} than "
+                          "the deals being lost.".format(
+                              value_rate, won_value, lost_value,
+                              "larger" if value_rate > rate + 3 else
+                              "smaller" if value_rate < rate - 3 else
+                              "about the same size"))
+
+    rep_note = ""
+    if rep_col and rep_col in df.columns:
+        try:
+            per_rep = (df.assign(_won=won, _decided=won | lost)
+                         .groupby(rep_col)[["_won", "_decided"]].sum())
+            per_rep = per_rep[per_rep["_decided"] >= 10]
+            if len(per_rep) >= 3:
+                per_rep["_rate"] = per_rep["_won"] / per_rep["_decided"] * 100
+                best  = per_rep["_rate"].idxmax()
+                worst = per_rep["_rate"].idxmin()
+                spread = per_rep.loc[best, "_rate"] - per_rep.loc[worst, "_rate"]
+                if spread >= 10:
+                    rep_note = (" Across {:,} people with at least ten decided "
+                                "deals the rate runs from {:.0f}% ({}) to "
+                                "{:.0f}% ({}).".format(
+                                    len(per_rep), per_rep.loc[worst, "_rate"],
+                                    worst, per_rep.loc[best, "_rate"], best))
+        except Exception:
+            logger.warning("per-rep win rate failed", exc_info=True)
+
+    # `run_sales_performance` states the rate as a finding when it can
+    # test it per rep; adding a second line here put the same 60% in the
+    # findings list twice under slightly different wording.
+    if not rep_note:
+        findings.append(
+            "Win rate is {:.0f}% — {:,} of {:,} decided opportunities closed "
+            "won, with {:,} still open.".format(
+                rate, int(won.sum()), decided, open_n))
+
+    insights.append(build_insight(
+        title="Win Rate {:.0f}% on {:,} Decided Opportunities".format(
+            rate, decided),
+        problem="{:,} of {:,} decided opportunities closed won ({:.0f}%). The "
+                "remaining {:,} rows are still open and are excluded from both "
+                "sides of the ratio.".format(
+                    int(won.sum()), decided, rate, open_n),
+        cause="Win rate is an outcome of qualification, competitive position "
+              "and pricing together. This data records the outcome, not which "
+              "of the three moved it.",
+        evidence="Read from '{}'. Won={:,}, lost={:,}, open={:,}.{}{}".format(
+            col, int(won.sum()), int(lost.sum()), open_n, value_note, rep_note),
+        action="1. Split the rate by segment and deal size — a single "
+               "team-level figure hides where it is actually lost  "
+               "2. Compare the stage that lost deals reached against won "
+               "deals, to locate the drop  "
+               "3. Track the rate against the same quarter last year rather "
+               "than against a published range",
+        impact="At the current rate every {:.1f} decided opportunities produce "
+               "one win, so pipeline volume and win rate trade off directly "
+               "against each other in any coverage calculation.".format(
+                   100 / rate if rate else 0),
+        severity="info", category="conversion",
+    ))
+
+    if rate < 20 and decided >= 100:
+        risks.append(
+            "Win rate of {:.0f}% means roughly {:.0f} opportunities are worked "
+            "for each one closed — pipeline coverage has to carry that ratio "
+            "before any target is credible.".format(rate, 100 / rate))
+
+
+def _quota_attainment_insights(df: pd.DataFrame, rev_col, target_col, rep_col,
+                               insights: List, findings: List, risks: List,
+                               opps: List) -> None:
+    """Attainment measured per person, against the quota as recorded.
+
+    The previous version divided the mean of the revenue column by the
+    mean of the quota column. On a normal export that is a per-deal
+    amount over a per-period-per-rep target: 18,420 against 250,000,
+    reported as "7% achievement, 93pp below target" and pushed to the top
+    of the report as the critical finding. It was not a low attainment
+    figure; it was not an attainment figure at all.
+
+    Attainment only means anything per quota-holder: bookings summed for
+    that person over the period the data covers, divided by their quota.
+    Without something to group by, the two columns cannot be compared and
+    the honest output is to say so.
+    """
+    if not (target_col and rev_col
+            and target_col in df.columns and rev_col in df.columns):
+        return
+    quota = pd.to_numeric(df[target_col], errors="coerce")
+    revenue = pd.to_numeric(df[rev_col], errors="coerce")
+    if quota.dropna().empty or (quota.dropna() <= 0).all():
+        return
+
+    if not rep_col or rep_col not in df.columns:
+        findings.append(
+            "'{}' is present but there is no column identifying who each "
+            "target belongs to, so attainment cannot be calculated. A "
+            "per-row amount and a per-period target are not comparable "
+            "figures.".format(target_col))
+        return
+
+    # Quota repeats on every row belonging to the same person, so it is
+    # taken once per person rather than summed.
+    work = pd.DataFrame({"_rep": df[rep_col], "_rev": revenue,
+                         "_quota": quota}).dropna(subset=["_rep"])
+    found = _outcome_column(df)
+    basis = "all opportunities in the data"
+    if found:
+        _col, won, _lost = found
+        if won.sum() >= 10:
+            work = work[won.reindex(work.index, fill_value=False)]
+            basis = "closed-won opportunities only"
+
+    per_rep = work.groupby("_rep").agg(bookings=("_rev", "sum"),
+                                       quota=("_quota", "median"),
+                                       deals=("_rev", "size"))
+    per_rep = per_rep[per_rep["quota"] > 0]
+    if len(per_rep) < 3:
+        return
+    per_rep["attainment"] = per_rep["bookings"] / per_rep["quota"] * 100
+
+    median_att = float(per_rep["attainment"].median())
+    at_quota = int((per_rep["attainment"] >= 100).sum())
+    share_at = at_quota / len(per_rep) * 100
+    best = per_rep["attainment"].idxmax()
+    worst = per_rep["attainment"].idxmin()
+
+    span = ""
+    date_cols = df.select_dtypes(include="datetime").columns.tolist()
+    if date_cols:
+        try:
+            dates = df[date_cols[0]].dropna()
+            if len(dates):
+                months = max(1, round((dates.max() - dates.min()).days / 30.44))
+                span = (" Bookings are summed over the {:,} months the data "
+                        "covers; if the recorded quota is annual rather than "
+                        "for that window, the attainment figures scale "
+                        "accordingly.".format(months))
+        except Exception:
+            logger.debug("could not describe the period covered", exc_info=True)
+
+    findings.append(
+        "Median quota attainment is {:.0f}%, with {:,} of {:,} quota-holders "
+        "at or above target.".format(median_att, at_quota, len(per_rep)))
+
+    severity = ("critical" if share_at < 25 else
+                "warning" if share_at < 50 else "positive")
+    insights.append(build_insight(
+        title="{:,} of {:,} Quota-Holders at Target; Median Attainment "
+              "{:.0f}%".format(at_quota, len(per_rep), median_att),
+        problem=("{:.0f}% of quota-holders reached target and the median "
+                 "attainment is {:.0f}%.".format(share_at, median_att)),
+        cause="Attainment below target is either a target-setting problem or "
+              "a performance one, and the two need separating before either "
+              "is acted on. This data cannot distinguish them.",
+        evidence="Measured per '{}' on {}: bookings summed per person against "
+                 "their own recorded quota. Range {:.0f}% ({}) to {:.0f}% "
+                 "({}) across {:,} quota-holders.{}".format(
+                     rep_col, basis, per_rep.loc[worst, "attainment"], worst,
+                     per_rep.loc[best, "attainment"], best, len(per_rep), span),
+        action="1. Compare this distribution against the same period last "
+               "year before changing any target  "
+               "2. Where most of the team misses, treat it as a "
+               "target-setting question, not a coaching one  "
+               "3. Check territory and account allocation against attainment "
+               "before attributing the spread to people",
+        impact="Closing the gap between the median holder and target across "
+               "all {:,} quota-holders is worth about {:,.0f} in bookings, "
+               "measured against their own quotas.".format(
+                   len(per_rep),
+                   max(0.0, float((per_rep["quota"] - per_rep["bookings"])
+                                  .clip(lower=0).sum()))),
+        severity=severity, category="target",
+    ))
+
+    if share_at < 40:
+        risks.append(
+            "Only {:,} of {:,} quota-holders are at target — a plan built on "
+            "the current quota set is unlikely to be met without either "
+            "changing the targets or changing the coverage.".format(
+                at_quota, len(per_rep)))
+
+
 def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     findings, risks, opps, actions = [], [], [], []
     insights = []
@@ -111,8 +344,17 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     region_col = next((c for c in df.select_dtypes(include=["object", "string"]).columns
                        if any(k in c.lower() for k in ["region","territory","zone","area"])
                        and df[c].nunique()<=25), None)
+    # "category" and "segment" are used for things that are not products.
+    # `forecast_category` holds Commit / Best Case / Pipeline — a
+    # confidence band — and was read as the product line, so the report
+    # recommended reviewing "revenue by forecast_category for
+    # concentration and whether the long tail justifies its resource".
+    _NOT_A_PRODUCT = ("forecast", "risk", "priority", "age", "size", "tier",
+                      "credit", "confidence", "probability", "stage",
+                      "customer_segment", "lead")
     product_col= next((c for c in df.select_dtypes(include=["object", "string"]).columns
                        if any(k in c.lower() for k in ["product","category","segment"])
+                       and not any(b in c.lower() for b in _NOT_A_PRODUCT)
                        and df[c].nunique()<=30), None)
     rep_col    = next((c for c in df.select_dtypes(include=["object", "string"]).columns
                        if any(k in c.lower() for k in ["rep","salesperson","agent","owner",
@@ -127,15 +369,42 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         mean = st.get("mean",0)
         med  = st.get("median",0)
 
+        # The title used to be "Revenue Overview: Mean 18420 | Median
+        # 13450 | Range 1314-186265" — a spreadsheet header rather than a
+        # finding, and the stated problem was "Revenue distribution
+        # analysis", which is a description of the activity and not of
+        # anything wrong.
+        top_quartile_share = 0.0
+        if rev_col in df.columns:
+            try:
+                s_rev = pd.to_numeric(df[rev_col], errors="coerce").dropna()
+                if len(s_rev) >= 8 and s_rev.sum() > 0:
+                    top_quartile_share = float(
+                        s_rev.nlargest(max(1, len(s_rev) // 4)).sum()
+                        / s_rev.sum() * 100)
+            except Exception:
+                logger.debug("top-quartile share failed", exc_info=True)
+
         insights.append(build_insight(
-            title="Revenue Overview: Mean {:.0f} | Median {:.0f} | Range {:.0f}-{:.0f}".format(
-                mean, med, st["min"], st["max"]),
-            problem="Revenue distribution analysis" + (" — high variability detected" if cv>0.5 else ""),
-            cause="Skewness={:.1f} indicates {}".format(
-                skew, "few large deals driving disproportionate revenue (Pareto effect)" if skew>1
-                else "revenue is relatively evenly distributed"),
-            evidence="Mean={:.0f}, Median={:.0f} ({:.0f}% difference). "
-                     "Top 25% of transactions above {:.0f}.".format(
+            title=("Top Quarter of Deals Carries {:.0f}% of Revenue".format(
+                       top_quartile_share) if top_quartile_share >= 40 else
+                   "Revenue Is Spread Evenly Across Deal Sizes"),
+            problem=("The largest 25% of transactions account for {:.0f}% of "
+                     "revenue, so the total moves with a small number of "
+                     "deals.".format(top_quartile_share)
+                     if top_quartile_share >= 40 else
+                     "No small group of transactions dominates the total; "
+                     "the largest 25% account for {:.0f}% of "
+                     "revenue.".format(top_quartile_share)),
+            cause="Skewness of {:.1f} on {} — {}".format(
+                skew, rev_col,
+                "a long right tail, which is normal in a deal-based business "
+                "and matters mainly for how the average is read"
+                if skew > 1 else
+                "a broadly symmetric distribution"),
+            evidence="Mean={:,.0f} against a median of {:,.0f} ({:.0f}% apart), "
+                     "so the median is the fairer description of a typical "
+                     "transaction. Upper quartile begins at {:,.0f}.".format(
                 mean, med, abs(mean-med)/max(med,1)*100, st["q3"]),
             action="1. Identify top 20% revenue drivers — protect and replicate  "
                    "2. Analyze bottom 20% — cut or transform low performers  "
@@ -157,42 +426,16 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                 "Revenue Pareto effect detected: median {:.0f} vs mean {:.0f} — "
                 "few large deals driving disproportionate revenue".format(med, mean))
 
-    # ── Target/Quota Analysis ──────────────────────────────
-    if target_col and rev_col and target_col in stats and rev_col in stats:
-        target_mean = stats[target_col].get("mean",0)
-        rev_mean    = stats[rev_col].get("mean",0)
-        achievement = (rev_mean / target_mean * 100) if target_mean > 0 else 0
-
-        if achievement < 80:
-            insights.append(build_insight(
-                title="Target Gap: {:.0f}% Achievement — {:.0f}pp Below Target".format(
-                    achievement, 100-achievement),
-                problem="Average {:.0f}% quota achievement — team missing targets significantly".format(achievement),
-                cause="Possible drivers to investigate (not yet confirmed): targets set "
-                      "too high, pipeline quality, or sales-process gaps.",
-                evidence="Avg revenue={:.0f} vs avg target={:.0f}. Achievement={:.0f}%.".format(
-                    rev_mean, target_mean, achievement),
-                action="1. Check whether targets are realistic against your own historical "
-                       "attainment  2. Pipeline quality audit — qualification issues  "
-                       "3. Sales-process coaching for bottom-quartile reps",
-                impact="{:.0f}% achievement gap = {:.0f}% revenue shortfall from plan".format(
-                    100-achievement, 100-achievement),
-                severity="critical" if achievement<70 else "warning",
-                category="target"
-            ))
-            risks.append("{:.0f}% target achievement — revenue significantly below plan".format(achievement))
-        elif achievement >= 100:
-            insights.append(build_insight(
-                title="Targets Exceeded: {:.0f}% Achievement".format(achievement),
-                problem="N/A — exceeding targets",
-                cause="Strong sales execution and/or conservative target setting",
-                evidence="Avg revenue={:.0f} vs avg target={:.0f}".format(rev_mean, target_mean),
-                action="1. Review if targets were set too conservatively  "
-                       "2. Capture learnings from over-performers and scale",
-                impact="Consistent over-achievement suggests capacity for higher targets",
-                severity="positive", category="target"
-            ))
-            opps.append("{:.0f}% target achievement — review upside potential for next period".format(achievement))
+    # ── Win rate and quota attainment ───────────────────────
+    try:
+        _win_rate_insights(df, rev_col, rep_col, insights, findings, risks, opps)
+    except Exception:
+        logger.warning("win rate analysis failed", exc_info=True)
+    try:
+        _quota_attainment_insights(df, rev_col, target_col, rep_col,
+                                   insights, findings, risks, opps)
+    except Exception:
+        logger.warning("quota attainment analysis failed", exc_info=True)
 
     # ── Regional Analysis (significance-tested, quantified) ──────────
     if region_col and rev_col and rev_col in df.columns:
@@ -252,9 +495,12 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                 opps.append("Lift '{}' to the overall median revenue: ~{:,.0f} upside "
                             "({:,} records).".format(bottom_r, opp_value, bot_n))
             findings.append(
-                "Top region '{}' contributes {:.0f}% of total revenue — concentration "
-                "risk worth monitoring.".format(top_r, top_share) if top_share > 50 else
-                "Revenue reasonably distributed across {} regions.".format(len(reg_perf)))
+                "'{}' contributes {:.0f}% of revenue across {} groups in "
+                "'{}' — losing it would remove that share.".format(
+                    top_r, top_share, len(reg_perf), region_col)
+                if top_share > 50 else
+                "Revenue is spread across {} groups in '{}', the largest "
+                "holding {:.0f}%.".format(len(reg_perf), region_col, top_share))
 
     # ── Product/Category Performance ──────────────────────
     if product_col and rev_col and rev_col in df.columns:
@@ -362,13 +608,41 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     # ── Outcome-level analysis: rep win rates, cycle by outcome ─
     run_sales_performance(df, insights, findings, risks, opps)
 
-    actions.extend([
-        "Weekly revenue vs target review — per rep and per region",
-        "Identify top 3 deals at risk in pipeline — intervention strategy",
-        "Replicate top performer playbook — what do they do differently?",
-        "Revenue concentration audit — reduce dependency on single customer/product",
-        "Quarterly pricing review — ensure margins are healthy per product category",
-    ])
+    # These five ran on every sales file regardless of what was in it. On
+    # an opportunity export with no product, customer or margin column,
+    # the report still closed with "quarterly pricing review — ensure
+    # margins are healthy per product category" and "reduce dependency on
+    # a single customer/product". Neither could be acted on from this
+    # data, and a recommendation the data cannot support is the thing a
+    # reader spots first. Each is now conditional on the column it needs.
+    if target_col and rep_col:
+        actions.append(
+            "Review attainment per {} against target on the same cadence the "
+            "targets are set — the distribution across the team, not the "
+            "average.".format(rep_col))
+    if _outcome_column(df):
+        actions.append(
+            "Track win rate and the stage lost deals reached together; the "
+            "rate on its own does not say where deals are lost.")
+    if rep_col:
+        actions.append(
+            "Profile what separates the top quartile of {} from the bottom "
+            "on this data before attributing the gap to capability.".format(
+                rep_col))
+    if product_col:
+        actions.append(
+            "Review revenue by {} for concentration, and whether the "
+            "long tail justifies the resource it takes.".format(product_col))
+    if profit_col:
+        actions.append(
+            "Review pricing where {} is thin or negative, by the segments "
+            "available in this data.".format(profit_col))
+    if not actions:
+        actions.append(
+            "Add the outcome, owner and target columns to this export — win "
+            "rate, attainment and rep performance cannot be measured "
+            "without them, and they are the questions this data is closest "
+            "to answering.")
 
     return {"findings":findings, "risks":risks, "opportunities":opps,
             "actions":actions, "insights":insights}

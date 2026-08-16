@@ -122,13 +122,17 @@ def _finance_margin_insights(df, cols, stats, insights, findings, risks, opps) -
             loss_rows    = int((df[profit_col] < 0).sum())
             loss_pct     = loss_rows / len(df) * 100
             findings.append(
-                f"Net profit: {total_profit:,.0f} | "
-                f"Loss periods/items: {loss_rows} ({loss_pct:.1f}%)"
+                "Net profit is {:,.0f}, with {:,} of {:,} rows ({:.1f}%) "
+                "recording a loss.".format(
+                    total_profit, loss_rows, len(df), loss_pct)
             )
             if loss_rows > 0:
                 risks.append(
-                    f"{loss_rows} loss-making records ({loss_pct:.1f}% of total). "
-                    "Investigate which periods/categories are systematically unprofitable."
+                    "{:,} row{} ({:.1f}% of the file) record{} a loss — worth "
+                    "checking whether the same periods or categories recur "
+                    "rather than treating them as isolated.".format(
+                        loss_rows, "" if loss_rows == 1 else "s", loss_pct,
+                        "s" if loss_rows == 1 else "")
                 )
         except Exception:
             logger.warning("Net profit analysis failed", exc_info=True)
@@ -147,11 +151,23 @@ def _finance_revenue_trend(df, cols, stats, insights, findings, risks, opps) -> 
         second_half = float(period_rev.iloc[len(period_rev)//2:].mean())
         if first_half > 0:
             trend_pct = (second_half - first_half) / first_half * 100
-            direction = "growing" if trend_pct > 0 else "declining"
-            findings.append(
-                f"Revenue {direction} {abs(trend_pct):.1f}% comparing first vs second half "
-                f"of available periods (n={len(period_rev)} periods)"
-            )
+            # A 0.3% difference between two halves of a series is not
+            # growth, and reporting it as "revenue growing 0.3%" invites
+            # the reader to act on noise. Below 2% the honest description
+            # is that it did not move.
+            if abs(trend_pct) < 2.0:
+                findings.append(
+                    "Revenue held broadly flat across the {} periods covered "
+                    "— the second half sits within {:.1f}% of the "
+                    "first.".format(len(period_rev), abs(trend_pct))
+                )
+            else:
+                findings.append(
+                    "Revenue {} {:.1f}% between the first and second half of "
+                    "the {} periods covered.".format(
+                        "rose" if trend_pct > 0 else "fell",
+                        abs(trend_pct), len(period_rev))
+                )
             if trend_pct < -10:
                 risks.append(
                     f"Revenue declining {abs(trend_pct):.1f}% period-over-period. "
@@ -182,6 +198,16 @@ def _finance_revenue_trend(df, cols, stats, insights, findings, risks, opps) -> 
 def _finance_budget_variance(df, cols, stats, insights, findings, risks, opps) -> None:
     """Budget vs actual variance analysis."""
     budget_col, actual_col = cols["budget"], cols["actual"]
+    # Almost no ledger export has a column called "actual" — the actual is
+    # the revenue or cost line, and the budget sits beside it. Requiring
+    # the literal name meant budget variance, a headline metric of the
+    # finance report, was silently skipped on files that plainly carried a
+    # budget column.
+    basis = "the '{}' column".format(actual_col) if actual_col else ""
+    if not actual_col:
+        actual_col = cols["rev"] or cols["profit"] or cols["cost"]
+        basis = ("'{}', taken as the actual because no column is named as "
+                 "such".format(actual_col) if actual_col else "")
     if not (budget_col and actual_col and budget_col != actual_col):
         return
     try:
@@ -193,8 +219,9 @@ def _finance_budget_variance(df, cols, stats, insights, findings, risks, opps) -
         over  = int((df[actual_col] > df[budget_col]).sum())
         under = int((df[actual_col] < df[budget_col]).sum())
         findings.append(
-            f"Budget vs Actual: {variance_pct:+.1f}% overall "
-            f"({over} over-budget, {under} under-budget periods/items)"
+            "Actuals came in {:+.1f}% against '{}' ({:,} periods over, {:,} "
+            "under), measured on {}.".format(
+                variance_pct, budget_col, over, under, basis)
         )
         sev = "critical" if abs(variance_pct) > 20 else "warning" if abs(variance_pct) > 10 else "info"
         if abs(variance_pct) > 10:
@@ -206,8 +233,10 @@ def _finance_budget_variance(df, cols, stats, insights, findings, risks, opps) -
                 title=f"Budget Variance: {variance_pct:+.1f}%",
                 problem=f"Actual spend/revenue is {abs(variance_pct):.1f}% {'above' if variance_pct > 0 else 'below'} budget.",
                 cause="Forecast assumptions may not reflect current trading conditions.",
-                evidence=f"Budget: {total_budget:,.0f} | Actual: {total_actual:,.0f} | "
-                         f"Variance: {total_actual - total_budget:+,.0f}",
+                evidence="Budget ('{}'): {:,.0f}. Actual ({}): {:,.0f}. "
+                         "Variance: {:+,.0f} across {:,} rows.".format(
+                             budget_col, total_budget, basis, total_actual,
+                             total_actual - total_budget, len(df)),
                 action="1. Identify top 3 variance drivers  2. Reforecast for remaining period  "
                        "3. Update planning assumptions  4. Communicate to stakeholders",
                 impact="Persistent variance >10% undermines budgeting credibility and cash planning.",

@@ -35,25 +35,10 @@ MIN_TREND_PCT = 5.0
 CONCENTRATION_PCT = 50.0
 
 
-def human_number(value: float) -> str:
-    """A number written the way it would be written in a sentence.
-
-    Shared with the axis formatter in `chart_exporter`, so a headline
-    saying "3.2m" sits above an axis that also reads "3.2m". Two
-    different roundings of the same figure on one chart reads as a
-    mistake even when both are right.
-    """
-    a = abs(value)
-    if a >= 1_000_000_000:
-        return "{:,.1f}bn".format(value / 1_000_000_000)
-    if a >= 1_000_000:
-        return "{:,.1f}m".format(value / 1_000_000)
-    if a >= 1_000:
-        return "{:,.0f}k".format(value / 1_000)
-    if a >= 10:
-        return "{:,.0f}".format(value)
-    return "{:,.2f}".format(value).rstrip("0").rstrip(".")
-
+# One definition of how a figure is written, shared with the axis
+# formatter in `chart_exporter` and with the report text, so a headline
+# saying "3.2m" sits above an axis that also reads "3.2m".
+from app.services.numfmt import human_number  # noqa: E402
 
 _fmt = human_number
 
