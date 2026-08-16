@@ -647,9 +647,15 @@ def _top_insights(story, s, T, insights, CW, domain: str = "general"):
     findings under those headings is the difference between a report that
     was written for them and one that was generated.
     """
+    from app.engines.insight_guard import guard_insights, withheld_note
     from app.engines.report_blueprints import blueprint_for, group_insights
 
     bp = blueprint_for(domain)
+    # Last check before anything is printed: a finding with no figure, a
+    # future asserted as fact, or a cause the data cannot support does
+    # more damage than the finding is worth.
+    guarded = guard_insights(list(insights or []))
+    insights = guarded.kept
     if not insights:
         _sec(story, s, T, "Findings",
              "Each finding: Problem → Cause → Evidence → Action → Impact")
@@ -657,6 +663,9 @@ def _top_insights(story, s, T, insights, CW, domain: str = "general"):
             "No finding in this dataset met the evidence threshold for "
             "inclusion. That is a result, not an omission: the analysis "
             "ran and found nothing it could support.", s["body"]))
+        note = withheld_note(guarded)
+        if note:
+            story.append(Paragraph(note, s["note"]))
         return
 
     grouped = group_insights(bp, list(insights))
@@ -682,6 +691,11 @@ def _top_insights(story, s, T, insights, CW, domain: str = "general"):
             _insight_card(story, s, T, ins, CW, num=num)
         if num >= 10:
             break
+
+    note = withheld_note(guarded)
+    if note:
+        story.append(Spacer(1, 3 * mm))
+        story.append(Paragraph(note, s["note"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -930,103 +944,109 @@ def _sql_escape(text: str) -> str:
 #  INDUSTRY BENCHMARKS (HR domain)
 # ══════════════════════════════════════════════════════════
 
+def _has_reference_ranges(domain, df) -> bool:
+    """Whether this dataset has any metric with a published range.
+
+    Checked before the section is added to the contents page, so the
+    contents never promises a section the report does not contain.
+    """
+    from app.engines.industry_benchmarks import (DOMAIN_BENCHMARKS,
+                                                 lookup_benchmark)
+    if df is None or str(domain or "").lower() not in DOMAIN_BENCHMARKS:
+        return False
+    return any(lookup_benchmark(str(domain).lower(), str(c)) is not None
+               for c in df.columns)
+
+
 def _benchmark_section(story, s, T, domain, CW, df=None):
-    if domain not in ("hr", "ecommerce", "sales"): return
-    _sec(story, s, T, "Industry Benchmark Context",
-         "Indicative ranges from public industry research (SHRM · Gallup · Mercer · Deloitte)")
+    """Reference ranges for this domain, and only this domain.
 
+    What was here before was three hardcoded tables citing "Salesforce
+    2024", "Gartner 2024", "Klaviyo 2024" and similar against specific
+    figures — precise-looking attributions to reports whose contents
+    cannot be checked from inside this app. That is the single most
+    damaging thing a report can contain: a reader who looks one up and
+    cannot find the number stops believing the rest of the document.
+    Most rows also read "—" for the client's own value, so the table was
+    largely a list of other people's numbers.
+
+    Every range now comes from services/industry_benchmarks with a named
+    source, is looked up strictly within the report's own domain, and is
+    only shown for metrics this dataset actually contains. An HR report
+    therefore cites HR sources and nothing else.
+    """
+    from app.engines.industry_benchmarks import (DOMAIN_BENCHMARKS,
+                                                 lookup_benchmark)
+
+    domain = str(domain or "").lower()
+    if domain not in DOMAIN_BENCHMARKS or df is None:
+        return
+
+    def _num_mean(series):
+        """Mean robust to Yes/No/True/False string encodings."""
+        col = series
+        if is_text_dtype(col):
+            mapped = col.astype(str).str.strip().str.lower().map(
+                {"yes": 1, "no": 0, "true": 1, "false": 0,
+                 "y": 1, "n": 0, "1": 1, "0": 0})
+            col = mapped if mapped.notna().any() else pd.to_numeric(
+                col, errors="coerce")
+        else:
+            col = pd.to_numeric(col, errors="coerce")
+        col = col.dropna()
+        return float(col.mean()) if len(col) else None
+
+    rows = []
+    for c in df.columns:
+        bm = lookup_benchmark(domain, str(c))
+        if bm is None:
+            continue
+        value = _num_mean(df[c])
+        if value is None:
+            continue
+        # A rate stored as 0-1 is the same measure as one stored as 0-100.
+        shown = value
+        if bm.unit == "%" and 0 <= value <= 1 and bm.high > 1:
+            shown = value * 100
+        if bm.unit in ("%", "x") or bm.unit.startswith("/"):
+            value_str = "{:,.1f}{}".format(shown, bm.unit)
+            range_str = "{:g}–{:g}{}".format(bm.low, bm.high, bm.unit)
+        else:
+            value_str = "{:,.1f} {}".format(shown, bm.unit).strip()
+            range_str = "{:g}–{:g} {}".format(bm.low, bm.high, bm.unit).strip()
+
+        if shown < bm.low:
+            position = "below the range"
+        elif shown > bm.high:
+            position = "above the range"
+        else:
+            position = "within the range"
+        rows.append([str(c), value_str, range_str, position, bm.source])
+
+    if not rows:
+        return
+
+    _sec(story, s, T, "Performance Against Published Ranges",
+         "Published {} ranges, against the figures in this dataset".format(
+             domain))
     story.append(Paragraph(
-        "Senior analysts do not interpret data in isolation — metrics are "
-        "read against industry context. The benchmark ranges below are "
-        "indicative figures compiled from public industry research; they "
-        "vary by industry, region and company size, and should be verified "
-        "against current published sources before high-stakes decisions.",
-        s["body"]))
-    story.append(Spacer(1, 3*mm))
-
-    # ── Compute real "This Org" values from df ────────────
-    org = {}
-    if df is not None:
-        import numpy as np
-
-        def _num_mean(series):
-            """Mean robust to Yes/No/True/False string encodings."""
-            s = series
-            if is_text_dtype(s):
-                mapped = s.astype(str).str.strip().str.lower().map(
-                    {"yes": 1, "no": 0, "true": 1, "false": 0,
-                     "y": 1, "n": 0, "1": 1, "0": 0})
-                s = mapped if mapped.notna().any() else pd.to_numeric(
-                    s, errors="coerce")
-            else:
-                s = pd.to_numeric(s, errors="coerce")
-            s = s.dropna()
-            return float(s.mean()) if len(s) else None
-
-        # Attrition
-        atr_col = next((c for c in df.columns
-                        if c.lower() in ("left","attrition","churned","exited")), None)
-        if atr_col:
-            v = _num_mean(df[atr_col])
-            if v is not None:
-                org["attrition"] = f"{v*100:.1f}%"
-
-        # Satisfaction
-        sat_col = next((c for c in df.columns
-                        if "satisfaction" in c.lower()), None)
-        if sat_col:
-            v = _num_mean(df[sat_col])
-            if v is not None:
-                org["satisfaction"] = f"{v:.2f}"
-
-        # Rating (ecommerce)
-        rat_col = next((c for c in df.columns
-                        if "rating" in c.lower()
-                        and "count" not in c.lower()), None)
-        if rat_col:
-            v = _num_mean(df[rat_col])
-            if v is not None:
-                org["rating"] = f"{v:.2f}/5"
-
-    if domain == "hr":
-        rows = [
-            ["Attrition Rate",         org.get("attrition","—"),
-             "10–15%", "<10%", "SHRM 2024"],
-            ["Employee Satisfaction",  org.get("satisfaction","—"),
-             "0.70 (70%+)", "0.80+", "Gallup/Mercer"],
-            ["Replacement Cost/EE",    "—",
-             "50–200% sal", "6–9 mo salary", "SHRM/Gallup"],
-            ["Mgr-Driven Satisfaction","—",
-             "70%", "Manager train", "Gallup 2024"],
-            ["Preventable Exits",      "—",
-             "52%", "Proactive 1:1", "Gallup 2024"],
-        ]
-        note = ("SHRM 2024 State of Workplace · "
-                "Gallup State of Global Workplace 2024 · "
-                "Mercer Global Talent Trends 2024")
-    elif domain == "ecommerce":
-        rows = [
-            ["Customer Rating",  org.get("rating","—"),
-             "4.0+", "4.5+", "Amazon/G2 2024"],
-            ["Return Rate",      "—", "< 20%",  "< 10%", "Shopify 2024"],
-            ["Repeat Purchase",  "—", "30%+",   "40%+",  "Klaviyo 2024"],
-            ["Conversion Rate",  "—", "2–4%",   "5%+",   "BigCommerce 2024"],
-        ]
-        note = "Amazon Seller Reports 2024 · Shopify Commerce Trends 2024"
-    else:  # sales
-        rows = [
-            ["Win Rate",        "—", "20–30%",   "40%+",      "Salesforce 2024"],
-            ["Quota Attainment","—", "60–70%",   "80%+",      "Gartner 2024"],
-            ["Pipeline Coverage","—","3–4×",     "5×+",       "HubSpot 2024"],
-            ["Avg Deal Cycle",  "—", "< 90 days","< 60 days", "Forrester 2024"],
-        ]
-        note = "Salesforce State of Sales 2024 · Gartner Sales Benchmark 2024"
+        "These are general, publicly-cited ranges, not a licensed benchmark "
+        "set, and they move with sector, company size and region. They "
+        "answer one question — is this figure in a plausible place — and "
+        "nothing more. Where a figure sits outside a range, that is a "
+        "prompt to look, not a finding in itself; the comparisons against "
+        "this organisation's own distribution elsewhere in this report are "
+        "the stronger evidence.", s["body"]))
+    story.append(Spacer(1, 3 * mm))
 
     _gtable(story, T,
-            ["Metric", "This Org", "Industry Norm", "Best Practice", "Source"],
+            ["Metric", "This dataset", "Published range", "Position", "Source"],
             rows,
-            [CW * x for x in [0.22, 0.12, 0.17, 0.17, 0.32]])
-    story.append(Paragraph(note, s["note"]))
+            [CW * x for x in [0.22, 0.14, 0.17, 0.15, 0.32]])
+    story.append(Paragraph(
+        "Sources are named per row so each can be checked. No range here is "
+        "attributed to a report this analysis has not drawn it from.",
+        s["note"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -1317,6 +1337,21 @@ def _recommendations(story, s, T, actions, CW):
 #  APPENDIX
 # ══════════════════════════════════════════════════════════
 
+def _prepared_by_line(config: dict) -> str:
+    """Who prepared the report, for the basis of preparation.
+
+    A review deliverable is signed by the person or firm accountable for
+    it. What produced the document is not the reader's concern and is
+    named nowhere — the analyst's or consultancy's name is what belongs
+    here, and it is the client's or freelancer's to set.
+    """
+    who = str(config.get("prepared_by") or "").strip()
+    if not who:
+        return ""
+    return " Prepared by {}, who is responsible for the analysis and the " \
+           "conclusions drawn from it.".format(_clean(who))
+
+
 def _appendix(story, s, T, config, CW, domain: str = "general"):
     _sec(story, s, T, "Appendix — Methodology & Sources")
 
@@ -1364,11 +1399,23 @@ def _appendix(story, s, T, config, CW, domain: str = "general"):
         "excluded count is stated alongside it.",
         s["body"]))
     story.append(Paragraph(
+        "<b>Judgement applied.</b> Where more than one treatment was "
+        "defensible, the more conservative was taken: findings that did not "
+        "survive correction for multiple testing were dropped rather than "
+        "reported with a caveat, effect sizes below the level that would "
+        "change a decision were left out, and no figure was carried into a "
+        "conclusion that the underlying column could not support. Candidate "
+        "findings withheld on that basis are counted in the findings "
+        "section rather than removed silently.",
+        s["body"]))
+    story.append(Paragraph(
         "<b>Limitations.</b> Findings describe association within this "
         "dataset and the period it covers. They do not establish causation, "
         "and do not extrapolate beyond the observed range of each variable. "
         "Segment-level results with small denominators are marked as "
-        "directional.",
+        "directional. Where a question could not be answered from the data "
+        "supplied, this report says so rather than answering it from "
+        "general expectation.",
         s["body"]))
 
     story.append(Paragraph("B. Quality Score Formula", s["h3"]))
@@ -1408,9 +1455,10 @@ def _appendix(story, s, T, config, CW, domain: str = "general"):
         "indicative and should be validated against the organisation's own "
         "sector and prior periods before it informs a decision. "
         "Recommendations assume the data is complete and accurate as "
-        "supplied.".format(
+        "supplied.{}".format(
             config.get("client_name", "Client"),
-            datetime.now().strftime("%B %d, %Y")),
+            datetime.now().strftime("%B %d, %Y"),
+            _prepared_by_line(config)),
         s["wh"])]],
         colWidths=["100%"])
     disc.setStyle(TableStyle([
@@ -1529,8 +1577,8 @@ def build_pdf(
     _add_toc("Data Quality & Transparency Note")
     if cleaning_summary:
         _add_toc("Data Preparation")
-    if domain in ("hr", "ecommerce", "sales"):
-        _add_toc("Industry Benchmark Context")
+    if _has_reference_ranges(domain, df):
+        _add_toc("Performance Against Published Ranges")
     _add_toc("{} — Findings".format(
         blueprint_for(domain).label))
     if attrition:
@@ -1561,7 +1609,7 @@ def build_pdf(
                            table=config.get("source_table") or "source_table")
         story.append(PageBreak())
 
-    if domain in ("hr", "ecommerce", "sales"):
+    if _has_reference_ranges(domain, df):
         _benchmark_section(story, s, T, domain, CW, df=df)
         story.append(PageBreak())
 

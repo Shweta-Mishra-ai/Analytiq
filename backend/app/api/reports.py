@@ -34,6 +34,11 @@ class PdfRequest(BaseModel):
     include_ml: bool = False
     avg_salary_k: float = 8.0       # for HR impact estimates
     max_charts: int = 5
+    # Who prepared the report — the freelancer, consultancy or in-house
+    # analyst delivering it. It appears in the basis of preparation and
+    # under the methodology, because a review deliverable is signed by a
+    # person or a firm. Nothing about the tooling is named anywhere.
+    prepared_by: str = ""
 
 
 def _df_or_404(owner: str, ds_id: str):
@@ -171,6 +176,7 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
         # Names the table the Data Preparation SQL is written against, so a
         # reader recognises their own warehouse object rather than a
         # placeholder.
+        "prepared_by": req.prepared_by.strip(),
         "source_table": table_name_from_filename(
             getattr(store.get_meta(owner, ds_id), "filename", "")),
     }

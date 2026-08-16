@@ -50,6 +50,9 @@ export default function ReportsPage() {
   const dataset = useApp((s) => s.dataset)
   const [title, setTitle] = useState('Data Analysis Report')
   const [clientName, setClientName] = useState('Client')
+  // Whoever is delivering the report signs it. Nothing about the tooling
+  // appears in the document, so this is the only name on the analysis.
+  const [preparedBy, setPreparedBy] = useState('')
   const [subtitle, setSubtitle] = useState('')
   const [includeStats, setIncludeStats] = useState(true)
   const [includeBi, setIncludeBi] = useState(true)
@@ -80,6 +83,7 @@ export default function ReportsPage() {
           title,
           subtitle,
           client_name: clientName,
+          prepared_by: preparedBy,
           confidential,
           include_stats: includeStats,
           include_bi: includeBi,
@@ -133,6 +137,22 @@ export default function ReportsPage() {
                 <label className="mb-1 block text-xs text-mute">Subtitle</label>
                 <input value={subtitle} onChange={(e) => setSubtitle(e.target.value)} placeholder="optional" className={input} />
               </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-mute">
+                Prepared by — your name or your practice's
+              </label>
+              <input
+                value={preparedBy}
+                onChange={(e) => setPreparedBy(e.target.value)}
+                placeholder="e.g. S. Mishra, Data Analytics"
+                className={input}
+              />
+              <p className="mt-1 text-[11px] text-mute">
+                Appears in the basis of preparation as the person accountable
+                for the analysis. Left blank, the report carries no
+                attribution.
+              </p>
             </div>
             <div className="flex flex-wrap gap-4 pt-1 text-sm text-mute">
               {(

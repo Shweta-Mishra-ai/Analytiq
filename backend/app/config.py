@@ -37,7 +37,12 @@ class AppConfig(BaseSettings):
     # the memory for it. The app never depends on the model: the domain
     # engines write their findings themselves and the LLM only adds prose.
     local_llm_url: str = Field(default="", alias="LOCAL_LLM_URL")
-    local_llm_model: str = Field(default="", alias="LOCAL_LLM_MODEL")
+    # Gemma is the default because it is openly licensed, ships in sizes
+    # that run on a laptop as well as a workstation, and is instruction-
+    # tuned for exactly this kind of work — turning computed figures into
+    # a paragraph. Set LOCAL_LLM_MODEL to whatever tag you have actually
+    # pulled; this default only saves naming it when it matches.
+    local_llm_model: str = Field(default="gemma3:12b", alias="LOCAL_LLM_MODEL")
     local_llm_timeout_sec: int = Field(default=120, alias="LOCAL_LLM_TIMEOUT")
     # When on, no client data may be sent to a third-party API. Cloud
     # calls are refused rather than skipped, so a misconfiguration is
