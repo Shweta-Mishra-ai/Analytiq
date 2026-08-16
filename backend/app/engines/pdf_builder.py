@@ -700,6 +700,8 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
          "color": T["positive"]},
     ], CW)
 
+    _readiness_block(story, s, T, df, CW)
+
     # DQ table from profile
     recs = getattr(profile, "recommendations", [])
     if recs:
@@ -707,6 +709,47 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
         for rec in recs[:6]:
             sty = "bl"
             story.append(Paragraph("• " + str(rec), s[sty]))
+
+
+def _readiness_block(story, s, T, df: pd.DataFrame, CW):
+    """State whether the data was fit to analyse before showing findings.
+
+    A reader is entitled to know that the revenue column was text and was
+    therefore in none of the numbers above it. Putting this on the same
+    page as the quality note, rather than in an appendix, is the point:
+    it is a precondition for the report, not a footnote to it.
+    """
+    try:
+        from app.engines.readiness import assess_readiness
+        rep = assess_readiness(df)
+    except Exception:
+        logger.warning("readiness assessment failed", exc_info=True)
+        return
+
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph("Fitness for Analysis", s["h3"]))
+    story.append(Paragraph(_clean(rep.summary), s["body"]))
+
+    if rep.blockers:
+        rows = [[b.column, b.issue, b.consequence] for b in rep.blockers[:6]]
+        _gtable(story, T, ["Column", "Issue", "Effect on the analysis"],
+                rows, [CW * x for x in [0.20, 0.25, 0.55]])
+        story.append(Paragraph(
+            "Findings in this report were produced despite the above. Treat "
+            "any figure that depends on an affected column as provisional "
+            "until it is resolved.", s["note"]))
+    if rep.personal_data_columns:
+        story.append(Paragraph(
+            "Personal data present: {}. This report and the underlying "
+            "extract should be handled and retained accordingly.".format(
+                ", ".join(rep.personal_data_columns[:8])),
+            s["note"]))
+
+
+def _clean(text: str) -> str:
+    """Escape for ReportLab's mini-HTML parser."""
+    return (str(text).replace("&", "&amp;")
+            .replace("<", "&lt;").replace(">", "&gt;"))
 
 
 # ══════════════════════════════════════════════════════════

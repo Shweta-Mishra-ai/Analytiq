@@ -25,6 +25,24 @@ interface Profile {
   recommendations?: string[]
 }
 
+interface ReadinessIssue {
+  column: string
+  issue: string
+  consequence: string
+  fix: string
+}
+
+interface Readiness {
+  ready: boolean
+  rows: number
+  columns: number
+  observed_pct: number
+  summary: string
+  blockers: ReadinessIssue[]
+  advisories: ReadinessIssue[]
+  personal_data_columns: string[]
+}
+
 interface CleanAction {
   column: string
   issue: string
@@ -52,6 +70,7 @@ function scoreColor(v: number) {
 export default function QualityPage() {
   const { dataset, setDataset } = useApp()
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [readiness, setReadiness] = useState<Readiness | null>(null)
   const [clean, setClean] = useState<CleanResult | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -88,6 +107,9 @@ export default function QualityPage() {
     apiGet<Profile>(`/api/datasets/${ds}/profile`)
       .then(setProfile)
       .catch((e) => setError(e.message))
+    apiGet<Readiness>(`/api/datasets/${ds}/readiness`)
+      .then(setReadiness)
+      .catch(() => setReadiness(null))
   }, [ds])
   useEffect(loadProfile, [loadProfile])
 
@@ -151,6 +173,56 @@ export default function QualityPage() {
         </div>
       )}
       {!profile && !error && <Spinner label="Profiling dataset…" />}
+
+      {/* The gate. Analysis on a dataset with a blocker is arithmetically
+          correct and describes something other than the client's business,
+          so this sits above the scores rather than below them. */}
+      {readiness && (
+        <Panel
+          className={`mb-5 ${readiness.ready ? '' : 'border-amber/40'}`}
+          title={
+            readiness.ready
+              ? 'Ready for analysis'
+              : `Not ready for analysis — ${readiness.blockers.length} issue(s) to resolve first`
+          }
+        >
+          <p className="text-xs text-mute">{readiness.summary}</p>
+          {readiness.blockers.length > 0 && (
+            <div className="mt-3 space-y-2">
+              {readiness.blockers.map((b, i) => (
+                <div key={i} className="rounded-lg bg-panel2 px-3 py-2 text-xs">
+                  <div className="font-semibold text-ink">
+                    {b.column} — {b.issue}
+                  </div>
+                  <div className="mt-0.5 text-mute">{b.consequence}</div>
+                  <div className="mt-1 text-teal">Fix: {b.fix}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {readiness.advisories.length > 0 && (
+            <details className="mt-3">
+              <summary className="cursor-pointer text-xs text-mute">
+                {readiness.advisories.length} advisory note(s) — worth tidying,
+                the analysis is still valid
+              </summary>
+              <div className="mt-2 space-y-1">
+                {readiness.advisories.map((a, i) => (
+                  <div key={i} className="text-xs text-mute">
+                    <b className="text-ink">{a.column}</b> — {a.issue}. {a.fix}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+          {readiness.personal_data_columns.length > 0 && (
+            <div className="mt-3 rounded-lg border border-edge px-3 py-2 text-xs text-amber">
+              Personal data in {readiness.personal_data_columns.join(', ')} —
+              confirm it may be processed, and keep it out of anything shared.
+            </div>
+          )}
+        </Panel>
+      )}
 
       {profile && (
         <>

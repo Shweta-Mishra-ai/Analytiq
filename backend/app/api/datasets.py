@@ -15,6 +15,7 @@ from app.engines.data_cleaner import (auto_clean, get_cleaning_summary,
                                       table_name_from_filename)
 from app.engines.data_loader import load_file
 from app.engines.data_profiler import profile_dataset
+from app.engines.readiness import assess_readiness, readiness_payload
 from app.engines.data_validator import validate_dataframe, validate_file_size
 from app.services.auth import current_owner
 from app.services.dataset_store import store
@@ -198,6 +199,15 @@ def profile(ds_id: str, owner: str = Depends(current_owner)):
         cached = profile_dataset(df)
         store.cache_set(owner, ds_id, "profile", cached)
     return to_jsonable(cached)
+
+
+@router.get("/{ds_id}/readiness")
+def readiness(ds_id: str, owner: str = Depends(current_owner)):
+    """Is this dataset fit to analyse, and if not, what has to happen first."""
+    df = store.get_df(owner, ds_id)
+    if df is None:
+        raise HTTPException(404, "Dataset not found")
+    return to_jsonable(readiness_payload(assess_readiness(df)))
 
 
 @router.post("/{ds_id}/clean")
