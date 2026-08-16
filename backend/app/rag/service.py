@@ -56,16 +56,48 @@ def file_kind(filename: str) -> str:
     return "document"
 
 
+class KbLimitError(ValueError):
+    """A knowledge base limit was reached. Separate from other ValueErrors
+    so the API can answer 413 rather than 422."""
+
+
+def check_ingest_limits(kb: KnowledgeBase, new_chunks: int) -> None:
+    """Refuse an ingest that would take a knowledge base past its limits.
+
+    The whole KB is held in memory and rewritten on every ingest, so
+    unbounded growth is not a slow degradation — it is one user's
+    document library taking the process down for everyone. Refusing with
+    a message that names the limit and the current count is far better
+    than truncating the upload, which would leave the user with a KB that
+    silently does not contain what they put in it.
+    """
+    if len(kb.files) >= config.rag_max_files_per_kb:
+        raise KbLimitError(
+            f"This knowledge base already holds the maximum of "
+            f"{config.rag_max_files_per_kb} files. Delete a file, or create "
+            f"a second knowledge base for the rest.")
+    if len(kb.chunks) + new_chunks > config.rag_max_chunks_per_kb:
+        room = max(0, config.rag_max_chunks_per_kb - len(kb.chunks))
+        raise KbLimitError(
+            f"This file adds {new_chunks:,} passages and the knowledge base "
+            f"has room for {room:,} more (limit "
+            f"{config.rag_max_chunks_per_kb:,}). Split the document, or "
+            f"start a new knowledge base — nothing was added.")
+
+
 def ingest_file(kb: KnowledgeBase, filename: str, data: bytes) -> dict:
     passages = extract(filename, data)
     if not passages:
         raise ValueError(f"No text could be extracted from {filename}")
     chunks = chunk_passages(passages)
+    check_ingest_limits(kb, len(chunks))
     kind = file_kind(filename)
     kb.add_chunks(chunks, filename, kind)
     preview = passages[0]["text"][:600]
     return {"filename": filename, "kind": kind,
-            "chunks_added": len(chunks), "preview": preview}
+            "chunks_added": len(chunks), "preview": preview,
+            "chunks_total": len(kb.chunks),
+            "chunks_limit": config.rag_max_chunks_per_kb}
 
 
 # ── generation ───────────────────────────────────────────
@@ -95,12 +127,38 @@ def _groq_generate(system: str, user: str, max_tokens: int = 2048) -> Optional[s
         return None
 
 
+def _local_generate(system: str, user: str, max_tokens: int = 2048) -> Optional[str]:
+    from app.ai import local_llm
+    return local_llm.generate(system, user, max_tokens=max_tokens)
+
+
 def _generate(system: str, user: str, max_tokens: int = 2048) -> str:
-    text = (_gemini_generate(system, user, max_tokens)
+    """Answer with a local model where one is available or required.
+
+    A knowledge base is the most sensitive thing in this app — it holds
+    the client's own contracts, policies and reports — so privacy mode
+    routes it to a model on their hardware and never falls back to a
+    cloud provider.
+    """
+    from app.ai import local_llm
+
+    if local_llm.privacy_mode():
+        text = _local_generate(system, user, max_tokens)
+        if not text:
+            raise RuntimeError(
+                "LLM_PRIVACY_MODE is on and no local model answered. Set "
+                "LOCAL_LLM_URL and LOCAL_LLM_MODEL (any OpenAI-compatible "
+                "server: Ollama, llama.cpp, vLLM, LM Studio). No data was "
+                "sent anywhere.")
+        return text
+
+    text = (_local_generate(system, user, max_tokens)
+            or _gemini_generate(system, user, max_tokens)
             or _groq_generate(system, user, max_tokens))
     if not text:
         raise RuntimeError(
-            "No LLM available — set GEMINI_API_KEY or GROQ_API_KEY")
+            "No LLM available — set LOCAL_LLM_URL, GEMINI_API_KEY or "
+            "GROQ_API_KEY")
     return text
 
 
@@ -111,26 +169,67 @@ def _context_block(hits: List[dict]) -> str:
     return "\n\n---\n\n".join(lines)
 
 
-QA_SYSTEM = """You are a senior data analyst answering questions from a \
-knowledge base of documents, tables, images and videos.
+QA_SYSTEM = """You are a senior data analyst answering questions strictly \
+from a client's own uploaded material.
 Rules:
-- Answer ONLY from the provided context. If the context is insufficient, say so.
+- Answer ONLY from the provided context. The context is the entire world;
+  your own knowledge of the subject is not evidence and must not appear in
+  the answer.
+- If the context does not contain the answer, say exactly what is missing
+  and stop. A short "the uploaded material does not cover X" is a correct
+  and useful answer — a plausible answer assembled from adjacent material
+  is not.
 - Cite sources inline like [1], [2] matching the numbered context blocks.
-- Quote exact numbers from the context, never invent values.
+  Every factual claim needs a citation.
+- Quote exact numbers from the context, never invent, round or estimate
+  values.
 - Be concise and analytical."""
 
 
+NOT_IN_KB = (
+    "Nothing in your uploaded material covers this. The knowledge base was "
+    "searched and no passage was close enough to the question to answer "
+    "from — rather than assemble an answer out of unrelated text, this is "
+    "left unanswered. Upload the document that covers it, or rephrase using "
+    "the wording your documents use."
+)
+
+
+def _citation_count(answer: str) -> int:
+    import re
+    return len(set(re.findall(r"\[(\d+)\]", answer or "")))
+
+
 def answer_question(kb: KnowledgeBase, question: str, k: int = 6) -> dict:
+    """Answer from the client's documents, or say that they do not cover it.
+
+    Returns `grounded` so the caller can distinguish "here is the answer"
+    from "your documents do not contain this" — a distinction that
+    matters more than the wording of either.
+    """
+    if not kb.chunks:
+        return {"answer": "This knowledge base is empty — upload files first.",
+                "sources": [], "grounded": False}
+
     hits = kb.search(question, k=k)
     if not hits:
-        return {"answer": "The knowledge base is empty or nothing relevant "
-                          "was found. Upload files first.", "sources": []}
+        return {"answer": NOT_IN_KB, "sources": [], "grounded": False}
+
     answer = _generate(
         QA_SYSTEM,
         f"CONTEXT:\n{_context_block(hits)}\n\nQUESTION: {question}",
         max_tokens=1024)
+
+    # An answer citing nothing was not written from the passages supplied,
+    # whatever it says. Flagging it is honest; suppressing it would throw
+    # away a legitimate "the material does not cover this" reply, which
+    # also carries no citation.
+    cited = _citation_count(answer)
     return {
         "answer": answer,
+        "grounded": True,
+        "cited_sources": cited,
+        "uncited": cited == 0,
         "sources": [{"ref": i + 1, "source": h["source"],
                      "locator": h["locator"], "score": round(h["score"], 3),
                      "excerpt": h["text"][:280]}
@@ -165,6 +264,12 @@ def generate_report(kb: KnowledgeBase, title: str, focus: str = "") -> dict:
                 hits.append(h)
     hits = hits[:18]
     if not hits:
+        if kb.chunks and focus:
+            raise ValueError(
+                f"Nothing in this knowledge base is about '{focus}'. The "
+                f"material is there but none of it matches that focus — "
+                f"remove the focus to report on what the documents actually "
+                f"cover.")
         raise ValueError("Knowledge base is empty — upload files first")
 
     user = (f"REPORT TITLE: {title}\n"

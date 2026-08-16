@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import { apiBlob, apiGet, downloadBlob } from '../api/client'
 import { useApp } from '../store/app'
-import { Btn, ErrorBox, NeedData, PageHeader, Panel } from '../components/Ui'
+import { Badge, Btn, ErrorBox, NeedData, PageHeader, Panel } from '../components/Ui'
 
 interface HealthInsight {
   tag: string
@@ -32,6 +32,11 @@ interface HealthSummary {
     cols: number
   }
   insights: HealthInsight[]
+  executive_summary: string
+  key_findings: string[]
+  risks: string[]
+  opportunities: string[]
+  actions: string[]
 }
 
 const SEVERITY_TONE: Record<string, string> = {
@@ -45,6 +50,9 @@ export default function ReportsPage() {
   const dataset = useApp((s) => s.dataset)
   const [title, setTitle] = useState('Data Analysis Report')
   const [clientName, setClientName] = useState('Client')
+  // Whoever is delivering the report signs it. Nothing about the tooling
+  // appears in the document, so this is the only name on the analysis.
+  const [preparedBy, setPreparedBy] = useState('')
   const [subtitle, setSubtitle] = useState('')
   const [includeStats, setIncludeStats] = useState(true)
   const [includeBi, setIncludeBi] = useState(true)
@@ -75,6 +83,7 @@ export default function ReportsPage() {
           title,
           subtitle,
           client_name: clientName,
+          prepared_by: preparedBy,
           confidential,
           include_stats: includeStats,
           include_bi: includeBi,
@@ -104,7 +113,7 @@ export default function ReportsPage() {
     <div className="p-8">
       <PageHeader
         title="Reports"
-        subtitle="Senior-analyst PDF with AI narratives, plus clean data exports"
+        subtitle="Client-ready analysis PDF, plus clean data exports"
       />
       {error && (
         <div className="mb-4">
@@ -128,6 +137,22 @@ export default function ReportsPage() {
                 <label className="mb-1 block text-xs text-mute">Subtitle</label>
                 <input value={subtitle} onChange={(e) => setSubtitle(e.target.value)} placeholder="optional" className={input} />
               </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-mute">
+                Prepared by — your name or your practice's
+              </label>
+              <input
+                value={preparedBy}
+                onChange={(e) => setPreparedBy(e.target.value)}
+                placeholder="e.g. S. Mishra, Data Analytics"
+                className={input}
+              />
+              <p className="mt-1 text-[11px] text-mute">
+                Appears in the basis of preparation as the person accountable
+                for the analysis. Left blank, the report carries no
+                attribution.
+              </p>
             </div>
             <div className="flex flex-wrap gap-4 pt-1 text-sm text-mute">
               {(
@@ -161,7 +186,8 @@ export default function ReportsPage() {
             </Btn>
             <p className="text-xs text-mute">
               Cover + TOC · executive summary · structured insight cards · industry
-              benchmarks · statistics · BI · charts with AI narratives · recommendations.
+              benchmarks · statistics · BI · annotated charts · data preparation with
+              SQL · recommendations.
             </p>
           </div>
         </Panel>
@@ -194,27 +220,48 @@ export default function ReportsPage() {
                   </div>
                 </div>
 
+                {health.executive_summary && (
+                  <p className="rounded-lg border border-edge bg-panel2 px-3 py-2.5 text-xs leading-relaxed text-ink2">
+                    {health.executive_summary}
+                  </p>
+                )}
+
+                {/* What the generated report will actually contain — so the
+                    depth is visible before spending 30s on a download. */}
+                <div className="flex flex-wrap gap-1.5">
+                  {(
+                    [
+                      ['insight', 'insights', health.insights.length, 'accent'],
+                      ['finding', 'findings', health.key_findings.length, 'neutral'],
+                      ['risk', 'risks', health.risks.length, 'rose'],
+                      // "opportunity" does not pluralise by adding an s
+                      ['opportunity', 'opportunities', health.opportunities.length, 'teal'],
+                      ['action', 'actions', health.actions.length, 'amber'],
+                    ] as const
+                  )
+                    .filter(([, , n]) => n > 0)
+                    .map(([one, many, n, tone]) => (
+                      <Badge key={one} tone={tone}>
+                        {n} {n === 1 ? one : many}
+                      </Badge>
+                    ))}
+                </div>
+
                 {health.insights.length > 0 && (
-                  <div className="space-y-1.5">
-                    <div className="text-xs text-mute">
-                      {health.insights.length} insight
-                      {health.insights.length === 1 ? '' : 's'} will be included:
-                    </div>
-                    <ul className="max-h-40 space-y-1 overflow-y-auto pr-1">
-                      {health.insights.map((ins, i) => (
-                        <li key={i} className="flex gap-2 text-xs">
-                          <span
-                            className={`shrink-0 font-semibold ${
-                              SEVERITY_TONE[ins.severity] ?? 'text-mute'
-                            }`}
-                          >
-                            {ins.tag}
-                          </span>
-                          <span className="truncate text-mute">{ins.title}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                  <ul className="max-h-40 space-y-1 overflow-y-auto pr-1">
+                    {health.insights.map((ins, i) => (
+                      <li key={i} className="flex gap-2 text-xs">
+                        <span
+                          className={`shrink-0 font-semibold ${
+                            SEVERITY_TONE[ins.severity] ?? 'text-mute'
+                          }`}
+                        >
+                          {ins.tag}
+                        </span>
+                        <span className="truncate text-mute">{ins.title}</span>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </>
             ) : (

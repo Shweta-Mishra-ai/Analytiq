@@ -92,6 +92,7 @@ except Exception as e:  # RAG deps optional in dev
 
 @app.get("/api/health")
 async def health():
+    from app.ai.local_llm import status as _llm_status
     from app.services.auth import _open_mode
     return {
         "status": "ok",
@@ -100,6 +101,9 @@ async def health():
         "auth_required": not _open_mode(),
         "groq_configured": bool(config.groq_api_key),
         "gemini_configured": bool(config.gemini_api_key),
+        # What will actually happen to a narrative request, so a client
+        # running in privacy mode can confirm it from outside the app.
+        "llm": _llm_status(),
     }
 
 

@@ -180,21 +180,30 @@ export default function UploadPage() {
       {dataset && preview && (
         <div className="mt-6 space-y-4">
           <Panel>
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
                 <div className="font-semibold text-ink">{dataset.filename}</div>
                 <div className="text-xs text-mute">
                   {dataset.rows.toLocaleString()} rows × {dataset.cols} columns
                   · {dataset.size_mb} MB
                 </div>
-                {dataset.warnings?.length > 0 && (
-                  <div className="mt-1 text-xs text-amber">
-                    ⚠ {dataset.warnings.join(' · ')}
-                  </div>
-                )}
               </div>
               <Btn onClick={() => nav('/quality')}>Check quality →</Btn>
             </div>
+            {/* One per line. Extraction warnings say things like "the table
+                is cut off, so this is a portion of it" — run together with
+                a separator they read as noise and get skipped, which is
+                the one outcome that makes them pointless. */}
+            {dataset.warnings?.length > 0 && (
+              <ul className="mt-3 space-y-1.5 border-t border-edge pt-3">
+                {dataset.warnings.map((w, i) => (
+                  <li key={i} className="flex gap-2 text-xs text-amber">
+                    <span aria-hidden="true">⚠</span>
+                    <span className="text-mute">{w}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </Panel>
           <DataTable data={preview} />
         </div>

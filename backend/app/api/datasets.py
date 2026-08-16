@@ -11,9 +11,11 @@ import io
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from app.config import config
-from app.engines.data_cleaner import auto_clean, get_cleaning_summary
+from app.engines.data_cleaner import (auto_clean, get_cleaning_summary,
+                                      table_name_from_filename)
 from app.engines.data_loader import load_file
 from app.engines.data_profiler import profile_dataset
+from app.engines.readiness import assess_readiness, readiness_payload
 from app.engines.data_validator import validate_dataframe, validate_file_size
 from app.services.auth import current_owner
 from app.services.dataset_store import store
@@ -199,6 +201,15 @@ def profile(ds_id: str, owner: str = Depends(current_owner)):
     return to_jsonable(cached)
 
 
+@router.get("/{ds_id}/readiness")
+def readiness(ds_id: str, owner: str = Depends(current_owner)):
+    """Is this dataset fit to analyse, and if not, what has to happen first."""
+    df = store.get_df(owner, ds_id)
+    if df is None:
+        raise HTTPException(404, "Dataset not found")
+    return to_jsonable(readiness_payload(assess_readiness(df)))
+
+
 @router.post("/{ds_id}/clean")
 def clean(ds_id: str, owner: str = Depends(current_owner)):
     df = store.get_df(owner, ds_id)
@@ -208,9 +219,28 @@ def clean(ds_id: str, owner: str = Depends(current_owner)):
     store.update_active(owner, ds_id, cleaned)
     summary = get_cleaning_summary(report)
     store.cache_set(owner, ds_id, "clean_report", summary)
+
+    # The equivalent SQL, so a client's data team can audit each step and
+    # apply the same cleaning upstream rather than trusting the output.
+    meta = store.get_meta(owner, ds_id)
+    table = table_name_from_filename(meta.filename if meta else "")
+    sql = report.sql_script(table)
+    store.cache_set(owner, ds_id, "clean_sql", sql)
+
     return {"summary": to_jsonable(summary),
             "actions": to_jsonable(report.actions),
+            "sql": sql,
+            "sql_table": table,
             "preview": df_records(cleaned, 100)}
+
+
+@router.get("/{ds_id}/clean/sql")
+def clean_sql(ds_id: str, owner: str = Depends(current_owner)):
+    """The SQL for the last cleaning pass on this dataset."""
+    sql = store.cache_get(owner, ds_id, "clean_sql")
+    if sql is None:
+        raise HTTPException(404, "Run cleaning first")
+    return {"sql": sql}
 
 
 @router.post("/{ds_id}/reset")

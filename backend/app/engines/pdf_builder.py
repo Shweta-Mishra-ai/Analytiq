@@ -40,7 +40,8 @@ from reportlab.platypus import (
     Image, HRFlowable, PageBreak, KeepTogether,
 )
 from reportlab.pdfgen import canvas as CV
-from app.services.dtypes import is_text_dtype
+from app.engines.report_blueprints import blueprint_for
+from app.services.dtypes import is_text_dtype, text_columns
 
 logger = logging.getLogger(__name__)
 
@@ -246,8 +247,16 @@ class _ReportCanvas(CV.Canvas):
         self.rect(0, 12*mm, W, 1.2*mm, fill=1, stroke=0)
         self.setFillColor(HexColor("#FFFFFF"))
         self.setFont("Helvetica", 6.5)
+        # The footer previously named a fixed set of HR benchmark bodies
+        # (SHRM · Gallup · Mercer · Deloitte) on EVERY page of EVERY report,
+        # so a finance or e-commerce deliverable cited HR attrition sources
+        # 15 times over. Sources belong in the appendix, keyed to the
+        # detected domain; the footer carries the client and confidentiality
+        # marking, which is what a footer is for.
         self.drawString(18*mm, 4.5*mm,
-            "Benchmarks: SHRM · Gallup · Mercer · Deloitte — verify with domain experts before action")
+            "{} · Confidential · Prepared for {}".format(
+                getattr(self, "agency_name", "Analytiq"),
+                self.client_name))
         self.drawRightString(W - 18*mm, 4.5*mm,
             "Page {} of {}".format(self._pageNumber, tot))
 
@@ -373,10 +382,14 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
         cv.setFillColor(HexColor("#FFFFFF"))
         cv.setFont("Helvetica-Bold", 8); cv.drawString(x, 13*mm, v[:22])
 
+    # The cover previously carried "Powered by Groq Llama 3.3 70B". Naming
+    # the model on the front page of a client deliverable invites the
+    # reader to discount everything behind it, and says nothing about
+    # whether the analysis is sound. Confidentiality marking belongs here
+    # instead.
     cv.setFillColor(HexColor(T["accent2"]))
     cv.setFont("Helvetica", 6.5)
-    cv.drawRightString(W - 21*mm, 5*mm,
-                       "Powered by Groq Llama 3.3 70B")
+    cv.drawRightString(W - 21*mm, 5*mm, "Confidential")
     cv.save()
     buf.seek(0)
     return buf.read()
@@ -625,14 +638,64 @@ def _exec_summary(story, s, T, summary, findings, risks, opps, CW):
 #  TOP INSIGHTS
 # ══════════════════════════════════════════════════════════
 
-def _top_insights(story, s, T, insights, CW):
-    _sec(story, s, T, "Top Insights — Decision Summary",
-         "Each finding: Problem → Cause → Evidence → Action → Impact")
+def _top_insights(story, s, T, insights, CW, domain: str = "general"):
+    """Findings under the headings the domain's reader expects.
+
+    A flat "Top Insights" list is a tool's default output. A finance
+    director reads position, then cost structure, then variance; an HR
+    director reads workforce profile, then attrition. Grouping the same
+    findings under those headings is the difference between a report that
+    was written for them and one that was generated.
+    """
+    from app.engines.insight_guard import guard_insights, withheld_note
+    from app.engines.report_blueprints import blueprint_for, group_insights
+
+    bp = blueprint_for(domain)
+    # Last check before anything is printed: a finding with no figure, a
+    # future asserted as fact, or a cause the data cannot support does
+    # more damage than the finding is worth.
+    guarded = guard_insights(list(insights or []))
+    insights = guarded.kept
     if not insights:
-        story.append(Paragraph("No structured insights available.", s["body"]))
+        _sec(story, s, T, "Findings",
+             "Each finding: Problem → Cause → Evidence → Action → Impact")
+        story.append(Paragraph(
+            "No finding in this dataset met the evidence threshold for "
+            "inclusion. That is a result, not an omission: the analysis "
+            "ran and found nothing it could support.", s["body"]))
+        note = withheld_note(guarded)
+        if note:
+            story.append(Paragraph(note, s["note"]))
         return
-    for i, ins in enumerate(insights[:6], 1):
-        _insight_card(story, s, T, ins, CW, num=i)
+
+    grouped = group_insights(bp, list(insights))
+    _sec(story, s, T, "{} — Findings".format(bp.label),
+         "Each finding: Problem → Cause → Evidence → Action → Impact")
+
+    num = 0
+    for section, items in grouped:
+        # The heading travels with its first finding. Left to flow, a
+        # section title lands at the foot of a page with its content
+        # overleaf, which is the kind of thing a reader registers as
+        # sloppy without being able to say why.
+        head = [Spacer(1, 2 * mm),
+                Paragraph(section.title, s["h3"]),
+                Paragraph(section.purpose, s["sm"])]
+        first: list = []
+        _insight_card(first, s, T, items[0], CW, num=num + 1)
+        story.append(KeepTogether(head + first))
+        num += 1
+
+        for ins in items[1:6]:
+            num += 1
+            _insight_card(story, s, T, ins, CW, num=num)
+        if num >= 10:
+            break
+
+    note = withheld_note(guarded)
+    if note:
+        story.append(Spacer(1, 3 * mm))
+        story.append(Paragraph(note, s["note"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -678,7 +741,7 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
         {"label": "COLUMNS",       "value": str(df.shape[1]),
          "sub": "{} num · {} cat".format(
              len(df.select_dtypes(include="number").columns),
-             len(df.select_dtypes(include="object").columns)),
+             len(text_columns(df))),
          "color": T["accent"]},
         {"label": "MISSING DATA",  "value": "{:.1f}%".format(miss_pct),
          "sub": "0% = perfect",
@@ -687,6 +750,8 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
          "sub": "Grade {}".format(grade) if grade else "/ 100",
          "color": T["positive"]},
     ], CW)
+
+    _readiness_block(story, s, T, df, CW)
 
     # DQ table from profile
     recs = getattr(profile, "recommendations", [])
@@ -697,107 +762,300 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
             story.append(Paragraph("• " + str(rec), s[sty]))
 
 
+def _readiness_block(story, s, T, df: pd.DataFrame, CW):
+    """State whether the data was fit to analyse before showing findings.
+
+    A reader is entitled to know that the revenue column was text and was
+    therefore in none of the numbers above it. Putting this on the same
+    page as the quality note, rather than in an appendix, is the point:
+    it is a precondition for the report, not a footnote to it.
+    """
+    try:
+        from app.engines.readiness import assess_readiness
+        rep = assess_readiness(df)
+    except Exception:
+        logger.warning("readiness assessment failed", exc_info=True)
+        return
+
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph("Fitness for Analysis", s["h3"]))
+    story.append(Paragraph(_clean(rep.summary), s["body"]))
+
+    if rep.blockers:
+        rows = [[b.column, b.issue, b.consequence] for b in rep.blockers[:6]]
+        _gtable(story, T, ["Column", "Issue", "Effect on the analysis"],
+                rows, [CW * x for x in [0.20, 0.25, 0.55]])
+        story.append(Paragraph(
+            "Findings in this report were produced despite the above. Treat "
+            "any figure that depends on an affected column as provisional "
+            "until it is resolved.", s["note"]))
+    if rep.personal_data_columns:
+        story.append(Paragraph(
+            "Personal data present: {}. This report and the underlying "
+            "extract should be handled and retained accordingly.".format(
+                ", ".join(rep.personal_data_columns[:8])),
+            s["note"]))
+
+
+def _clean(text: str) -> str:
+    """Escape for ReportLab's mini-HTML parser."""
+    return (str(text).replace("&", "&amp;")
+            .replace("<", "&lt;").replace(">", "&gt;"))
+
+
+# ══════════════════════════════════════════════════════════
+#  DATA PREPARATION  (what was changed, and the SQL for it)
+# ══════════════════════════════════════════════════════════
+
+def _data_prep_section(story, s, T, cleaning_summary, CW, table="source_table"):
+    """Every transformation applied before analysis, with its SQL.
+
+    A reader who cannot see what was changed between the file they sent
+    and the numbers they are reading has to take the whole report on
+    trust. Listing each step — and the statement that reproduces it in
+    their own warehouse — is what makes the rest checkable.
+    """
+    if not cleaning_summary:
+        return
+    actions = cleaning_summary.get("actions")
+    if not actions:
+        # Older cached summaries carry only the display groups. Flattening
+        # them loses execution order, so the SQL block is suppressed rather
+        # than printed in an order that would not reproduce the table.
+        groups = cleaning_summary.get("groups") or {}
+        actions = [a for g in groups.values() for a in g]
+        ordered = False
+    else:
+        ordered = True
+    if not actions:
+        return
+
+    _sec(story, s, T, "Data Preparation",
+         "Every change made to the source data before any figure was computed")
+
+    story.append(Paragraph(
+        "The source file contained {:,} rows across {} columns. After the "
+        "steps below, {:,} rows and {} columns were carried into the "
+        "analysis. Nothing else was altered.".format(
+            cleaning_summary.get("original_rows", 0),
+            cleaning_summary.get("original_cols", 0),
+            cleaning_summary.get("cleaned_rows", 0),
+            cleaning_summary.get("cleaned_cols", 0)),
+        s["body"]))
+    story.append(Spacer(1, 2*mm))
+
+    rows = []
+    for a in actions[:18]:
+        rows.append([
+            getattr(a, "column", ""),
+            getattr(a, "issue", ""),
+            getattr(a, "action", ""),
+            "{:,}".format(getattr(a, "rows_affected", 0) or 0),
+        ])
+    _gtable(story, T, ["Column", "Observed", "Treatment", "Rows"],
+            rows, [CW*x for x in [0.18, 0.30, 0.42, 0.10]])
+    if len(actions) > 18:
+        story.append(Paragraph(
+            "{} further steps of the same kinds are listed in the "
+            "accompanying SQL script.".format(len(actions) - 18), s["note"]))
+
+    # ── The same steps as SQL ──────────────────────────────
+    sql_actions = [a for a in actions if getattr(a, "sql", "")] if ordered else []
+    if not sql_actions:
+        return
+    story.append(Spacer(1, 3*mm))
+    story.append(Paragraph("Equivalent SQL", s["h3"]))
+    story.append(Paragraph(
+        "The analysis itself was performed in pandas. These statements "
+        "express the same treatment against <b>{}</b> so your data team can "
+        "verify each step, or apply it upstream and stop the issue "
+        "recurring. Order matters: deduplicating after imputing does not "
+        "give the same table. None of it has been executed.".format(table),
+        s["body"]))
+    story.append(Spacer(1, 1.5*mm))
+
+    mono = ParagraphStyle(
+        "sqlmono", fontName="Courier", fontSize=7.2, leading=9.6,
+        textColor=_c(T["text"]), leftIndent=4, spaceAfter=0)
+    lines = []
+    for a in sql_actions[:14]:
+        stmt = a.sql.replace("{table}", '"{}"'.format(table))
+        for raw in stmt.splitlines():
+            lines.extend(_wrap_sql_line(raw))
+        lines.append("")
+    block = [[Paragraph(_sql_escape(ln) or "&nbsp;", mono)] for ln in lines[:70]]
+    tbl = Table(block, colWidths=[CW])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",   (0,0), (-1,-1), _c(T["bg_light"])),
+        ("BOX",          (0,0), (-1,-1), 0.5, _c(T["border"])),
+        ("LEFTPADDING",  (0,0), (-1,-1), 6),
+        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING",   (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
+    ]))
+    story.append(tbl)
+    if len(lines) > 70:
+        story.append(Paragraph(
+            "Truncated for length — the full script is available from the "
+            "Data Quality screen.", s["note"]))
+
+
+_SQL_COLS = 96   # fits Courier 7.2pt across the content frame
+
+
+def _wrap_sql_line(line: str) -> list:
+    """Break one SQL line to the page width, at a space where possible.
+
+    A `GROUP BY` over thirty columns is a single line in the script. Left
+    to itself the Paragraph cannot break it (every space is
+    non-breaking), so it runs off the page and the reader loses the tail
+    of the statement without any sign that it happened. Continuations are
+    indented so the break is visibly a wrap, not a new statement.
+    """
+    line = line.rstrip()
+    if len(line) <= _SQL_COLS:
+        return [line]
+    indent = len(line) - len(line.lstrip())
+    out, rest = [], line
+    while len(rest) > _SQL_COLS:
+        cut = rest.rfind(" ", indent + 1, _SQL_COLS)
+        if cut <= indent:
+            cut = _SQL_COLS
+        out.append(rest[:cut].rstrip())
+        rest = " " * (indent + 4) + rest[cut:].lstrip()
+    out.append(rest)
+    return out
+
+
+def _sql_escape(text: str) -> str:
+    """Escape SQL for ReportLab's mini-HTML parser.
+
+    `WHERE "x" < 108 OR "x" > 877` is a legal comparison and an illegal
+    tag; unescaped, ReportLab swallows the rest of the line. Spaces become
+    non-breaking so indentation survives — the wrapping is done by
+    `_wrap_sql_line` beforehand, where the break points can be chosen.
+    """
+    return (str(text).replace("&", "&amp;")
+            .replace("<", "&lt;").replace(">", "&gt;")
+            .replace(" ", "&nbsp;") if text else "")
+
+
 # ══════════════════════════════════════════════════════════
 #  INDUSTRY BENCHMARKS (HR domain)
 # ══════════════════════════════════════════════════════════
 
+# "Published hr ranges" reads as machine output. Acronym domains keep
+# their capitalisation; the rest are title-cased.
+_DOMAIN_LABELS = {
+    "hr": "HR", "saas": "SaaS", "ecommerce": "e-commerce",
+    "finance": "finance", "sales": "sales", "marketing": "marketing",
+    "operations": "operations", "healthcare": "healthcare",
+}
+
+
+def _has_reference_ranges(domain, df) -> bool:
+    """Whether this dataset has any metric with a published range.
+
+    Checked before the section is added to the contents page, so the
+    contents never promises a section the report does not contain.
+    """
+    from app.engines.industry_benchmarks import (DOMAIN_BENCHMARKS,
+                                                 lookup_benchmark)
+    if df is None or str(domain or "").lower() not in DOMAIN_BENCHMARKS:
+        return False
+    return any(lookup_benchmark(str(domain).lower(), str(c)) is not None
+               for c in df.columns)
+
+
 def _benchmark_section(story, s, T, domain, CW, df=None):
-    if domain not in ("hr", "ecommerce", "sales"): return
-    _sec(story, s, T, "Industry Benchmark Context",
-         "Indicative ranges from public industry research (SHRM · Gallup · Mercer · Deloitte)")
+    """Reference ranges for this domain, and only this domain.
 
+    What was here before was three hardcoded tables citing "Salesforce
+    2024", "Gartner 2024", "Klaviyo 2024" and similar against specific
+    figures — precise-looking attributions to reports whose contents
+    cannot be checked from inside this app. That is the single most
+    damaging thing a report can contain: a reader who looks one up and
+    cannot find the number stops believing the rest of the document.
+    Most rows also read "—" for the client's own value, so the table was
+    largely a list of other people's numbers.
+
+    Every range now comes from services/industry_benchmarks with a named
+    source, is looked up strictly within the report's own domain, and is
+    only shown for metrics this dataset actually contains. An HR report
+    therefore cites HR sources and nothing else.
+    """
+    from app.engines.industry_benchmarks import (DOMAIN_BENCHMARKS,
+                                                 lookup_benchmark)
+
+    domain = str(domain or "").lower()
+    if domain not in DOMAIN_BENCHMARKS or df is None:
+        return
+
+    def _num_mean(series):
+        """Mean robust to Yes/No/True/False string encodings."""
+        col = series
+        if is_text_dtype(col):
+            mapped = col.astype(str).str.strip().str.lower().map(
+                {"yes": 1, "no": 0, "true": 1, "false": 0,
+                 "y": 1, "n": 0, "1": 1, "0": 0})
+            col = mapped if mapped.notna().any() else pd.to_numeric(
+                col, errors="coerce")
+        else:
+            col = pd.to_numeric(col, errors="coerce")
+        col = col.dropna()
+        return float(col.mean()) if len(col) else None
+
+    rows = []
+    for c in df.columns:
+        bm = lookup_benchmark(domain, str(c))
+        if bm is None:
+            continue
+        value = _num_mean(df[c])
+        if value is None:
+            continue
+        # A rate stored as 0-1 is the same measure as one stored as 0-100.
+        shown = value
+        if bm.unit == "%" and 0 <= value <= 1 and bm.high > 1:
+            shown = value * 100
+        if bm.unit in ("%", "x") or bm.unit.startswith("/"):
+            value_str = "{:,.1f}{}".format(shown, bm.unit)
+            range_str = "{:g}–{:g}{}".format(bm.low, bm.high, bm.unit)
+        else:
+            value_str = "{:,.1f} {}".format(shown, bm.unit).strip()
+            range_str = "{:g}–{:g} {}".format(bm.low, bm.high, bm.unit).strip()
+
+        if shown < bm.low:
+            position = "below the range"
+        elif shown > bm.high:
+            position = "above the range"
+        else:
+            position = "within the range"
+        rows.append([str(c), value_str, range_str, position, bm.source])
+
+    if not rows:
+        return
+
+    _sec(story, s, T, "Performance Against Published Ranges",
+         "Published {} ranges, against the figures in this dataset".format(
+             _DOMAIN_LABELS.get(domain, domain.title())))
     story.append(Paragraph(
-        "Senior analysts do not interpret data in isolation — metrics are "
-        "read against industry context. The benchmark ranges below are "
-        "indicative figures compiled from public industry research; they "
-        "vary by industry, region and company size, and should be verified "
-        "against current published sources before high-stakes decisions.",
-        s["body"]))
-    story.append(Spacer(1, 3*mm))
-
-    # ── Compute real "This Org" values from df ────────────
-    org = {}
-    if df is not None:
-        import numpy as np
-
-        def _num_mean(series):
-            """Mean robust to Yes/No/True/False string encodings."""
-            s = series
-            if is_text_dtype(s):
-                mapped = s.astype(str).str.strip().str.lower().map(
-                    {"yes": 1, "no": 0, "true": 1, "false": 0,
-                     "y": 1, "n": 0, "1": 1, "0": 0})
-                s = mapped if mapped.notna().any() else pd.to_numeric(
-                    s, errors="coerce")
-            else:
-                s = pd.to_numeric(s, errors="coerce")
-            s = s.dropna()
-            return float(s.mean()) if len(s) else None
-
-        # Attrition
-        atr_col = next((c for c in df.columns
-                        if c.lower() in ("left","attrition","churned","exited")), None)
-        if atr_col:
-            v = _num_mean(df[atr_col])
-            if v is not None:
-                org["attrition"] = f"{v*100:.1f}%"
-
-        # Satisfaction
-        sat_col = next((c for c in df.columns
-                        if "satisfaction" in c.lower()), None)
-        if sat_col:
-            v = _num_mean(df[sat_col])
-            if v is not None:
-                org["satisfaction"] = f"{v:.2f}"
-
-        # Rating (ecommerce)
-        rat_col = next((c for c in df.columns
-                        if "rating" in c.lower()
-                        and "count" not in c.lower()), None)
-        if rat_col:
-            v = _num_mean(df[rat_col])
-            if v is not None:
-                org["rating"] = f"{v:.2f}/5"
-
-    if domain == "hr":
-        rows = [
-            ["Attrition Rate",         org.get("attrition","—"),
-             "10–15%", "<10%", "SHRM 2024"],
-            ["Employee Satisfaction",  org.get("satisfaction","—"),
-             "0.70 (70%+)", "0.80+", "Gallup/Mercer"],
-            ["Replacement Cost/EE",    "—",
-             "50–200% sal", "6–9 mo salary", "SHRM/Gallup"],
-            ["Mgr-Driven Satisfaction","—",
-             "70%", "Manager train", "Gallup 2024"],
-            ["Preventable Exits",      "—",
-             "52%", "Proactive 1:1", "Gallup 2024"],
-        ]
-        note = ("SHRM 2024 State of Workplace · "
-                "Gallup State of Global Workplace 2024 · "
-                "Mercer Global Talent Trends 2024")
-    elif domain == "ecommerce":
-        rows = [
-            ["Customer Rating",  org.get("rating","—"),
-             "4.0+", "4.5+", "Amazon/G2 2024"],
-            ["Return Rate",      "—", "< 20%",  "< 10%", "Shopify 2024"],
-            ["Repeat Purchase",  "—", "30%+",   "40%+",  "Klaviyo 2024"],
-            ["Conversion Rate",  "—", "2–4%",   "5%+",   "BigCommerce 2024"],
-        ]
-        note = "Amazon Seller Reports 2024 · Shopify Commerce Trends 2024"
-    else:  # sales
-        rows = [
-            ["Win Rate",        "—", "20–30%",   "40%+",      "Salesforce 2024"],
-            ["Quota Attainment","—", "60–70%",   "80%+",      "Gartner 2024"],
-            ["Pipeline Coverage","—","3–4×",     "5×+",       "HubSpot 2024"],
-            ["Avg Deal Cycle",  "—", "< 90 days","< 60 days", "Forrester 2024"],
-        ]
-        note = "Salesforce State of Sales 2024 · Gartner Sales Benchmark 2024"
+        "These are general, publicly-cited ranges, not a licensed benchmark "
+        "set, and they move with sector, company size and region. They "
+        "answer one question — is this figure in a plausible place — and "
+        "nothing more. Where a figure sits outside a range, that is a "
+        "prompt to look, not a finding in itself; the comparisons against "
+        "this organisation's own distribution elsewhere in this report are "
+        "the stronger evidence.", s["body"]))
+    story.append(Spacer(1, 3 * mm))
 
     _gtable(story, T,
-            ["Metric", "This Org", "Industry Norm", "Best Practice", "Source"],
+            ["Metric", "This dataset", "Published range", "Position", "Source"],
             rows,
-            [CW * x for x in [0.22, 0.12, 0.17, 0.17, 0.32]])
-    story.append(Paragraph(note, s["note"]))
+            [CW * x for x in [0.22, 0.14, 0.17, 0.15, 0.32]])
+    story.append(Paragraph(
+        "Sources are named per row so each can be checked. No range here is "
+        "attributed to a report this analysis has not drawn it from.",
+        s["note"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -859,7 +1117,7 @@ def _dataset_overview(story, s, T, df, profile, CW):
          "Column breakdown and statistical summary")
 
     num_cols = df.select_dtypes(include="number").columns.tolist()
-    cat_cols = df.select_dtypes(include="object").columns.tolist()
+    cat_cols = text_columns(df)
     dt_cols  = df.select_dtypes(include="datetime").columns.tolist()
 
     _gtable(story, T,
@@ -1088,18 +1346,85 @@ def _recommendations(story, s, T, actions, CW):
 #  APPENDIX
 # ══════════════════════════════════════════════════════════
 
-def _appendix(story, s, T, config, CW):
+def _prepared_by_line(config: dict) -> str:
+    """Who prepared the report, for the basis of preparation.
+
+    A review deliverable is signed by the person or firm accountable for
+    it. What produced the document is not the reader's concern and is
+    named nowhere — the analyst's or consultancy's name is what belongs
+    here, and it is the client's or freelancer's to set.
+    """
+    who = str(config.get("prepared_by") or "").strip()
+    if not who:
+        return ""
+    return " Prepared by {}, who is responsible for the analysis and the " \
+           "conclusions drawn from it.".format(_clean(who))
+
+
+def _appendix(story, s, T, config, CW, domain: str = "general"):
     _sec(story, s, T, "Appendix — Methodology & Sources")
 
-    story.append(Paragraph("A. Methodology", s["h3"]))
+    # This section is what a reviewing analyst reads to decide whether to
+    # trust the rest. It states the tests actually applied and why each was
+    # chosen — it does not describe the tooling that rendered the document,
+    # which tells the reader nothing about validity.
+    story.append(Paragraph("A. Analytical Method", s["h3"]))
     story.append(Paragraph(
-        "Data quality scoring: 60% completeness, 30% deduplication, 10% column health. "
-        "Outlier detection: IQR (1.5×) and Modified Z-Score. "
-        "Normality: Shapiro-Wilk (n≤5000) and D'Agostino-Pearson tests. "
-        "Correlations: Pearson (normal) / Spearman (non-normal). "
-        "Domain detection: keyword matching across HR, E-commerce, Sales, Finance. "
-        "Attrition drivers: Mann-Whitney U (numeric) and Chi-Square (categorical). "
-        "AI narratives: Groq Llama 3.3 70B with pre-computed statistics.",
+        "Every figure in this report is computed directly from the supplied "
+        "dataset. No values are estimated, imputed into the findings, or "
+        "carried over from other engagements.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Distributional testing.</b> Normality is assessed with Shapiro-Wilk "
+        "(n≤5,000) and D'Agostino-Pearson, rather than assumed. The outcome "
+        "determines which downstream test is used, so a non-normal column is "
+        "never summarised with a statistic that presumes normality.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Association.</b> Pearson's r is used where both variables are "
+        "approximately normal; Spearman's rank correlation otherwise. "
+        "Correlations are reported with their p-value and sample size. "
+        "Pairs that are mechanically related (a rate against its own "
+        "numerator, a duplicated column) are excluded rather than presented "
+        "as findings.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Group differences.</b> Two-group comparisons use Welch's t-test "
+        "where the normality condition holds and Mann-Whitney U where it does "
+        "not; comparisons across three or more groups use one-way ANOVA or "
+        "Kruskal-Wallis on the same basis. Categorical association uses "
+        "Chi-square with an expected-frequency check.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Outliers.</b> Flagged by the 1.5×IQR rule and cross-checked with "
+        "the modified Z-score (Iglewicz &amp; Hoaglin), which is robust to "
+        "skew. Outliers are reported, never silently removed — an extreme "
+        "value is frequently the finding rather than an error.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Missing and duplicate records.</b> Completeness is measured per "
+        "column and reported before any analysis. Records are not dropped "
+        "to improve a result; where a test required complete cases, the "
+        "excluded count is stated alongside it.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Judgement applied.</b> Where more than one treatment was "
+        "defensible, the more conservative was taken: findings that did not "
+        "survive correction for multiple testing were dropped rather than "
+        "reported with a caveat, effect sizes below the level that would "
+        "change a decision were left out, and no figure was carried into a "
+        "conclusion that the underlying column could not support. Candidate "
+        "findings withheld on that basis are counted in the findings "
+        "section rather than removed silently.",
+        s["body"]))
+    story.append(Paragraph(
+        "<b>Limitations.</b> Findings describe association within this "
+        "dataset and the period it covers. They do not establish causation, "
+        "and do not extrapolate beyond the observed range of each variable. "
+        "Segment-level results with small denominators are marked as "
+        "directional. Where a question could not be answered from the data "
+        "supplied, this report says so rather than answering it from "
+        "general expectation.",
         s["body"]))
 
     story.append(Paragraph("B. Quality Score Formula", s["h3"]))
@@ -1110,25 +1435,39 @@ def _appendix(story, s, T, config, CW):
              ["Column Health", "10%", "Avg per-column quality score"]],
             [CW*0.25, CW*0.15, CW*0.60])
 
-    story.append(Paragraph("C. Industry Sources", s["h3"]))
-    for src in [
-        "SHRM 2024 State of the Workplace — attrition benchmarks, replacement cost $4,700 direct avg.",
-        "Gallup State of the Global Workplace 2024 — 52% exits preventable, 50-200% salary replacement.",
-        "Mercer Global Talent Trends 2024 — career growth = #1 voluntary attrition driver.",
-        "Deloitte Human Capital Trends 2025 — 70%+ firms use HR analytics.",
-    ]:
+    # Reference ranges are listed per detected domain. This list was
+    # previously hardcoded to HR sources, so a finance or e-commerce report
+    # cited SHRM attrition benchmarks and Gallup engagement data — an
+    # immediate credibility failure for any reader who checks.
+    # Sources come from the domain blueprint so a finance report cites
+    # finance conventions and an HR report cites HR bodies — the previous
+    # single list put SHRM and Gallup in the footer of every report
+    # regardless of what it was about.
+    _bp = blueprint_for(domain)
+    _sources = list(_bp.references) or [
+        "No external benchmark set applies to this dataset's domain. All "
+        "comparisons in this report are internal — each metric is measured "
+        "against its own distribution within the supplied data."]
+    story.append(Paragraph("C. Reference Ranges & Sources", s["h3"]))
+    for src in _sources:
         story.append(Paragraph("• " + src, s["bl"]))
+    if _bp.reference_note:
+        story.append(Paragraph(_bp.reference_note, s["note"]))
 
     story.append(Spacer(1, 4*mm))
     disc = Table([[Paragraph(
-        "<b>DISCLAIMER</b><br/>"
-        "Report generated by Analytiq on {} for {}. "
-        "Findings based solely on provided dataset. "
-        "Correlations do not imply causation. "
-        "Industry benchmarks are indicative — verify against sector-specific data. "
-        "Verify with qualified data analyst before business decisions.".format(
+        "<b>BASIS OF PREPARATION</b><br/>"
+        "Prepared for {} on {}. All figures derive solely from the dataset "
+        "supplied for this engagement and describe the period it covers. "
+        "Statistical association is reported where present; it does not "
+        "establish causation. Any external reference range cited is "
+        "indicative and should be validated against the organisation's own "
+        "sector and prior periods before it informs a decision. "
+        "Recommendations assume the data is complete and accurate as "
+        "supplied.{}".format(
+            config.get("client_name", "Client"),
             datetime.now().strftime("%B %d, %Y"),
-            config.get("client_name", "Client")),
+            _prepared_by_line(config)),
         s["wh"])]],
         colWidths=["100%"])
     disc.setStyle(TableStyle([
@@ -1245,9 +1584,12 @@ def build_pdf(
 
     _add_toc("Executive Summary")
     _add_toc("Data Quality & Transparency Note")
-    if domain in ("hr", "ecommerce", "sales"):
-        _add_toc("Industry Benchmark Context")
-    _add_toc("Top Insights — Decision Summary")
+    if cleaning_summary:
+        _add_toc("Data Preparation")
+    if _has_reference_ranges(domain, df):
+        _add_toc("Performance Against Published Ranges")
+    _add_toc("{} — Findings".format(
+        blueprint_for(domain).label))
     if attrition:
         _add_toc("Attrition Deep Dive")
     _add_toc("Dataset Overview & Descriptive Statistics")
@@ -1271,11 +1613,16 @@ def build_pdf(
     _dq_note(story, s, T, df, profile, CW)
     story.append(PageBreak())
 
-    if domain in ("hr", "ecommerce", "sales"):
+    if cleaning_summary:
+        _data_prep_section(story, s, T, cleaning_summary, CW,
+                           table=config.get("source_table") or "source_table")
+        story.append(PageBreak())
+
+    if _has_reference_ranges(domain, df):
         _benchmark_section(story, s, T, domain, CW, df=df)
         story.append(PageBreak())
 
-    _top_insights(story, s, T, top_insights, CW)
+    _top_insights(story, s, T, top_insights, CW, domain=domain)
     story.append(PageBreak())
 
     if attrition:
@@ -1300,7 +1647,7 @@ def build_pdf(
     _recommendations(story, s, T, recommendations, CW)
     story.append(PageBreak())
 
-    _appendix(story, s, T, config, CW)
+    _appendix(story, s, T, config, CW, domain=domain)
 
     # ── Build PDF ─────────────────────────────────────────
     doc.build(story, canvasmaker=canvas_maker)

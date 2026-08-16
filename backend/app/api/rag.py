@@ -47,6 +47,12 @@ def _kb_or_404(owner: str, kb_id: str):
 
 @router.post("/kb")
 def create_kb(body: KbCreate, owner: str = Depends(current_owner)):
+    existing = len(rag_store.list(owner))
+    if existing >= config.rag_max_kbs_per_owner:
+        raise HTTPException(
+            409, f"You already have {existing} knowledge bases (limit "
+                 f"{config.rag_max_kbs_per_owner}). Delete one to create "
+                 f"another.")
     kb = rag_store.create(owner, body.name.strip() or "Untitled KB")
     return {"kb_id": kb.kb_id, "name": kb.name}
 
@@ -78,6 +84,8 @@ def _process_kb_upload(kb, name: str, data: bytes) -> dict:
             503, "GEMINI_API_KEY must be configured to analyze images/video")
     try:
         result = service.ingest_file(kb, name, data)
+    except service.KbLimitError as e:
+        raise HTTPException(413, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))
     except RuntimeError as e:

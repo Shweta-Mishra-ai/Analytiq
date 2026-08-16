@@ -30,11 +30,43 @@ from app.engines.pdf_primitives import truncate_label, is_id_col
 
 logger = logging.getLogger(__name__)
 
+
+def _clean_text(text: object) -> str:
+    """Make engine-authored text safe and clean for a reportlab Paragraph.
+
+    Engine strings carry markdown emphasis (**bold**) that reportlab does
+    not understand and would render literally, and may contain &, < or >
+    from column names — which reportlab parses as markup and which would
+    otherwise raise or silently swallow the rest of the paragraph.
+    """
+    s = str(text or "")
+    s = s.replace("**", "").replace(" ", " ")
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return s.strip()
+
 def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                      insights: list, fname: str,
-                     agency_name: str = "Analytiq") -> bytes:
-    """Premium 5-page health + business insights PDF report."""
+                     agency_name: str = "Analytiq",
+                     executive_summary: str = "",
+                     key_findings: Optional[List[str]] = None,
+                     risks: Optional[List[str]] = None,
+                     opportunities: Optional[List[str]] = None,
+                     actions: Optional[List[str]] = None) -> bytes:
+    """Client-facing data health + business insights PDF report.
+
+    The narrative arguments are optional and default to empty, so existing
+    two-positional-argument callers keep working. When supplied they add
+    the Executive Summary / Key Findings / Risks / Opportunities /
+    Recommendations sections that make this read as a consulting
+    deliverable rather than a list of alerts — and they carry analysis the
+    insight cards alone drop (several domain analyses emit findings and
+    risks but no card).
+    """
     agency_name = (agency_name or "Analytiq")[:40]
+    key_findings  = list(key_findings or [])
+    risks         = list(risks or [])
+    opportunities = list(opportunities or [])
+    actions       = list(actions or [])
     import io as _io
     from reportlab.lib.colors import white, black
     from reportlab.lib.enums import TA_JUSTIFY
@@ -131,7 +163,77 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                 self._draw_hf(tot)
                 super().showPage()
             super().save()
+        def _draw_cover(self, tot):
+            """Full-bleed cover. Drawn on the canvas rather than as
+            flowables so it can ignore the frame margins and the running
+            header/footer, the way a real report cover does."""
+            self.setFillColor(dark)
+            self.rect(0, 0, W, H, fill=1, stroke=0)
+            # accent bar down the left edge
+            self.setFillColor(accent)
+            self.rect(0, 0, 6 * mm, H, fill=1, stroke=0)
+
+            self.setFillColor(white)
+            self.setFont(_BB, 11)
+            self.drawString(22 * mm, H - 28 * mm, agency_name.upper())
+            self.setFillColor(accent)
+            self.rect(22 * mm, H - 32 * mm, 24 * mm, 0.8 * mm, fill=1, stroke=0)
+
+            # Title
+            self.setFillColor(white)
+            self.setFont(_BB, 30)
+            self.drawString(22 * mm, H - 92 * mm, "Data Health &")
+            self.drawString(22 * mm, H - 106 * mm, "Business Insights")
+            self.setFillColor(HexColor("#8FB8F0"))
+            self.setFont(_BF, 13)
+            self.drawString(22 * mm, H - 120 * mm, "Analysis Report")
+
+            # Grade badge
+            badge_y = H - 165 * mm
+            self.setFillColor(score_color)
+            self.circle(34 * mm, badge_y, 17 * mm, fill=1, stroke=0)
+            self.setFillColor(white)
+            self.setFont(_BB, 21)
+            self.drawCentredString(34 * mm, badge_y - 3 * mm, str(health["score"]))
+            self.setFont(_BF, 7)
+            self.drawCentredString(34 * mm, badge_y - 11 * mm, "/ 100")
+
+            self.setFillColor(white)
+            self.setFont(_BB, 14)
+            self.drawString(58 * mm, badge_y + 4 * mm,
+                            "Grade {} — {}".format(health["grade"], health["label"]))
+            self.setFillColor(HexColor("#9FB3CC"))
+            self.setFont(_BF, 9)
+            self.drawString(58 * mm, badge_y - 4 * mm,
+                            "{:,} rows  ·  {} columns  ·  {} domain".format(
+                                health["rows"], health["cols"], niche))
+
+            # Meta block
+            self.setFillColor(HexColor("#9FB3CC"))
+            self.setFont(_BF, 8.5)
+            meta_y = 52 * mm
+            for label, value in (("DATASET", fname[:52]),
+                                 ("PREPARED", now),
+                                 ("PREPARED BY", agency_name)):
+                self.setFillColor(HexColor("#6B85A6"))
+                self.setFont(_BF, 6.5)
+                self.drawString(22 * mm, meta_y, label)
+                self.setFillColor(white)
+                self.setFont(_BB, 9)
+                self.drawString(22 * mm, meta_y - 5 * mm, value)
+                meta_y -= 13 * mm
+
+            self.setFillColor(HexColor("#4A5D75"))
+            self.setFont(_BF, 6.5)
+            self.drawString(22 * mm, 14 * mm,
+                            "CONFIDENTIAL  ·  Findings derive solely from the supplied dataset "
+                            "and the period it covers")
+
         def _draw_hf(self, tot):
+            # The cover carries no running header/footer or page number.
+            if self._pageNumber == 1:
+                self._draw_cover(tot)
+                return
             # Header
             self.setFillColor(dark)
             self.rect(0, H - 20*mm, W, 20*mm, fill=1, stroke=0)
@@ -156,7 +258,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             self.rect(0, 11*mm, W, 0.8*mm, fill=1, stroke=0)
             self.setFillColor(white)
             self.setFont(_BF, 6.5)
-            self.drawString(8*mm, 4*mm, f"{agency_name}  ·  Confidential  ·  Verify with domain expert before client delivery")
+            self.drawString(8*mm, 4*mm, f"{agency_name}  ·  Confidential  ·  Prepared for the named recipient")
             # Page circle
             self.setFillColor(accent)
             self.circle(W - 13*mm, 5.5*mm, 4.5*mm, fill=1, stroke=0)
@@ -175,10 +277,94 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     story = []
 
     # ══════════════════════════════════════════════════════
-    # PAGE 1: COVER + HEALTH SCORE
+    # PAGE 1: COVER  (drawn on the canvas — see _draw_cover)
+    # ══════════════════════════════════════════════════════
+    # A single spacer reserves the page; every flowable below lands from
+    # page 2 onward.
+    story.append(Spacer(1, 1 * mm))
+    story.append(PageBreak())
+
+    # ══════════════════════════════════════════════════════
+    # PAGE 2: CONTENTS
+    # ══════════════════════════════════════════════════════
+    # Built from the same conditions that gate each section below, so it
+    # can never advertise a section the report doesn't contain.
+    # Only top-level sections are numbered. Key Findings / Risks /
+    # Opportunities are subsections of the Executive Summary, so listing
+    # them as peers would make the numbering disagree with the headings.
+    # Business charts, generated up-front so the contents page knows whether
+    # the section will exist. The chart engine excludes identifier and
+    # constant columns, so this returns nothing rather than plotting an ID
+    # when a dataset has no real measures.
+    _charts = []
+    try:
+        from app.engines.chart_exporter import generate_all_charts
+        _charts = generate_all_charts(df, theme_name="Corporate Light",
+                                       max_charts=4)
+    except Exception:
+        logger.warning("chart generation failed for the health report",
+                       exc_info=True)
+
+    # The findings section carries the name the domain's reader uses, so
+    # a workforce report does not open a section called "Meaningful
+    # Business Insights" — a heading that tells the reader nothing and
+    # reads as a template's default.
+    from app.engines.report_blueprints import blueprint_for
+    _insights_heading = "{} — Findings".format(blueprint_for(niche).label)
+
+    _toc_entries = ["Data Health Overview"]
+    _sub = [n for n, present in (("Key Findings", key_findings),
+                                  ("Risks Identified", risks),
+                                  ("Opportunities", opportunities)) if present]
+    if executive_summary or _sub:
+        _toc_entries.append("Executive Summary")
+    if insights:
+        _toc_entries.append(_insights_heading)
+    if _charts:
+        _toc_entries.append("Visual Analysis")
+    _toc_entries += ["Descriptive Statistics", "Column Quality Analysis"]
+    if len(df.select_dtypes(include="number").columns) >= 2:
+        _toc_entries.append("Correlation Analysis")
+    if actions:
+        _toc_entries.append("Recommended Actions")
+
+    def _section(name: str):
+        """Numbered section heading that stays in step with the contents
+        page, because both read from the same list."""
+        try:
+            num = _toc_entries.index(name) + 1
+        except ValueError:
+            return Paragraph(name, ST["h1"])
+        return Paragraph(
+            '<font color="{}">{:02d}</font>&nbsp;&nbsp;{}'.format(accent_hex, num, name),
+            ST["h1"])
+
+    story.append(Paragraph("Contents", ST["h1"]))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=8))
+    _toc_rows = []
+    for _i, _name in enumerate(_toc_entries, 1):
+        _toc_rows.append([
+            Paragraph('<font color="{}"><b>{:02d}</b></font>'.format(accent_hex, _i),
+                      ParagraphStyle("tn", fontName=_BB, fontSize=9.5, leading=15)),
+            Paragraph(_name, ParagraphStyle("tt", fontName=_BF, fontSize=10.5,
+                                            textColor=dark, leading=15)),
+        ])
+    _toc_tbl = Table(_toc_rows, colWidths=[12 * mm, CW - 12 * mm])
+    _toc_tbl.setStyle(TableStyle([
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING",    (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+        ("LINEBELOW",     (0, 0), (-1, -2), 0.4, HexColor("#E5E7EB")),
+    ]))
+    story.append(_toc_tbl)
+    story.append(PageBreak())
+
+    # ══════════════════════════════════════════════════════
+    # PAGE 3: HEALTH SCORE
     # ══════════════════════════════════════════════════════
     story.append(Spacer(1, 6*mm))
-    story.append(Paragraph("DATA HEALTH &amp; BUSINESS INSIGHTS REPORT", ST["h1"]))
+    story.append(_section("Data Health Overview"))
     story.append(Paragraph(fname[:70], ST["sm"]))
     story.append(HRFlowable(width="100%", thickness=2.5, color=accent, spaceAfter=6))
     story.append(Paragraph(
@@ -270,10 +456,52 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     story.append(sum_tbl)
 
     # ══════════════════════════════════════════════════════
+    # EXECUTIVE SUMMARY + NARRATIVE SECTIONS
+    # ══════════════════════════════════════════════════════
+    # Skipped entirely when no narrative was supplied, so the report never
+    # shows an empty heading.
+    if executive_summary or key_findings or risks or opportunities:
+        story.append(PageBreak())
+        story.append(_section("Executive Summary"))
+        story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=6))
+
+        if executive_summary:
+            story.append(Paragraph(_clean_text(executive_summary), ST["body"]))
+            story.append(Spacer(1, 5 * mm))
+
+        def _bullet_section(heading: str, items: list, bullet_hex: str,
+                            max_items: int = 8) -> None:
+            if not items:
+                return
+            story.append(Paragraph(heading, ST["h2"]))
+            rows = []
+            for item in items[:max_items]:
+                marker = Paragraph(
+                    '<font color="{}">■</font>'.format(bullet_hex),
+                    ParagraphStyle("bm", fontName=_BF, fontSize=7.5, leading=13))
+                text = Paragraph(_clean_text(item),
+                                 ParagraphStyle("bt", fontName=_BF, fontSize=9.5,
+                                                textColor=dark, leading=14))
+                rows.append([marker, text])
+            tbl = Table(rows, colWidths=[6 * mm, CW - 6 * mm])
+            tbl.setStyle(TableStyle([
+                ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+                ("TOPPADDING",    (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+            ]))
+            story.append(tbl)
+            story.append(Spacer(1, 4 * mm))
+
+        _bullet_section("Key Findings", key_findings, "#2563EB")
+        _bullet_section("Risks Identified", risks, "#DC2626")
+        _bullet_section("Opportunities", opportunities, "#059669")
+
+    # ══════════════════════════════════════════════════════
     # PAGE 2: BUSINESS INSIGHTS
     # ══════════════════════════════════════════════════════
     story.append(PageBreak())
-    story.append(Paragraph("Meaningful Business Insights", ST["h1"]))
+    story.append(_section(_insights_heading))
     story.append(Paragraph(
         "Each insight follows the format: <b>What → Why it matters → What to do.</b> "
         "All figures are computed directly from the uploaded dataset.",
@@ -320,10 +548,42 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         story.append(KeepTogether([card, Spacer(1, 5*mm)]))
 
     # ══════════════════════════════════════════════════════
+    # VISUAL ANALYSIS
+    # ══════════════════════════════════════════════════════
+    # The report previously carried only thumbnail histograms and a
+    # correlation heatmap — diagnostics, not the business picture a client
+    # reads. These are the same charts as the main report, each captioned
+    # with what it shows rather than left to speak for itself.
+    if _charts:
+        story.append(PageBreak())
+        story.append(_section("Visual Analysis"))
+        story.append(Paragraph(
+            "Charts are built from measure columns only; identifiers and "
+            "columns with no variation are excluded, since neither carries "
+            "business meaning.", ST["body"]))
+        story.append(HRFlowable(width="100%", thickness=1.5, color=accent,
+                                 spaceAfter=6))
+
+        for idx, (chart_title, img_bytes) in enumerate(_charts, 1):
+            if not img_bytes:
+                continue
+            try:
+                block = [
+                    Paragraph("{}. {}".format(idx, _clean_text(chart_title)),
+                              ST["h3"]),
+                    Image(_io.BytesIO(img_bytes), width=CW, height=CW * 0.46),
+                    Spacer(1, 6 * mm),
+                ]
+                story.append(KeepTogether(block))
+            except Exception:
+                logger.warning("could not place chart %r in the health report",
+                               chart_title, exc_info=True)
+
+    # ══════════════════════════════════════════════════════
     # PAGE 3: DESCRIPTIVE STATISTICS
     # ══════════════════════════════════════════════════════
     story.append(PageBreak())
-    story.append(Paragraph("Descriptive Statistics", ST["h1"]))
+    story.append(_section("Descriptive Statistics"))
     story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=5))
 
     if len(num_cols_list) > 0:
@@ -407,7 +667,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # PAGE 4: COLUMN QUALITY TABLE
     # ══════════════════════════════════════════════════════
     story.append(PageBreak())
-    story.append(Paragraph("Column Quality Analysis", ST["h1"]))
+    story.append(_section("Column Quality Analysis"))
     story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=5))
     story.append(Paragraph(
         "Each column is assessed for completeness, uniqueness, data type, "
@@ -494,7 +754,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # ══════════════════════════════════════════════════════
     if len(num_cols_list) >= 3:
         story.append(PageBreak())
-        story.append(Paragraph("Correlation Analysis", ST["h1"]))
+        story.append(_section("Correlation Analysis"))
         story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=5))
         story.append(Paragraph(
             "<b>Important:</b> Correlation measures association, NOT causation. "
@@ -593,13 +853,51 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         except Exception:
             logger.warning("Health Report section failure", exc_info=True)
 
+    # ══════════════════════════════════════════════════════
+    # RECOMMENDED ACTIONS
+    # ══════════════════════════════════════════════════════
+    # Closing a client report on what to DO — not on a correlation table —
+    # is what separates a deliverable from a data dump.
+    if actions:
+        story.append(PageBreak())
+        story.append(_section("Recommended Actions"))
+        story.append(Paragraph(
+            "Prioritised from the findings above. Sequence reflects urgency "
+            "and expected impact, not effort.", ST["body"]))
+        story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=6))
+
+        rows = []
+        for idx, act in enumerate(actions[:10], 1):
+            num = Paragraph(
+                '<font color="{}"><b>{}</b></font>'.format(accent_hex, idx),
+                ParagraphStyle("an", fontName=_BB, fontSize=11,
+                               alignment=TA_CENTER, leading=15))
+            body = Paragraph(_clean_text(act),
+                             ParagraphStyle("ab", fontName=_BF, fontSize=9.5,
+                                            textColor=dark, leading=14.5))
+            rows.append([num, body])
+
+        act_tbl = Table(rows, colWidths=[10 * mm, CW - 10 * mm])
+        act_tbl.setStyle(TableStyle([
+            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING",    (0, 0), (-1, -1), 7),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 2),
+            ("LINEBELOW",     (0, 0), (-1, -2), 0.4, HexColor("#E5E7EB")),
+            ("BACKGROUND",    (0, 0), (-1, -1), light2),
+            ("BOX",           (0, 0), (-1, -1), 0.5, HexColor("#E5E7EB")),
+        ]))
+        story.append(act_tbl)
+
     # ── Disclaimer ────────────────────────────────────────
     story.append(Spacer(1, 8*mm))
     story.append(HRFlowable(width="100%", thickness=1, color=gray, spaceAfter=4))
     story.append(Paragraph(
-        "<b>DISCLAIMER</b>  —  Report generated by {} on {}. "
-        "Dataset: {}. Findings based solely on provided data. "
-        "Correlations ≠ causation. Verify with domain expert before action.".format(
+        "<b>BASIS OF PREPARATION</b>  —  Prepared by {} on {}. Source: {}. "
+        "All figures derive solely from the supplied dataset and describe the "
+        "period it covers. Statistical association is reported where present; "
+        "it does not establish causation. Recommendations assume the data is "
+        "complete and accurate as supplied.".format(
             agency_name, now, fname[:40]),
         ST["sm"]))
 

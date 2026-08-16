@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from app.engines.domains.base import Insight, build_insight, col_stats
+from app.engines.domains.sales_performance import run_sales_performance
 from app.engines.industry_benchmarks import lookup_benchmark, format_benchmark_context
 
 logger = logging.getLogger(__name__)
@@ -357,6 +358,9 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
 
     # ── Sales Cycle Length (derived from date columns) ──────
     _sales_cycle_insights(df, insights, findings, risks, opps)
+
+    # ── Outcome-level analysis: rep win rates, cycle by outcome ─
+    run_sales_performance(df, insights, findings, risks, opps)
 
     actions.extend([
         "Weekly revenue vs target review — per rep and per region",

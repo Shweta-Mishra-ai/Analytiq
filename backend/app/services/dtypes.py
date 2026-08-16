@@ -49,6 +49,44 @@ def is_text_dtype(obj) -> bool:
         return False
 
 
+def text_columns(df) -> list:
+    """The text-like column names of a frame, in order.
+
+    Replaces ``df.select_dtypes(include="object")``. That call still finds
+    pandas 3's ``str`` columns, but only through a deprecation shim that
+    warns and is scheduled for removal — at which point every categorical
+    breakdown in the app would quietly return an empty list and the
+    reports would lose their segment analysis without erroring.
+    """
+    return [c for c in df.columns if is_text_dtype(df[c])]
+
+
+def month_end_rule() -> str:
+    """The resample alias for month-end, valid on this pandas version.
+
+    pandas 3 removed the ``"M"`` alias in favour of ``"ME"``; calling
+    ``resample("M")`` now raises. Every call site here sat inside a
+    try/except that logged at debug level, so the failures were invisible:
+    the time-series trend chart vanished from every report and Deep EDA's
+    stationarity/trend section silently returned nothing.
+    """
+    test = pd.Series(
+        [0.0, 1.0],
+        index=pd.to_datetime(["2025-01-01", "2025-02-01"]),
+    )
+    for alias in ("ME", "M"):
+        try:
+            test.resample(alias).mean()
+            return alias
+        except (ValueError, KeyError):
+            continue
+    logger.warning("no usable month-end resample alias found; defaulting to 'ME'")
+    return "ME"
+
+
+MONTH_END = month_end_rule()
+
+
 def is_categorical_like(obj) -> bool:
     """True for text columns *and* pandas categorical/boolean columns —
     i.e. anything that groups into discrete buckets rather than measuring

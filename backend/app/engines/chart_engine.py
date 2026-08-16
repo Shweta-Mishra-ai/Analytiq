@@ -10,6 +10,9 @@ PALETTE  = ["#4f8ef7","#22d3a5","#f7934f","#a78bfa","#f77070","#ffd43b","#38bdf8
 TEMPLATE = "plotly_dark"
 
 
+from app.services.dtypes import text_columns
+
+
 def _style(fig):
     fig.update_layout(
         paper_bgcolor="#07080f",
@@ -24,7 +27,7 @@ def _style(fig):
 
 def recommend_charts(df: pd.DataFrame) -> List[Tuple[str, go.Figure]]:
     num_cols  = df.select_dtypes(include="number").columns.tolist()
-    cat_cols  = df.select_dtypes(include="object").columns.tolist()
+    cat_cols  = text_columns(df)
     date_cols = df.select_dtypes(include="datetime").columns.tolist()
     charts    = []
 

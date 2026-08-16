@@ -47,11 +47,45 @@ def _gemini_embed(texts: List[str], task: str) -> Optional[np.ndarray]:
     return np.array(vecs, dtype=np.float32)
 
 
+# Function words carry no topic. Left in, they dominate the similarity:
+# "what was warehouse throughput in the third quarter" matched a passage
+# about probation periods at 0.16 — entirely on "the", "in" and "was" —
+# which is enough to clear any floor low enough to admit real matches.
+# Removing them takes that same off-topic query to 0.0 while a genuine
+# question about leave rises from 0.32 to 0.42.
+_STOPWORDS = frozenset("""
+a an the and or but if then than that this these those of in on at to for
+from by with without within into over under is are was were be been being
+am do does did done have has had having it its as we our ours you your they
+them their he she him her his hers i me my mine not no nor so such about up
+down out off only own same too very can will just should would could may
+might must shall there here when where which who whom whose what why how all
+any both each few more most other some only per via
+""".split())
+
+
+def _tokens(text: str) -> List[str]:
+    """Topic-bearing tokens, with plurals folded onto their singular.
+
+    "expense claim deadline" should match a passage about "Expense claims"
+    — without the fold it does not, because the hashed dimensions for
+    "claim" and "claims" are unrelated.
+    """
+    out = []
+    for tok in re.findall(r"[a-z0-9]+", text.lower()):
+        if len(tok) <= 2 or tok in _STOPWORDS:
+            continue
+        if len(tok) > 3 and tok.endswith("s") and not tok.endswith("ss"):
+            tok = tok[:-1]
+        out.append(tok)
+    return out
+
+
 def _local_embed(texts: List[str]) -> np.ndarray:
     """Deterministic hashed bag-of-words embedding (offline fallback)."""
     out = np.zeros((len(texts), _LOCAL_DIM), dtype=np.float32)
     for i, text in enumerate(texts):
-        for tok in re.findall(r"[a-z0-9]+", text.lower()):
+        for tok in _tokens(text):
             h = int(hashlib.md5(tok.encode()).hexdigest(), 16)
             out[i, h % _LOCAL_DIM] += 1.0
     norms = np.linalg.norm(out, axis=1, keepdims=True)
@@ -64,6 +98,35 @@ def embed(texts: List[str], task: str = "retrieval_document") -> tuple[np.ndarra
     if vecs is not None:
         return vecs, "gemini"
     return _local_embed(texts), "local"
+
+
+# ── relevance ────────────────────────────────────────────
+
+# Absolute cosine floor below which a chunk is not about the query at
+# all. The two embedders live on different scales — Gemini's vectors put
+# unrelated business text around 0.3-0.5, while the local hashing
+# embedder scores unrelated text far lower because it only matches on
+# shared tokens — so one number cannot serve both.
+MIN_SCORE = {"gemini": 0.45, "local": 0.12}
+# A chunk scoring far below the best match is padding: it was returned
+# only because k slots had to be filled.
+RELATIVE_FLOOR = 0.55
+
+
+def _filter_by_relevance(hits: List[dict], embedder: str) -> List[dict]:
+    """Drop chunks that are not about the query.
+
+    An empty result is a correct and useful answer — it is what lets the
+    caller say "your documents do not cover this" instead of composing a
+    confident paragraph out of the nearest unrelated text.
+    """
+    if not hits:
+        return []
+    floor = MIN_SCORE.get(embedder or "local", MIN_SCORE["local"])
+    top = hits[0]["score"]
+    if top < floor:
+        return []
+    return [h for h in hits if h["score"] >= max(floor, top * RELATIVE_FLOOR)]
 
 
 # ── store ────────────────────────────────────────────────
@@ -110,6 +173,16 @@ class KnowledgeBase:
         self.save()
 
     def search(self, query: str, k: int = 6) -> List[dict]:
+        """The k best-matching chunks that are actually about the query.
+
+        Returning the k least-irrelevant chunks regardless of score was
+        the single thing that let this answer questions the documents do
+        not cover: ask a KB of HR policies about churn and it handed the
+        model six unrelated paragraphs, which the model then answered
+        from. Nothing in the pipeline afterwards can recover from that —
+        the citations even look right, because they point at the
+        paragraphs that were supplied.
+        """
         if self.vectors is None or not len(self.chunks):
             return []
         if self.embedder == "gemini":
@@ -123,7 +196,8 @@ class KnowledgeBase:
         sims = (mat @ qv) / (
             (np.linalg.norm(mat, axis=1) * np.linalg.norm(qv)) + 1e-9)
         idx = np.argsort(-sims)[:k]
-        return [{**self.chunks[i], "score": float(sims[i])} for i in idx]
+        hits = [{**self.chunks[i], "score": float(sims[i])} for i in idx]
+        return _filter_by_relevance(hits, self.embedder)
 
 
 class RagStore:

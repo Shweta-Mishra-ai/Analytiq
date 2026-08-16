@@ -18,6 +18,8 @@ from scipy.stats import (
     levene, bartlett
 )
 
+from app.services.dtypes import MONTH_END, text_columns
+
 logger = logging.getLogger(__name__)
 
 
@@ -640,7 +642,7 @@ def analyze_time_series(
 
     try:
         ts = (df.set_index(date_col)[value_col]
-                .resample("M").mean()
+                .resample(MONTH_END).mean()
                 .dropna())
 
         if len(ts) < 10:
@@ -773,7 +775,7 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
         df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
 
     num_cols  = df.select_dtypes(include="number").columns.tolist()
-    cat_cols  = df.select_dtypes(include="object").columns.tolist()
+    cat_cols  = text_columns(df)
     dt_cols   = df.select_dtypes(include="datetime").columns.tolist()
 
     report = EDAReport(

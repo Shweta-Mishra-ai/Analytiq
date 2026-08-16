@@ -5,9 +5,12 @@ from app.config import config
 logger = logging.getLogger(__name__)
 
 
+from app.services.dtypes import text_columns
+
+
 def build_chat_system_prompt(df: pd.DataFrame) -> str:
     num_cols  = df.select_dtypes(include="number").columns.tolist()
-    cat_cols  = df.select_dtypes(include="object").columns.tolist()
+    cat_cols  = text_columns(df)
     date_cols = df.select_dtypes(include="datetime").columns.tolist()
 
     sample = (

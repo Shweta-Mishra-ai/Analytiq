@@ -54,8 +54,15 @@ def is_configured() -> bool:
 def get_client():
     """Lazily creates (and caches) the genai.Client for the configured
     key. Returns None if no key is set — callers should treat that as
-    'Gemini unavailable', not raise."""
+    'Gemini unavailable', not raise.
+
+    Refuses outright in privacy mode: this is the single chokepoint every
+    Gemini call in the app goes through, which makes it the right place
+    to guarantee that no client data reaches Google.
+    """
     global _client, _client_key
+    from app.ai.local_llm import assert_cloud_allowed
+    assert_cloud_allowed("Gemini")
     if not config.gemini_api_key:
         return None
     if _client is not None and _client_key == config.gemini_api_key:

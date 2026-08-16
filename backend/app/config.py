@@ -26,9 +26,42 @@ class AppConfig(BaseSettings):
     llm_timeout_sec: int = 20
     llm_max_retries: int = 3
 
+    # ── Local / open-source model ────────────────────────
+    # Any OpenAI-compatible endpoint: Ollama, llama.cpp's server, vLLM,
+    # LM Studio. Point LOCAL_LLM_URL at the base (e.g.
+    # http://localhost:11434) and name the model you have pulled.
+    #
+    # Model choice is the client's, but for narrative work over tabular
+    # findings an instruction-tuned model in the 7-14B class is enough on
+    # a laptop, and a 30B+ one is noticeably better on a workstation with
+    # the memory for it. The app never depends on the model: the domain
+    # engines write their findings themselves and the LLM only adds prose.
+    local_llm_url: str = Field(default="", alias="LOCAL_LLM_URL")
+    # Gemma is the default because it is openly licensed, ships in sizes
+    # that run on a laptop as well as a workstation, and is instruction-
+    # tuned for exactly this kind of work — turning computed figures into
+    # a paragraph. Set LOCAL_LLM_MODEL to whatever tag you have actually
+    # pulled; this default only saves naming it when it matches.
+    local_llm_model: str = Field(default="gemma3:12b", alias="LOCAL_LLM_MODEL")
+    local_llm_timeout_sec: int = Field(default=120, alias="LOCAL_LLM_TIMEOUT")
+    # When on, no client data may be sent to a third-party API. Cloud
+    # calls are refused rather than skipped, so a misconfiguration is
+    # visible immediately instead of showing up as slightly worse prose.
+    llm_privacy_mode: bool = Field(default=False, alias="LLM_PRIVACY_MODE")
+
     # ── Upload limits ────────────────────────────────────
     max_file_mb: int = 200
     max_media_mb: int = 100          # images / video / documents for RAG
+
+    # ── Knowledge base limits ────────────────────────────
+    # A knowledge base is held in memory and rewritten to disk on every
+    # ingest, so it cannot be allowed to grow without bound: one user
+    # uploading a library of PDFs would take the process down for
+    # everyone. These are per-owner and enforced at ingest with an error
+    # that says which limit was hit, rather than by silent truncation.
+    rag_max_kbs_per_owner: int = Field(default=25, alias="RAG_MAX_KBS")
+    rag_max_files_per_kb: int = Field(default=100, alias="RAG_MAX_FILES")
+    rag_max_chunks_per_kb: int = Field(default=8000, alias="RAG_MAX_CHUNKS")
     max_rows_preview: int = 100_000
     max_rows_llm_context: int = 50
     max_cols_llm_context: int = 20

@@ -53,6 +53,11 @@ interface QaItem {
   question: string
   answer: string
   sources: Source[]
+  /** False when the documents did not cover the question — the answer is
+   *  a refusal, not a finding, and must not be styled like one. */
+  grounded?: boolean
+  /** The model answered without citing any passage. */
+  uncited?: boolean
 }
 
 const kindIcon = (kind: string) =>
@@ -122,7 +127,12 @@ export default function RagPage() {
     setAsking(true)
     setError('')
     try {
-      const r = await apiPost<{ answer: string; sources: Source[] }>(
+      const r = await apiPost<{
+        answer: string
+        sources: Source[]
+        grounded?: boolean
+        uncited?: boolean
+      }>(
         `/api/rag/kb/${active.kb_id}/query`,
         { question: q },
       )
@@ -315,6 +325,18 @@ export default function RagPage() {
                     <div className="prose prose-sm prose-invert mt-2 max-w-none text-sm [&_p]:my-1">
                       <ReactMarkdown>{item.answer}</ReactMarkdown>
                     </div>
+                    {item.grounded === false && (
+                      <div className="mt-2 text-[11px] text-mute">
+                        Not answered from your documents — nothing in this
+                        knowledge base was close enough to the question.
+                      </div>
+                    )}
+                    {item.grounded !== false && item.uncited && (
+                      <div className="mt-2 text-[11px] text-amber">
+                        ⚠ This answer cites no passage. Check it against the
+                        sources below before relying on it.
+                      </div>
+                    )}
                     {item.sources.length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-1.5">
                         {item.sources.map((s) => (

@@ -6,10 +6,13 @@ from typing import List, Dict
 logger = logging.getLogger(__name__)
 
 
+from app.services.dtypes import text_columns
+
+
 def generate_insights(df: pd.DataFrame) -> List[Dict]:
     insights  = []
     num_cols  = df.select_dtypes(include="number").columns.tolist()
-    cat_cols  = df.select_dtypes(include="object").columns.tolist()
+    cat_cols  = text_columns(df)
     date_cols = df.select_dtypes(include="datetime").columns.tolist()
 
     # ── 1. Dataset size ───────────────────────────────────

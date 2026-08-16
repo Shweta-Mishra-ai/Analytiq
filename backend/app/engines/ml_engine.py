@@ -24,7 +24,7 @@ from sklearn.metrics import (
     classification_report
 )
 
-from app.services.dtypes import is_text_dtype
+from app.services.dtypes import is_text_dtype, text_columns
 try:
     from xgboost import XGBRegressor, XGBClassifier
     XGBOOST_AVAILABLE = True
@@ -202,7 +202,7 @@ def prepare_features(
 
     # Encode categorical columns
     label_encoders = {}
-    for col in df.select_dtypes(include="object").columns:
+    for col in text_columns(df):
         le = LabelEncoder()
         df[col] = df[col].fillna("Unknown")
         df[col] = le.fit_transform(df[col].astype(str))

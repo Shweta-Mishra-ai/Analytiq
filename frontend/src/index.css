@@ -1,24 +1,35 @@
+@import './fonts.css';
 @import 'tailwindcss';
 @import 'react-grid-layout/css/styles.css';
 
+/* ══════════════════════════════════════════════════════════
+   Design tokens
+
+   Token NAMES are deliberately unchanged from the first pass so every
+   existing page keeps rendering — only the values, depth system and
+   interaction polish are new. Palette is a near-neutral charcoal rather
+   than the previous blue-tinted grey: a coloured background makes every
+   accent on top of it read as muddy, which is the single biggest reason
+   the old UI looked unfinished next to a Linear or Vercel.
+   ══════════════════════════════════════════════════════════ */
 @theme {
-  --color-bg: #0d1117;
-  --color-panel: #151b26;
-  --color-panel2: #1b2331;
-  --color-edge: #232d3f;
-  --color-ink: #e6ebf2;
-  --color-mute: #8b97a8;
-  --color-accent: #4f8ef7;
-  --color-teal: #22d3a5;
-  --color-amber: #f7934f;
-  --color-rose: #f77070;
+  --color-bg: #08090b;
+  --color-panel: #101215;
+  --color-panel2: #161a1f;
+  --color-edge: #22262e;
+  --color-edge2: #2d323c;
+  --color-ink: #f2f4f7;
+  --color-ink2: #c9d1dc;
+  --color-mute: #8b93a1;
+  --color-faint: #5c6472;
+
+  --color-accent: #5b8def;
+  --color-accent2: #7aa5f5;
+  --color-teal: #2dd4a7;
+  --color-amber: #f0a44a;
+  --color-rose: #f4676b;
   --color-violet: #a78bfa;
 
-  /* IBM Plex: a pairing built for technical/data-precision contexts,
-     not a generic app-UI default. Sans carries the interface; Mono is
-     used deliberately wherever a number needs to be trusted — KPIs,
-     table cells, chart axes — so figures always align on a fixed grid
-     instead of the ragged proportional-width look of default numerals. */
   --font-sans:
     'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
@@ -35,6 +46,8 @@ body {
   color: var(--color-ink);
   font-family: var(--font-sans);
   font-feature-settings: 'tnum' 1; /* tabular figures even in sans-serif numerals */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Every number a person is meant to trust — a KPI, a table cell, an
@@ -46,13 +59,133 @@ body {
   letter-spacing: -0.01em;
 }
 
+/* ── Typographic rhythm ──────────────────────────────────
+   Large text needs negative tracking to stop looking loose and amateur;
+   small uppercase labels need positive tracking to stay legible. */
+.t-display {
+  font-size: 1.375rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+.t-metric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+.t-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+/* ── Depth ───────────────────────────────────────────────
+   A flat 1px border on a flat fill is what makes a dark UI look like a
+   wireframe. Real surfaces get a soft ambient shadow plus a 1px inner
+   highlight along the top edge, so panels read as lit from above. */
+.surface {
+  background: var(--color-panel);
+  border: 1px solid var(--color-edge);
+  border-radius: 12px;
+  box-shadow:
+    0 1px 0 0 rgb(255 255 255 / 0.03) inset,
+    0 1px 2px rgb(0 0 0 / 0.4),
+    0 8px 24px -12px rgb(0 0 0 / 0.5);
+}
+
+.surface-hover {
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+.surface-hover:hover {
+  border-color: var(--color-edge2);
+  box-shadow:
+    0 1px 0 0 rgb(255 255 255 / 0.04) inset,
+    0 2px 4px rgb(0 0 0 / 0.4),
+    0 12px 32px -12px rgb(0 0 0 / 0.6);
+}
+
+/* Primary action: a subtle vertical gradient and a coloured glow read as
+   "pressable" in a way a flat fill never does. */
+.btn-primary {
+  background: linear-gradient(180deg, var(--color-accent2), var(--color-accent));
+  box-shadow:
+    0 1px 0 0 rgb(255 255 255 / 0.15) inset,
+    0 1px 2px rgb(0 0 0 / 0.4),
+    0 4px 14px -4px rgb(91 141 239 / 0.5);
+  transition:
+    filter 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.1s ease;
+}
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow:
+    0 1px 0 0 rgb(255 255 255 / 0.2) inset,
+    0 2px 4px rgb(0 0 0 / 0.4),
+    0 6px 20px -4px rgb(91 141 239 / 0.65);
+}
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0.5px);
+  filter: brightness(0.96);
+}
+
+/* Keyboard focus must be visible and on-brand, not the browser default. */
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* ── Loading skeletons ───────────────────────────────────
+   A shimmering placeholder of the right shape reads as "loading";
+   a bare spinner in an empty page reads as "broken". */
+@keyframes skeleton-sweep {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-panel2) 25%,
+    var(--color-edge) 37%,
+    var(--color-panel2) 63%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-sweep 1.4s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+  .surface-hover,
+  .btn-primary {
+    transition: none;
+  }
+}
+
 ::-webkit-scrollbar {
   width: 9px;
   height: 9px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2b3648;
+  background: var(--color-edge2);
   border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4150;
 }
 ::-webkit-scrollbar-track {
   background: transparent;

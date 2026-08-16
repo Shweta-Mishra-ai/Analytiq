@@ -70,6 +70,9 @@ _DOMAIN_LABELS = {
 }
 
 
+from app.services.dtypes import text_columns
+
+
 def clean_col(col: str) -> str:
     low = col.lower().strip()
     if low in _COL_MAP:
@@ -422,7 +425,7 @@ def _build_exec_prompt(df: pd.DataFrame, domain: str) -> str:
 def _build_raw_summary(df: pd.DataFrame, domain: str) -> str:
     """Rich pre-computed stats for executive prompt injection."""
     num_cols = df.select_dtypes(include="number").columns.tolist()
-    cat_cols = df.select_dtypes(include="object").columns.tolist()
+    cat_cols = text_columns(df)
     lines    = [
         f"Dataset: {len(df):,} rows, {len(df.columns)} columns — {domain.upper()} domain",
         "",
@@ -531,7 +534,7 @@ def generate_chart_narrative(
     try:
         title = chart_title.lower()
         num   = df.select_dtypes(include="number").columns.tolist()
-        cat   = df.select_dtypes(include="object").columns.tolist()
+        cat   = text_columns(df)
 
         # ── Correlation ───────────────────────────────────
         if "correlation" in title or "heatmap" in title:
@@ -625,7 +628,7 @@ def generate_chart_narrative(
         # Last resort — never return generic text
         try:
             num = df.select_dtypes(include="number").columns.tolist()
-            cat = df.select_dtypes(include="object").columns.tolist()
+            cat = text_columns(df)
             if cat and num:
                 s = _bar_stats(df, cat[0], num[0])
                 return _fb_bar(s)

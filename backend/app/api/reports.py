@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.config import config
+from app.engines.data_cleaner import table_name_from_filename
 from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.serialize import to_jsonable
@@ -33,6 +34,11 @@ class PdfRequest(BaseModel):
     include_ml: bool = False
     avg_salary_k: float = 8.0       # for HR impact estimates
     max_charts: int = 5
+    # Who prepared the report — the freelancer, consultancy or in-house
+    # analyst delivering it. It appears in the basis of preparation and
+    # under the methodology, because a review deliverable is signed by a
+    # person or a firm. Nothing about the tooling is named anywhere.
+    prepared_by: str = ""
 
 
 def _df_or_404(owner: str, ds_id: str):
@@ -167,6 +173,12 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
         "confidential": req.confidential,
         "theme_name": theme_name,
         "logo_path": None,
+        # Names the table the Data Preparation SQL is written against, so a
+        # reader recognises their own warehouse object rather than a
+        # placeholder.
+        "prepared_by": req.prepared_by.strip(),
+        "source_table": table_name_from_filename(
+            getattr(store.get_meta(owner, ds_id), "filename", "")),
     }
     try:
         pdf_bytes = build_pdf(
@@ -200,7 +212,7 @@ def health_summary(ds_id: str, owner: str = Depends(current_owner)):
     """Health score, grade and the niche insight cards as JSON — the same
     content the Health Report PDF renders, for previewing before download."""
     df = _df_or_404(owner, ds_id)
-    from app.engines.health_engine import compute_health, build_insights
+    from app.engines.health_engine import build_report_payload, compute_health
     from app.engines.story_engine import detect_domain
 
     health = compute_health(df)
@@ -210,12 +222,13 @@ def health_summary(ds_id: str, owner: str = Depends(current_owner)):
         logger.warning("detect_domain failed for health summary", exc_info=True)
         domain_name = "general"
     try:
-        insights = build_insights(df, domain_name)
+        payload = build_report_payload(df, domain_name)
     except Exception:
-        logger.exception("build_insights failed for health summary")
-        insights = []
+        logger.exception("health report payload failed")
+        payload = {"executive_summary": "", "insights": [], "key_findings": [],
+                   "risks": [], "opportunities": [], "actions": []}
     return {"domain": domain_name, "health": to_jsonable(health),
-            "insights": to_jsonable(insights)}
+            **{k: to_jsonable(v) for k, v in payload.items()}}
 
 
 @router.post("/{ds_id}/health-pdf")
@@ -226,7 +239,7 @@ def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
     meta = store.get_meta(owner, ds_id)
     filename = meta.filename if meta else f"{ds_id}.csv"
 
-    from app.engines.health_engine import compute_health, build_insights
+    from app.engines.health_engine import build_report_payload, compute_health
     from app.engines.health_pdf_builder import build_health_pdf
     from app.engines.story_engine import detect_domain
 
@@ -238,9 +251,15 @@ def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
 
     try:
         health = compute_health(df)
-        insights = build_insights(df, domain_name)
-        pdf_bytes = build_health_pdf(df, domain_name, health, insights,
-                                      filename, agency_name=req.agency_name)
+        payload = build_report_payload(df, domain_name)
+        pdf_bytes = build_health_pdf(
+            df, domain_name, health, payload["insights"], filename,
+            agency_name=req.agency_name,
+            executive_summary=payload["executive_summary"],
+            key_findings=payload["key_findings"],
+            risks=payload["risks"],
+            opportunities=payload["opportunities"],
+            actions=payload["actions"])
     except Exception as e:
         logger.exception("Health PDF build failed")
         raise HTTPException(500, f"Health report build failed: {e}")

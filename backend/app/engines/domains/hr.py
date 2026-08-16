@@ -14,6 +14,7 @@ from scipy import stats as scipy_stats
 from app.engines.domains.base import (Insight, AttritionAnalysis, build_insight,
                                col_stats, correlations, infer_scale_bounds)
 from app.services.dtypes import is_text_dtype
+from app.services.stat_guards import apply_fdr, chi2_association
 
 logger = logging.getLogger(__name__)
 
@@ -141,8 +142,15 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
         try:
             ct = pd.crosstab(df[col], left_mask)
             if ct.shape[1] < 2: continue
-            _, p, _, _ = scipy_stats.chi2_contingency(ct)
-            if p < 0.05:
+            # Verified chi-square: skips tables whose expected cell counts
+            # are too small for the p-value to mean anything, and gives an
+            # effect size so a large-n table can't turn a trivial difference
+            # into a headline "attrition driver".
+            assoc = chi2_association(ct)
+            if assoc is None:
+                continue
+            p = assoc["p"]
+            if p < 0.05 and assoc["cramers_v"] >= 0.1:
                 rates = {str(k): round(left_mask[df[col]==k].mean()*100,1)
                          for k in df[col].dropna().unique()}
                 worst = max(rates, key=rates.get)
@@ -159,6 +167,18 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
         except Exception:
             logger.warning("%s unexpected failure", exc_info=True)
             continue
+
+    # Up to 12 numeric plus 6 categorical columns are tested here, each at
+    # α=0.05 — across ~18 tests about one spurious "attrition driver" is
+    # expected from chance alone, and it would be presented as a cause.
+    # Benjamini-Hochberg controls the false-discovery rate over the family.
+    if top_drivers:
+        top_drivers = apply_fdr(top_drivers, p_key="p_value", q_key="q_value")
+        survivors = [d for d in top_drivers if d["q_value"] < 0.05]
+        if not survivors:
+            logger.info("attrition: %d candidate driver(s) failed FDR "
+                        "correction — reporting none", len(top_drivers))
+        top_drivers = survivors
 
     top_drivers.sort(key=lambda x: x["impact"], reverse=True)
 
@@ -274,7 +294,7 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
         rate = attrition.rate
         if attrition.severity in ("critical","high"):
             insights.append(build_insight(
-                title="Attrition Crisis: {:.1f}% of Workforce Left".format(rate),
+                title="Attrition at {:.1f}% — above the planning band".format(rate),
                 problem="{:,} out of {:,} employees left — {:.1f}% rate".format(
                     attrition.n_left, attrition.n_total, rate),
                 cause="Rate is {:.1f}pp above the 10–15% planning band used in this "
@@ -308,13 +328,22 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
                         worst_d, worst_r, best_r),
                     problem="'{}' losing {:.0f}% of staff vs company average {:.1f}%".format(
                         worst_d, worst_r, rate),
-                    cause="Department-specific issues: management quality, workload, or growth opportunities",
+                    # Naming management quality or workload as the cause
+                    # asserts something no column in this dataset measures.
+                    # State what is established — the gap — and what would
+                    # establish the rest.
+                    cause="The gap is established; its driver is not, because this "
+                          "dataset holds no manager, workload or progression fields "
+                          "to test against. Comparing '{}' with '{}' on tenure, pay "
+                          "band and role would narrow it.".format(worst_d, best_d),
                     evidence="{:.0f}pp gap between highest ({}) and lowest ({}) attrition dept".format(
                         worst_r-best_r, worst_d, best_d),
-                    action="1. Skip-level interviews in {} this week  "
-                           "2. Manager effectiveness review  "
-                           "3. Workload distribution audit".format(worst_d),
-                    impact="Dept attrition destroys team cohesion and institutional knowledge",
+                    action="Review '{}' against '{}' on tenure mix, pay band and role "
+                           "profile to establish what differs. Where the data cannot "
+                           "explain the gap, exit-interview commentary from '{}' is "
+                           "the next source.".format(worst_d, best_d, worst_d),
+                    impact="{:.0f}pp of the company-wide attrition rate is concentrated "
+                           "in this one department.".format(worst_r - rate),
                     severity="critical" if worst_r>25 else "warning",
                     category="attrition"
                 ))
@@ -365,10 +394,17 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
 
         if pct < 55:
             insights.append(build_insight(
-                title="Satisfaction Crisis: Only {:.0f}% Score — {:,} Employees Disengaged".format(pct, low_n),
-                problem="{:.0f}% satisfaction (scale-normalised). {:,} employees ({:.0f}%) critically dissatisfied — bottom-box responses".format(
+                title="Satisfaction averages {:.0f}% of scale — {:,} employees in the bottom band".format(pct, low_n),
+                problem="{:.0f}% satisfaction (scale-normalised). {:,} employees ({:.0f}%) sit in the bottom band of the scale".format(
                     pct, low_n, low_pct),
-                cause="Score below 55% = systemic failure in culture, workload, recognition, or pay",
+                # The dataset records the score, not why it is low. Naming
+                # culture, workload, recognition or pay as the cause would be
+                # asserting something this data cannot show — the exact kind
+                # of unfounded claim that gets a report dismissed.
+                cause="Not identifiable from this dataset, which records the score "
+                      "but not its drivers. Isolating it requires either free-text "
+                      "exit/survey commentary or a satisfaction breakdown by "
+                      "sub-factor (manager, workload, pay, progression).",
                 evidence=("Mean={:.2f} on a {:.0f}-{:.0f} scale ({:.0f}% of range). "
                           "{:,} employees ({:.0f}%) score below {:.2f} (bottom 40% of the scale). "
                           "Internal planning target: 70% of range. ".format(

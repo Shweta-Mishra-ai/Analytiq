@@ -7,6 +7,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from typing import List, Tuple, Optional
 
+from app.engines.domains.base import is_id_column
+from app.services.dtypes import MONTH_END
+
 logger = logging.getLogger(__name__)
 
 
@@ -151,7 +154,7 @@ def make_line_chart(
     if x_is_datetime:
         # Aggregate by month
         data[x_col] = pd.to_datetime(data[x_col])
-        data = data.set_index(x_col).resample("M")[y_col].mean().reset_index()
+        data = data.set_index(x_col).resample(MONTH_END)[y_col].mean().reset_index()
         x_vals = range(len(data))
         y_vals = data[y_col].values
         labels = [str(d)[:7] for d in data[x_col]]
@@ -364,15 +367,66 @@ def make_box_plot(
     return fig_to_bytes(fig)
 
 
+def _rank_measures(df: pd.DataFrame, cols: List[str]) -> List[str]:
+    """Order numeric columns by how much they look like a business measure.
+
+    Charting the first numeric column in the frame is how a finance report
+    ended up with "invoice_id by category", a distribution of invoice_id,
+    and a pie chart of summed invoice IDs — three of five charts plotting
+    an identifier. Identifiers are dropped outright; the rest are ranked so
+    recognised measures (revenue, profit, cost, amount…) lead, then any
+    column that actually varies.
+    """
+    MEASURE_WORDS = (
+        "revenue", "sales", "profit", "margin", "cost", "expense", "amount",
+        "total", "price", "value", "spend", "budget", "income", "salary",
+        "score", "rating", "quantity", "qty", "units", "count", "rate",
+        "satisfaction", "tenure", "age", "duration", "balance", "opex",
+    )
+    scored = []
+    for c in cols:
+        if is_id_column(c, df[c]):
+            continue
+        s = pd.to_numeric(df[c], errors="coerce").dropna()
+        if s.empty or s.nunique() <= 1:
+            continue          # constant column charts as a flat line — useless
+        name = str(c).lower()
+        score = 0
+        if any(w in name for w in MEASURE_WORDS):
+            score += 10
+        # A column with real spread carries more information than a near-
+        # constant one; use CV so it is scale-independent.
+        mean = float(s.mean())
+        if mean != 0:
+            cv = abs(float(s.std()) / mean)
+            score += min(cv, 2.0)
+        scored.append((score, c))
+    scored.sort(key=lambda t: -t[0])
+    return [c for _, c in scored]
+
+
 def generate_all_charts(
     df: pd.DataFrame,
     theme_name: str = "Corporate Light",
     max_charts: int = 5,
 ) -> List[Tuple[str, bytes]]:
     """Auto-generate best charts for this dataset."""
-    num_cols  = df.select_dtypes(include="number").columns.tolist()
-    cat_cols  = df.select_dtypes(include="object").columns.tolist()
+    # include="object" alone misses pandas 3's `str` dtype in some paths;
+    # ask for both so categorical columns are found on either version.
+    raw_num = df.select_dtypes(include="number").columns.tolist()
+    raw_cat = df.select_dtypes(include=["object", "string"]).columns.tolist()
+
+    num_cols  = _rank_measures(df, raw_num)
+    cat_cols  = [c for c in raw_cat if not is_id_column(c, df[c])
+                 and 2 <= df[c].nunique() <= 25]
     date_cols = df.select_dtypes(include="datetime").columns.tolist()
+
+    if not num_cols:
+        # Nothing chartable that isn't an identifier — better to return no
+        # charts than to fill the report with meaningless ones.
+        logger.info("no non-identifier numeric columns to chart")
+        return []
+
     charts    = []
 
     # 1. Bar chart — categorical x numeric

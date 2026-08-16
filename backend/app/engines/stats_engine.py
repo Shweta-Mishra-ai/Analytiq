@@ -8,6 +8,9 @@ from scipy import stats as scipy_stats
 logger = logging.getLogger(__name__)
 
 
+from app.services.dtypes import text_columns
+
+
 @dataclass
 class ColumnStats:
     name: str
@@ -85,7 +88,7 @@ def analyze(df: pd.DataFrame) -> DatasetStats:
     Runs proper stats — not just describe().
     """
     num_cols  = df.select_dtypes(include="number").columns.tolist()
-    cat_cols  = df.select_dtypes(include="object").columns.tolist()
+    cat_cols  = text_columns(df)
     dt_cols   = df.select_dtypes(include="datetime").columns.tolist()
 
     ds = DatasetStats(

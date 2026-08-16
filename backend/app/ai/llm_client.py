@@ -110,13 +110,24 @@ class LLMClient:
         executive_summary → Gemini (deep reasoning), Groq fallback
         Returns text or None — caller should use rule-based fallback on None.
         """
+        from app.ai import local_llm
+
         provider = force or TASK_ROUTING.get(task, "groq")
         order    = (["gemini", "groq"] if provider == "gemini"
                     else ["groq", "gemini"])
+        # A local model runs on the client's own hardware, so it is both
+        # the only permitted provider under privacy mode and a working
+        # fallback when the cloud providers are down or out of quota.
+        if local_llm.privacy_mode():
+            order = ["local"]
+        elif local_llm.is_configured():
+            order = order + ["local"]
 
         for prov in order:
             try:
-                if prov == "groq":
+                if prov == "local":
+                    result = local_llm.generate(system, user, max_tokens)
+                elif prov == "groq":
                     result = self._groq_report(system, user, max_tokens)
                 elif prov == "gemini" and gemini_client.is_configured():
                     result = self._gemini(system, user, max_tokens)
