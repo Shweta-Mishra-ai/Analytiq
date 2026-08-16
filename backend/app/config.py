@@ -29,6 +29,16 @@ class AppConfig(BaseSettings):
     # ── Upload limits ────────────────────────────────────
     max_file_mb: int = 200
     max_media_mb: int = 100          # images / video / documents for RAG
+
+    # ── Knowledge base limits ────────────────────────────
+    # A knowledge base is held in memory and rewritten to disk on every
+    # ingest, so it cannot be allowed to grow without bound: one user
+    # uploading a library of PDFs would take the process down for
+    # everyone. These are per-owner and enforced at ingest with an error
+    # that says which limit was hit, rather than by silent truncation.
+    rag_max_kbs_per_owner: int = Field(default=25, alias="RAG_MAX_KBS")
+    rag_max_files_per_kb: int = Field(default=100, alias="RAG_MAX_FILES")
+    rag_max_chunks_per_kb: int = Field(default=8000, alias="RAG_MAX_CHUNKS")
     max_rows_preview: int = 100_000
     max_rows_llm_context: int = 50
     max_cols_llm_context: int = 20
