@@ -67,24 +67,91 @@ def fields(ds_id: str, owner: str = Depends(current_owner)):
 @router.post("/{ds_id}/kpis")
 def kpis(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
     df = _df(owner, ds_id, body.filters)
-    num_cols = df.select_dtypes(include="number").columns.tolist()
-    cards = [
-        {"label": "Rows", "value": len(df), "format": "int"},
-        {"label": "Columns", "value": df.shape[1], "format": "int"},
-        {"label": "Missing %",
-         "value": round(float(df.isna().mean().mean()) * 100, 1),
-         "format": "pct"},
-        {"label": "Duplicates", "value": int(df.duplicated().sum()),
-         "format": "int"},
-    ]
-    for col in num_cols[:4]:
+    # The measures lead; the file's shape follows. This row used to open
+    # with Rows / Columns / Missing % / Duplicates — a profiling strip,
+    # not a KPI row — and then summed the first four numeric columns
+    # whatever they were, so the headline figure on a sales dashboard was
+    # "Σ order_id 405,450". Ranking is shared with the chart builders so
+    # the cards and the tiles agree about what the business measure is.
+    from app.engines.chart_engine import rank_measures
+
+    cards: List[dict] = []
+    for col in rank_measures(df)[:4]:
         s = pd.to_numeric(df[col], errors="coerce").dropna()
         if len(s):
             cards.append({
                 "label": f"Σ {col}", "value": float(s.sum()), "format": "num",
                 "mean": float(s.mean()),
             })
+    cards.append({"label": "Rows", "value": len(df), "format": "int"})
+    cards.append({"label": "Columns", "value": df.shape[1], "format": "int"})
+    cards.append({
+        "label": "Missing %",
+        "value": round(float(df.isna().mean().mean()) * 100, 1),
+        "format": "pct"})
+    cards.append({"label": "Duplicates", "value": int(df.duplicated().sum()),
+                  "format": "int"})
     return {"kpis": to_jsonable(cards)}
+
+
+@router.get("/{ds_id}/layout")
+def layout(ds_id: str, owner: str = Depends(current_owner)):
+    """The starting dashboard: which tiles, of what, and how big.
+
+    The browser used to decide this from the raw field list, taking the
+    first numeric column and the first categorical one. On a sales export
+    that put `order_id` on the hero tile and never charted revenue at
+    all. The same ranking that drives the PDF and the recommended charts
+    now drives the default dashboard, so the three cannot disagree.
+
+    Sizes are part of the answer: a dashboard where every tile is the
+    same 6x5 rectangle has no reading order. The lead measure gets the
+    wide tile.
+    """
+    from app.engines.chart_engine import _cat_columns, rank_measures
+
+    df = _df(owner, ds_id)
+    measures = rank_measures(df)
+    cats = _cat_columns(df)
+    dates = df.select_dtypes(include="datetime").columns.tolist()
+    if not measures:
+        return {"tiles": []}
+
+    lead = measures[0]
+    second = measures[1] if len(measures) > 1 else lead
+    tiles: List[dict] = []
+
+    def _add(type_, w, h, **spec):
+        tiles.append({"id": "t{}".format(len(tiles) + 1), "type": type_,
+                      "w": w, "h": h, "agg": "sum", **spec})
+
+    if dates:
+        _add("line", 12, 5, x=dates[0], y=lead,
+             title="{} over time".format(lead))
+    if cats:
+        _add("bar", 7, 5, x=cats[0], y=lead,
+             title="{} by {}".format(lead, cats[0]))
+    if len(cats) > 1:
+        _add("pie", 5, 5, x=cats[1], y=lead,
+             title="{} share by {}".format(lead, cats[1]))
+    if second != lead:
+        _add("histogram", 5, 4, x=second,
+             title="Distribution of {}".format(second))
+    if len(measures) >= 3:
+        _add("heatmap", 7, 4, title="Correlation matrix")
+
+    # Lay the tiles out left to right, wrapping at twelve columns.
+    # Grid position is `gx`/`gy`, not `x`/`y`: those already carry the
+    # column names the tile plots, and one of the two would have won.
+    col = row = row_h = 0
+    for t in tiles:
+        if col + t["w"] > 12:
+            col, row = 0, row + row_h
+            row_h = 0
+        t["gx"], t["gy"] = col, row
+        col += t["w"]
+        row_h = max(row_h, t["h"])
+    return {"tiles": tiles}
 
 
 @router.post("/{ds_id}/recommend")

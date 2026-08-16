@@ -1,19 +1,34 @@
 /**
- * Power BI-style dashboard:
- *  - draggable / resizable tiles (react-grid-layout)
- *  - every tile re-queries the server with the shared slicer state
- *  - clicking a bar / pie slice cross-filters every other tile
- *  - add-tile builder (chart type, x, y, aggregation)
+ * The dashboard.
+ *
+ * What was here worked — draggable tiles, cross-filtering, a tile
+ * builder — but read as a chart grid rather than a report:
+ *
+ *  - **It chose its own tiles in the browser**, taking `nums[0]` and
+ *    `cats[0]` from the field list. On a sales export that is `order_id`
+ *    and revenue never appeared. The starting layout now comes from
+ *    `/layout`, which uses the same measure ranking as the PDF export and
+ *    the recommended charts, so the three cannot disagree about what the
+ *    business measure is.
+ *  - **Every tile was the same 6×5 rectangle**, so nothing said what to
+ *    read first. Tile sizes now come from the server with the lead
+ *    measure on a full-width tile.
+ *  - **Filters could only be applied by clicking a bar.** A reader who
+ *    wanted EMEA had to find a chart that happened to show EMEA. There is
+ *    now a slicer rail.
+ *  - **Tiles were titled with their axes.** Each carries its finding, and
+ *    the axis names sit underneath it.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import GridLayout, { type LayoutItem } from 'react-grid-layout'
-import { GripVertical, Plus, RefreshCw, X } from 'lucide-react'
+import { GripVertical, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { apiGet, apiPost, type Field, type Kpi } from '../api/client'
 import type { Figure } from '../types'
 import { useApp } from '../store/app'
 import FilterBar from '../components/FilterBar'
 import KpiCard from '../components/KpiCard'
 import PlotlyChart from '../components/PlotlyChart'
+import SlicerRail from '../components/SlicerRail'
 import { Btn, ErrorBox, NeedData, PageHeader, Spinner } from '../components/Ui'
 
 interface TileSpec {
@@ -31,7 +46,13 @@ interface TileState {
   loading: boolean
 }
 
-const DEFAULT_LAYOUT_H = 5
+/** What `/layout` returns: a tile plus where it sits on the grid. */
+interface ServerTile extends TileSpec {
+  w: number
+  h: number
+  gx: number
+  gy: number
+}
 
 export default function DashboardPage() {
   const { dataset, filters, addFilter } = useApp()
@@ -52,65 +73,40 @@ export default function DashboardPage() {
     const obs = new ResizeObserver((e) => setWidth(e[0].contentRect.width))
     obs.observe(el)
     return () => obs.disconnect()
+  }, [ds, fields.length])
+
+  // ── fields for the slicer rail and the tile builder ────
+  useEffect(() => {
+    if (!ds) return
+    apiGet<{ fields: Field[] }>(`/api/charts/${ds}/fields`)
+      .then((r) => setFields(r.fields))
+      .catch((e) => setError(e.message))
   }, [ds])
 
-  // ── initial: fields + auto-recommended tiles ──────────
+  // ── the starting layout, decided server-side ───────────
   useEffect(() => {
     if (!ds) return
     setError('')
-    apiGet<{ fields: Field[] }>(`/api/charts/${ds}/fields`)
+    apiGet<{ tiles: ServerTile[] }>(`/api/charts/${ds}/layout`)
       .then((r) => {
-        setFields(r.fields)
-        const nums = r.fields.filter((f) => f.kind === 'numeric')
-        const cats = r.fields.filter(
-          (f) => f.kind === 'categorical' && f.unique > 1 && f.unique <= 30,
+        const t = r.tiles ?? []
+        setTiles(
+          t.map((s) => ({
+            id: s.id,
+            title: s.title,
+            type: s.type,
+            x: s.x,
+            y: s.y,
+            agg: s.agg,
+          })),
         )
-        const dates = r.fields.filter((f) => f.kind === 'datetime')
-        const auto: TileSpec[] = []
-        if (cats[0] && nums[0])
-          auto.push({
-            id: 't1',
-            title: `${nums[0].name} by ${cats[0].name}`,
-            type: 'bar',
-            x: cats[0].name,
-            y: nums[0].name,
-            agg: 'sum',
-          })
-        if (dates[0] && nums[0])
-          auto.push({
-            id: 't2',
-            title: `${nums[0].name} over time`,
-            type: 'line',
-            x: dates[0].name,
-            y: nums[0].name,
-            agg: 'sum',
-          })
-        if (cats[1] && nums[0])
-          auto.push({
-            id: 't3',
-            title: `${nums[0].name} share by ${cats[1].name}`,
-            type: 'pie',
-            x: cats[1].name,
-            y: nums[0].name,
-            agg: 'sum',
-          })
-        if (nums[1])
-          auto.push({
-            id: 't4',
-            title: `Distribution of ${nums[1].name}`,
-            type: 'histogram',
-            x: nums[1].name,
-          })
-        if (nums.length >= 2)
-          auto.push({ id: 't5', title: 'Correlation', type: 'heatmap' })
-        setTiles(auto)
         setLayout(
-          auto.map((t, i) => ({
-            i: t.id,
-            x: (i % 2) * 6,
-            y: Math.floor(i / 2) * DEFAULT_LAYOUT_H,
-            w: 6,
-            h: DEFAULT_LAYOUT_H,
+          t.map((s) => ({
+            i: s.id,
+            x: s.gx ?? 0,
+            y: s.gy ?? 0,
+            w: s.w,
+            h: s.h,
             minW: 3,
             minH: 3,
           })),
@@ -119,7 +115,6 @@ export default function DashboardPage() {
       .catch((e) => setError(e.message))
   }, [ds])
 
-  // ── refetch KPIs + all tiles when filters change ──────
   const loadKpis = useCallback(() => {
     if (!ds) return
     apiPost<{ kpis: Kpi[] }>(`/api/charts/${ds}/kpis`, { filters })
@@ -166,7 +161,6 @@ export default function DashboardPage() {
     [fields],
   )
 
-  // clicking a categorical point cross-filters all tiles
   const handlePointClick = (t: TileSpec) => (pt: Record<string, unknown>) => {
     const col = t.x
     if (!col || !catFields.has(col)) return
@@ -177,11 +171,13 @@ export default function DashboardPage() {
 
   if (!dataset) return <NeedData />
 
+  const filtered = filters.length > 0
+
   return (
     <div className="p-6">
       <PageHeader
         title="Dashboard"
-        subtitle={`${dataset.filename} — click any bar or slice to cross-filter`}
+        subtitle={`${dataset.filename} — pick a value on the left, or click any bar or slice, to filter every tile`}
         right={
           <div className="flex gap-2">
             <Btn variant="ghost" onClick={() => tiles.forEach(loadTile)}>
@@ -200,66 +196,83 @@ export default function DashboardPage() {
           <ErrorBox message={error} />
         </div>
       )}
-      <div className="mb-4">
-        <FilterBar />
-      </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
-        {kpis.map((k) => (
-          <KpiCard key={k.label} kpi={k} />
-        ))}
-      </div>
+      <div className="flex gap-5">
+        <SlicerRail fields={fields} />
 
-      <div id="dash-grid-wrap">
-        <GridLayout
-          className="layout"
-          layout={layout}
-          gridConfig={{ cols: 12, rowHeight: 64 }}
-          width={width}
-          onLayoutChange={(l) => setLayout([...l])}
-          dragConfig={{ handle: '.tile-drag' }}
-        >
-          {tiles.map((t) => {
-            const st = tileState[t.id]
-            return (
-              <div
-                key={t.id}
-                className="overflow-hidden rounded-xl border border-edge bg-panel"
-              >
-                <div className="flex items-center justify-between border-b border-edge px-3 py-1.5">
-                  <div className="tile-drag flex min-w-0 items-center gap-1.5">
-                    <GripVertical className="h-3.5 w-3.5 shrink-0 text-mute" />
-                    <span className="truncate text-xs font-semibold text-ink">
-                      {t.title}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setTiles((ts) => ts.filter((x) => x.id !== t.id))
-                      setLayout((l) => l.filter((x) => x.i !== t.id))
-                    }}
-                    className="text-mute hover:text-rose"
-                    title="Remove tile"
+        <div className="min-w-0 flex-1">
+          {filtered && (
+            <div className="mb-4">
+              <FilterBar />
+            </div>
+          )}
+
+          <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
+            {kpis.map((k) => (
+              <KpiCard key={k.label} kpi={k} />
+            ))}
+          </div>
+
+          <div id="dash-grid-wrap">
+            <GridLayout
+              className="layout"
+              layout={layout}
+              gridConfig={{ cols: 12, rowHeight: 64 }}
+              width={width}
+              onLayoutChange={(l) => setLayout([...l])}
+              dragConfig={{ handle: '.tile-drag' }}
+            >
+              {tiles.map((t) => {
+                const st = tileState[t.id]
+                return (
+                  <div
+                    key={t.id}
+                    className="group flex flex-col overflow-hidden rounded-xl border border-edge bg-panel"
                   >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                <div className="h-[calc(100%-2rem)] p-1">
-                  {st?.loading && <Spinner label="" />}
-                  {st?.error && (
-                    <div className="p-3 text-xs text-rose">{st.error}</div>
-                  )}
-                  {st?.figure && (
-                    <PlotlyChart
-                      figure={st.figure}
-                      onClickPoint={handlePointClick(t)}
-                    />
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </GridLayout>
+                    <div className="flex shrink-0 items-center justify-between gap-2 px-3 pt-2.5">
+                      <div className="tile-drag flex min-w-0 cursor-move items-center gap-1.5">
+                        <GripVertical className="h-3.5 w-3.5 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+                        <span className="truncate text-[11px] tracking-wide text-mute uppercase">
+                          {t.title}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setTiles((ts) => ts.filter((x) => x.id !== t.id))
+                          setLayout((l) => l.filter((x) => x.i !== t.id))
+                        }}
+                        className="shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100 hover:text-rose"
+                        title="Remove tile"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <div className="min-h-0 flex-1 px-1 pb-1">
+                      {st?.loading && !st.figure && <Spinner label="" />}
+                      {st?.error && (
+                        <div className="p-3 text-xs text-rose">{st.error}</div>
+                      )}
+                      {st?.figure && (
+                        <PlotlyChart
+                          figure={st.figure}
+                          onClickPoint={handlePointClick(t)}
+                        />
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </GridLayout>
+          </div>
+
+          {!tiles.length && !error && (
+            <p className="rounded-xl border border-dashed border-edge px-4 py-8 text-center text-sm text-mute">
+              Nothing in this file charts as a business measure — every
+              numeric column reads as an identifier. Add a tile to plot one
+              anyway.
+            </p>
+          )}
+        </div>
       </div>
 
       {showBuilder && (
@@ -270,15 +283,7 @@ export default function DashboardPage() {
             setTiles((ts) => [...ts, t])
             setLayout((l) => [
               ...l,
-              {
-                i: t.id,
-                x: 0,
-                y: Infinity,
-                w: 6,
-                h: DEFAULT_LAYOUT_H,
-                minW: 3,
-                minH: 3,
-              },
+              { i: t.id, x: 0, y: Infinity, w: 6, h: 5, minW: 3, minH: 3 },
             ])
             setShowBuilder(false)
           }}
@@ -305,32 +310,34 @@ function TileBuilder({
 
   const nums = fields.filter((f) => f.kind === 'numeric')
   const xOptions =
-    type === 'histogram'
+    type === 'histogram' || type === 'scatter'
       ? nums
-      : type === 'scatter'
-        ? nums
-        : fields.filter((f) => f.kind !== 'numeric' || type === 'scatter')
+      : fields.filter((f) => f.kind !== 'numeric')
 
   const needsY = !['histogram', 'heatmap'].includes(type)
-  const valid =
-    type === 'heatmap' || (x && (!needsY || y))
+  const valid = type === 'heatmap' || (x && (!needsY || y))
 
   const sel =
-    'w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink'
+    'w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none'
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-96 rounded-2xl border border-edge bg-panel p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="font-semibold text-ink">Add tile</h3>
-          <button onClick={onClose} className="text-mute hover:text-ink">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-96 rounded-2xl border border-edge bg-panel p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="mb-4 font-semibold text-ink">Add tile</h3>
         <div className="space-y-3">
           <div>
             <label className="mb-1 block text-xs text-mute">Chart type</label>
-            <select value={type} onChange={(e) => setType(e.target.value)} className={sel}>
+            <select
+              value={type}
+              onChange={(e) => setType(e.target.value)}
+              className={sel}
+            >
               {['bar', 'line', 'area', 'pie', 'scatter', 'histogram', 'heatmap'].map(
                 (t) => (
                   <option key={t}>{t}</option>
@@ -365,34 +372,43 @@ function TileBuilder({
           {needsY && type !== 'scatter' && (
             <div>
               <label className="mb-1 block text-xs text-mute">Aggregation</label>
-              <select value={agg} onChange={(e) => setAgg(e.target.value)} className={sel}>
+              <select
+                value={agg}
+                onChange={(e) => setAgg(e.target.value)}
+                className={sel}
+              >
                 {['sum', 'mean', 'count', 'median', 'min', 'max'].map((a) => (
                   <option key={a}>{a}</option>
                 ))}
               </select>
             </div>
           )}
-          <Btn
-            disabled={!valid}
-            className="w-full"
-            onClick={() =>
-              onAdd({
-                id: `t${Date.now()}`,
-                title:
-                  type === 'heatmap'
-                    ? 'Correlation'
-                    : type === 'histogram'
-                      ? `Distribution of ${x}`
-                      : `${agg} of ${y} by ${x}`,
-                type,
-                x: x || undefined,
-                y: y || undefined,
-                agg,
-              })
-            }
-          >
-            Add to dashboard
-          </Btn>
+          <div className="flex gap-2 pt-1">
+            <Btn variant="ghost" className="flex-1" onClick={onClose}>
+              Cancel
+            </Btn>
+            <Btn
+              disabled={!valid}
+              className="flex-1"
+              onClick={() =>
+                onAdd({
+                  id: `t${Date.now()}`,
+                  title:
+                    type === 'heatmap'
+                      ? 'Correlation matrix'
+                      : type === 'histogram'
+                        ? `Distribution of ${x}`
+                        : `${agg} of ${y} by ${x}`,
+                  type,
+                  x: x || undefined,
+                  y: y || undefined,
+                  agg,
+                })
+              }
+            >
+              Add
+            </Btn>
+          </div>
         </div>
       </div>
     </div>

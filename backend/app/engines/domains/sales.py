@@ -9,6 +9,7 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
+from app.engines.column_roles import resolve
 from app.engines.domains.base import Insight, build_insight, col_stats
 from app.engines.domains.sales_performance import (
     find_outcome_col,
@@ -332,34 +333,19 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     findings, risks, opps, actions = [], [], [], []
     insights = []
 
-    rev_col    = next((c for c in df.columns
-                       if any(k in c.lower() for k in ["revenue","sales","amount","total"])
-                       and c in stats), None)
-    profit_col = next((c for c in df.columns
-                       if any(k in c.lower() for k in ["profit","margin","net"])
-                       and c in stats), None)
-    target_col = next((c for c in df.columns
-                       if any(k in c.lower() for k in ["target","quota","goal"])
-                       and c in stats), None)
-    region_col = next((c for c in df.select_dtypes(include=["object", "string"]).columns
-                       if any(k in c.lower() for k in ["region","territory","zone","area"])
-                       and df[c].nunique()<=25), None)
-    # "category" and "segment" are used for things that are not products.
-    # `forecast_category` holds Commit / Best Case / Pipeline — a
-    # confidence band — and was read as the product line, so the report
-    # recommended reviewing "revenue by forecast_category for
-    # concentration and whether the long tail justifies its resource".
-    _NOT_A_PRODUCT = ("forecast", "risk", "priority", "age", "size", "tier",
-                      "credit", "confidence", "probability", "stage",
-                      "customer_segment", "lead")
-    product_col= next((c for c in df.select_dtypes(include=["object", "string"]).columns
-                       if any(k in c.lower() for k in ["product","category","segment"])
-                       and not any(b in c.lower() for b in _NOT_A_PRODUCT)
-                       and df[c].nunique()<=30), None)
-    rep_col    = next((c for c in df.select_dtypes(include=["object", "string"]).columns
-                       if any(k in c.lower() for k in ["rep","salesperson","agent","owner",
-                                                       "employee","seller","account manager"])
-                       and 2 <= df[c].nunique() <= 200), None)
+    # Column roles come from one resolver rather than six local substring
+    # scans. Each of those had learned a different subset of the lessons:
+    # this engine did not know that `margin_pct` is a ratio (so it was
+    # eligible as the profit column) and did not know that
+    # `forecast_category` is a confidence band (so it was the product
+    # line). See engines/column_roles.
+    roles = resolve(df)
+    rev_col    = roles.money if roles.money in stats else None
+    profit_col = roles.profit if roles.profit in stats else None
+    target_col = roles.plan if roles.plan in stats else None
+    region_col = roles.region
+    product_col = roles.product
+    rep_col    = roles.person
 
     # ── Revenue Analysis ───────────────────────────────────
     if rev_col and rev_col in stats:

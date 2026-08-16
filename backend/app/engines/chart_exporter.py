@@ -14,44 +14,53 @@ from app.services.dtypes import MONTH_END
 logger = logging.getLogger(__name__)
 
 
-LIGHT_COLORS = ["#1a4a8a", "#2196F3", "#42A5F5", "#90CAF9", "#0D47A1", "#1565C0"]
-DARK_COLORS  = ["#4f8ef7", "#22d3a5", "#f7934f", "#a78bfa", "#f77070", "#ffd43b"]
-GREEN_COLORS = ["#1a6b4a", "#2ecc71", "#27ae60", "#82e0aa", "#145a32", "#1e8449"]
+def _theme(theme_name: str) -> dict:
+    """The report theme these charts are being printed into.
+
+    The charts used to carry their own three palettes, keyed on theme
+    names that mostly did not exist. `"Executive Green"` is not a theme —
+    the green one is called `"Sales Green"` — so the green palette was
+    dead code and every light report got the same `#1a4a8a` blue. An
+    e-commerce report therefore had an orange cover, orange headings,
+    orange section badges and blue charts; the HR report drew `#1976D2`
+    headings above `#1a4a8a` bars, two blues close enough to look like a
+    mistake rather than a choice.
+
+    Taking the palette from the theme itself is what makes a document
+    look designed instead of assembled.
+    """
+    from app.engines.pdf_builder import THEMES
+
+    return THEMES.get(theme_name) or THEMES["Corporate Light"]
 
 
 def _get_style(theme_name: str) -> dict:
-    if theme_name == "Dark Tech":
-        return {
-            "figure.facecolor": "#07080f",
-            "axes.facecolor":   "#0e0f1a",
-            "axes.edgecolor":   "#1e2035",
-            "axes.labelcolor":  "#dde1f5",
-            "xtick.color":      "#636a8a",
-            "ytick.color":      "#636a8a",
-            "text.color":       "#dde1f5",
-            "grid.color":       "#1e2035",
-            "grid.alpha":       0.8,
-        }
-    else:
-        return {
-            "figure.facecolor": "#ffffff",
-            "axes.facecolor":   "#f8faff",
-            "axes.edgecolor":   "#d0d8f0",
-            "axes.labelcolor":  "#1e1e28",
-            "xtick.color":      "#646882",
-            "ytick.color":      "#646882",
-            "text.color":       "#1e1e28",
-            "grid.color":       "#e0e8f5",
-            "grid.alpha":       0.8,
-        }
+    t = _theme(theme_name)
+    return {
+        # The figure is drawn onto the page, so its background has to be
+        # the page's — otherwise every chart shows as a pale rectangle on
+        # a dark theme, or a grey one on white.
+        "figure.facecolor": t["page_bg"],
+        "axes.facecolor":   t["bg_card"],
+        "axes.edgecolor":   t["border"],
+        "axes.labelcolor":  t["text"],
+        "xtick.color":      t["text_muted"],
+        "ytick.color":      t["text_muted"],
+        "text.color":       t["text"],
+        "grid.color":       t["border"],
+        "grid.alpha":       0.8,
+    }
 
 
 def _get_colors(theme_name: str) -> list:
-    if theme_name == "Dark Tech":
-        return DARK_COLORS
-    elif theme_name == "Executive Green":
-        return GREEN_COLORS
-    return LIGHT_COLORS
+    """Series colours, led by the theme's own accent.
+
+    Ordered so a single-series chart — which is most of them — draws in
+    exactly the colour the headings and section rules use.
+    """
+    t = _theme(theme_name)
+    return [t["accent"], t["accent2"], t["info"], t["positive"],
+            t["warning"], t["negative"]]
 
 
 def _apply_style(ax, style: dict, axis: str = "both"):
