@@ -716,6 +716,115 @@ def _finance_benford(df, cols, stats, insights, findings, risks, opps) -> None:
         logger.warning("Benford analysis failed", exc_info=True)
 
 
+def _finance_margin_trend(df, cols, stats, insights, findings, risks, opps) -> None:
+    """Whether the margin is holding, not just what it is.
+
+    The engine reported the margin level and its volatility, and revenue
+    over time — but never margin *over time*. That is the one a finance
+    director asks second: a business can grow the top line while the
+    margin erodes underneath it, and every figure in the report stays
+    true while the trend that matters goes unmentioned.
+    """
+    rev_col, cost_col, period_col = cols["rev"], cols["cost"], cols["period"]
+    if not (rev_col and cost_col and period_col):
+        return
+    try:
+        work = df[[period_col, rev_col, cost_col]].dropna()
+        by_period = work.groupby(period_col)[[rev_col, cost_col]].sum()
+        by_period = by_period[by_period[rev_col] > 0]
+        if len(by_period) < 6:
+            return
+        margin = ((by_period[rev_col] - by_period[cost_col])
+                  / by_period[rev_col] * 100).sort_index()
+
+        window = max(len(margin) // 3, 1)
+        first = float(margin.iloc[:window].mean())
+        last = float(margin.iloc[-window:].mean())
+        change = last - first          # percentage points, not percent
+
+        # A margin quoted in points that moved by less than half a point
+        # is noise; calling that erosion sends someone looking for a
+        # cause that is not there.
+        if abs(change) < 0.5:
+            findings.append(
+                "Gross margin held at {:.1f}% across the {} periods "
+                "covered, moving less than half a point between the first "
+                "and last third.".format(float(margin.mean()), len(margin)))
+            return
+
+        direction = "eroded" if change < 0 else "improved"
+        findings.append(
+            "Gross margin {} {:.1f} points across the period, from {:.1f}% "
+            "in the first third to {:.1f}% in the last.".format(
+                direction, abs(change), first, last))
+
+        # Erosion while revenue grows is the specific case worth naming:
+        # both halves look healthy on their own.
+        rev_first = float(by_period[rev_col].iloc[:window].mean())
+        rev_last = float(by_period[rev_col].iloc[-window:].mean())
+        growing = rev_first > 0 and (rev_last - rev_first) / rev_first > 0.05
+        squeeze = (" Revenue grew {:.0f}% over the same window, so the "
+                   "business is trading more at a thinner margin — the top "
+                   "line alone would not show this.".format(
+                       (rev_last - rev_first) / rev_first * 100)
+                   if growing and change < 0 else "")
+
+        if change < 0:
+            # "Gross Margin Healthy: 33.7%" and "Gross Margin Down 8
+            # Points" side by side are both true and read as a
+            # contradiction. The level is the weaker claim once the
+            # direction is known, so it steps down to a finding and says
+            # what it is measured against.
+            for existing in list(insights):
+                if existing.title.startswith("Gross Margin Healthy"):
+                    insights.remove(existing)
+                    findings.append(
+                        "The margin level is comfortable at {:.1f}% overall, "
+                        "but that is an average across a period in which it "
+                        "was falling — the trend below is the more useful "
+                        "figure.".format(float(margin.mean())))
+            opps[:] = [o for o in opps
+                       if "margin of" not in o or "healthy" not in o.lower()]
+            severity = "critical" if abs(change) >= 3 else "warning"
+            insights.append(build_insight(
+                title="Gross Margin Down {:.1f} Points Across the Period"
+                      .format(abs(change)),
+                problem="Margin fell from {:.1f}% to {:.1f}% between the "
+                        "first and last third of the {} periods "
+                        "covered.".format(first, last, len(margin)),
+                cause="Margin moves on price, on input cost, or on mix. "
+                      "This data shows the result of the three together "
+                      "and cannot separate them.",
+                evidence="Measured per '{}' on '{}' against '{}'. Margin by "
+                         "period ranges {:.1f}% to {:.1f}%.{}".format(
+                             period_col, rev_col, cost_col,
+                             float(margin.min()), float(margin.max()), squeeze),
+                action="1. Split the change into price, cost and mix before "
+                       "acting — the remedy differs for each  "
+                       "2. Check whether it is broad or concentrated in one "
+                       "segment  3. Compare against the same periods last "
+                       "year, not against a sector range",
+                impact="Holding the opening margin across the closing "
+                       "period's revenue would be worth about {:,.0f}."
+                       .format(abs(change) / 100 * float(
+                           by_period[rev_col].iloc[-window:].sum())),
+                severity=severity, category="finance_margin",
+            ))
+            risks.append(
+                "Gross margin is {:.1f} points below where it started; at "
+                "the current revenue that is about {:,.0f} a period."
+                .format(abs(change),
+                        abs(change) / 100 * float(
+                            by_period[rev_col].iloc[-window:].mean())))
+        else:
+            opps.append(
+                "Gross margin improved {:.1f} points across the period — "
+                "worth establishing what changed before it reverses."
+                .format(change))
+    except Exception:
+        logger.warning("margin trend analysis failed", exc_info=True)
+
+
 def _insights_finance(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     """
     Finance domain orchestrator.
@@ -734,6 +843,7 @@ def _insights_finance(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                 "actions": actions, "insights": insights}
 
     _finance_margin_insights(df, cols, stats, insights, findings, risks, opps)
+    _finance_margin_trend(df, cols, stats, insights, findings, risks, opps)
     _finance_revenue_trend(df, cols, stats, insights, findings, risks, opps)
     _finance_budget_variance(df, cols, stats, insights, findings, risks, opps)
     _finance_cost_concentration(df, cols, stats, insights, findings, risks, opps)

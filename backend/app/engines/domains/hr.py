@@ -220,10 +220,84 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
 #  HR INSIGHTS
 # ══════════════════════════════════════════════════════════
 
+def _tenure_insights(df: pd.DataFrame, insights: List, findings: List,
+                     risks: List, opps: List) -> None:
+    """How long people have been here, and where the population sits.
+
+    The engine measured attrition, pay and engagement and never looked at
+    tenure as a distribution — only as a correlate. It is the shape an HR
+    director reads first: a workforce whose mass sits under two years is
+    a different organisation from one whose mass sits over eight, and the
+    attrition rate can be identical in both.
+    """
+    col = next((c for c in df.columns
+                if {"tenure", "service", "seniority"} & set(tokenise(c))
+                and pd.api.types.is_numeric_dtype(df[c])), None)
+    if col is None:
+        col = next((c for c in df.columns
+                    if {"years", "months"} & set(tokenise(c))
+                    and pd.api.types.is_numeric_dtype(df[c])), None)
+    if col is None:
+        return
+    try:
+        s = pd.to_numeric(df[col], errors="coerce").dropna()
+        s = s[s >= 0]
+        if len(s) < 30:
+            return
+        median = float(s.median())
+        # Months or years? A median of 40 is months; of 4, years.
+        unit = "months" if ("month" in str(col).lower() or median > 30) else "years"
+        under_2 = float((s < (24 if unit == "months" else 2)).mean() * 100)
+        over_5 = float((s > (60 if unit == "months" else 5)).mean() * 100)
+
+        findings.append(
+            "Median tenure is {:.1f} {}; {:.0f}% of the population is under "
+            "two years and {:.0f}% is over five.".format(
+                median, unit, under_2, over_5))
+
+        # A workforce concentrated at either end carries a different risk,
+        # and both are worth naming rather than only the young one.
+        if under_2 >= 50:
+            insights.append(build_insight(
+                title="{:.0f}% of the Workforce Is Under Two Years' Service"
+                      .format(under_2),
+                problem="Median tenure is {:.1f} {} and {:.0f}% of people "
+                        "have been here under two years.".format(
+                            median, unit, under_2),
+                cause="Either the organisation grew quickly or it is not "
+                      "retaining. The two look identical in a tenure "
+                      "distribution and are separated by joiner counts, "
+                      "which this data does not carry.",
+                evidence="n={:,} with a recorded tenure. Median {:.1f} {}, "
+                         "upper quartile {:.1f}, maximum {:.1f}.".format(
+                             len(s), median, unit, float(s.quantile(0.75)),
+                             float(s.max())),
+                action="1. Split this by joiner cohort — growth and churn "
+                       "produce the same shape and need opposite responses  "
+                       "2. Check whether the leavers come from the same "
+                       "band  3. Look at where institutional knowledge "
+                       "sits before assuming it is safe",
+                impact="A population this new carries more onboarding load "
+                       "and less institutional memory than the headcount "
+                       "alone suggests.",
+                severity="warning", category="workforce",
+            ))
+        elif over_5 >= 60:
+            risks.append(
+                "{:.0f}% of the workforce has over five {} service and only "
+                "{:.0f}% under two — a population that is not being "
+                "refreshed, and a succession exposure if the long-tenured "
+                "band retires together.".format(over_5, unit, under_2))
+    except Exception:
+        logger.warning("tenure analysis failed", exc_info=True)
+
+
 def _insights_hr(df: pd.DataFrame, stats: Dict,
                  corrs: List, attrition: Optional[AttritionAnalysis]) -> Dict:
     findings, risks, opps, actions = [], [], [], []
     insights = []
+
+    _tenure_insights(df, insights, findings, risks, opps)
 
     # FIX-050: 50+ HR column synonym patterns — handles any HR dataset structure
     def _hr_col(*keywords, cat_ok=False, max_unique=None):

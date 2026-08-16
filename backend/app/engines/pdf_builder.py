@@ -1298,6 +1298,128 @@ def _chart_page(story, s, T, img_bytes, title, narrative, num, CW):
         _narrative_box(story, s, T, narrative)
 
 
+def _dashboard_page(story, s, T, df, domain, CW, theme_name):
+    """The dashboard, on one page of the document.
+
+    A reader who has the PDF and not the app has no way to see the shape
+    of the data at a glance — they get the findings and then eight pages
+    of one chart each. This is the page a partner turns to first: the
+    same tiles the interactive dashboard chooses, for the same domain,
+    two to a row, each captioned with the question it answers.
+
+    Built from `dashboard_spec`, so the page and the screen cannot show
+    different views of the same file. Charts are rendered in the report's
+    own theme rather than the interface's, since this one is printed.
+    """
+    from app.engines import chart_exporter as ce
+    from app.engines.dashboard_spec import build_spec
+
+    try:
+        tiles = build_spec(df, domain, max_tiles=6)
+    except Exception:
+        logger.warning("dashboard page: spec failed", exc_info=True)
+        return
+    if not tiles:
+        return
+
+    rendered = []
+    for tile in tiles:
+        try:
+            if tile.type == "comparison" and tile.x and tile.y and tile.y2:
+                png = ce.make_comparison_chart(df, tile.x, tile.y, tile.y2,
+                                               tile.title, theme_name)
+            elif tile.type == "line" and tile.x and tile.y:
+                png = ce.make_line_chart(df, tile.x, tile.y, tile.title,
+                                         theme_name)
+            elif tile.type == "bar" and tile.x and tile.y:
+                png = ce.make_bar_chart(df, tile.x, tile.y, tile.title,
+                                        theme_name)
+            elif tile.type == "pie" and tile.x and tile.y:
+                png = ce.make_pie_chart(df, tile.x, tile.y, tile.title,
+                                        theme_name)
+            elif tile.type == "histogram" and tile.x:
+                png = ce.make_histogram(df, tile.x, tile.title, theme_name)
+            else:
+                continue
+            if png:
+                rendered.append((tile, png))
+        except Exception:
+            # One tile that will not render is not a reason to drop the
+            # page; the rest still show the shape of the data.
+            logger.debug("dashboard page: tile %s failed", tile.title,
+                         exc_info=True)
+
+    if not rendered:
+        return
+
+    _sec(story, s, T, "Dashboard",
+         "The views this data supports, at a glance. Each is captioned "
+         "with the question it answers.")
+
+    cap = ParagraphStyle("dashcap", fontName="Helvetica", fontSize=7,
+                         textColor=_c(T["text_muted"]), leading=9,
+                         alignment=TA_CENTER)
+    ttl = ParagraphStyle("dashttl", fontName="Helvetica-Bold", fontSize=8,
+                         textColor=_c(T["text"]), leading=10,
+                         alignment=TA_CENTER)
+
+    half = (CW - 4 * mm) / 2
+    row: list = []
+    for tile, png in rendered:
+        # Height from the image's own aspect, not a fixed 0.5. Forcing
+        # every tile to 2:1 stretched the pie into an ellipse, which
+        # misreads every angle on it — the one chart type where the
+        # geometry *is* the data.
+        width = half - 3 * mm
+        height = width * 0.5
+        try:
+            from PIL import Image as _PILImage
+
+            with _PILImage.open(io.BytesIO(png)) as probe:
+                w0, h0 = probe.size
+            if w0:
+                height = min(width * (h0 / w0), 58 * mm)
+        except Exception:
+            logger.debug("could not read tile aspect", exc_info=True)
+        cell = [Paragraph(tile.title, ttl),
+                Image(io.BytesIO(png), width=width, height=height),
+                Paragraph(tile.question, cap)]
+        row.append(cell)
+        if len(row) == 2:
+            _dash_row(story, T, row, half)
+            row = []
+    if row:
+        _dash_row(story, T, row, half)
+
+
+def _dash_row(story, T, cells, half):
+    """Two tiles side by side, each boxed like a dashboard card."""
+    wrapped = []
+    for cell in cells:
+        inner = Table([[c] for c in cell], colWidths=[half - 3 * mm])
+        inner.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), _c(T["bg_card"])),
+            ("BOX",           (0, 0), (-1, -1), 0.5, _c(T["border"])),
+            ("TOPPADDING",    (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        wrapped.append(inner)
+    while len(wrapped) < 2:
+        wrapped.append("")
+    outer = Table([wrapped], colWidths=[half, half])
+    outer.setStyle(TableStyle([
+        ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("TOPPADDING",   (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3 * mm),
+    ]))
+    story.append(KeepTogether(outer))
+
+
 # ══════════════════════════════════════════════════════════
 #  RECOMMENDATIONS
 # ══════════════════════════════════════════════════════════
@@ -1669,6 +1791,10 @@ def build_pdf(
     if bi_report:
         _bi_section(story, s, T, bi_report, CW)
         story.append(CondPageBreak(110 * mm))
+
+    story.append(PageBreak())
+    _dashboard_page(story, s, T, df, domain, CW, theme_name)
+    story.append(PageBreak())
 
     for i, (title, img_bytes, narrative) in enumerate(chart_data, 1):
         _chart_page(story, s, T, img_bytes, title, narrative, i, CW)

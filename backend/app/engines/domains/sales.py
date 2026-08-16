@@ -9,6 +9,7 @@ from typing import Dict, List
 import pandas as pd
 
 from app.engines.column_roles import resolve
+from app.engines.domain_detect import tokenise
 from app.engines.domains.base import build_insight
 from app.engines.domains.sales_performance import (
     find_outcome_col,
@@ -213,6 +214,100 @@ def _win_rate_insights(df: pd.DataFrame, rev_col, rep_col, insights: List,
             "before any target is credible.".format(rate, 100 / rate))
 
 
+def _funnel_insights(df: pd.DataFrame, rev_col, insights: List,
+                     findings: List, risks: List, opps: List) -> None:
+    """Where the pipeline stands, and where deals stop.
+
+    The engine reported the win rate — one number for the whole funnel —
+    and never looked at the stage column that produced it. "Win rate is
+    60%" does not say whether deals die at qualification or at
+    procurement, and those are different problems with different
+    remedies. This counts the open pipeline by stage and names the stage
+    that lost deals reached.
+    """
+    stage_col = next(
+        (c for c in df.select_dtypes(include=["object", "string"]).columns
+         if {"stage", "status", "phase"} & set(tokenise(c))), None)
+    if not stage_col or not 2 <= df[stage_col].nunique(dropna=True) <= 15:
+        return
+
+    found = _outcome_column(df)
+    try:
+        counts = df[stage_col].value_counts()
+        if found:
+            _col, won, lost = found
+            decided = (won | lost).reindex(df.index, fill_value=False)
+            open_stages = df.loc[~decided, stage_col].value_counts()
+        else:
+            open_stages = counts
+
+        if open_stages.empty:
+            return
+
+        total_open = int(open_stages.sum())
+        biggest = open_stages.index[0]
+        biggest_n = int(open_stages.iloc[0])
+
+        value_note = ""
+        if rev_col and rev_col in df.columns and found:
+            _col, won, lost = found
+            decided = (won | lost).reindex(df.index, fill_value=False)
+            open_value = float(pd.to_numeric(
+                df.loc[~decided, rev_col], errors="coerce").sum())
+            if open_value > 0:
+                from app.services.numfmt import human_number
+                value_note = (" The open pipeline carries {} of recorded "
+                              "value.".format(human_number(open_value)))
+
+        findings.append(
+            "{:,} opportunities are still open across {} stages, the "
+            "largest group being '{}' with {:,} ({:.0f}%).{}".format(
+                total_open, len(open_stages), str(biggest)[:24], biggest_n,
+                biggest_n / total_open * 100, value_note))
+
+        lost_note = ""
+        if found:
+            _col, won, lost = found
+            if lost.any():
+                lost_stage = df.loc[lost, stage_col].value_counts()
+                if len(lost_stage):
+                    lost_note = (" Lost deals are recorded at '{}' most "
+                                 "often ({:,} of {:,}).".format(
+                                     str(lost_stage.index[0])[:24],
+                                     int(lost_stage.iloc[0]),
+                                     int(lost.sum())))
+
+        insights.append(build_insight(
+            title="Pipeline: {:,} Open Across {} Stages".format(
+                total_open, len(open_stages)),
+            problem="{:,} of {:,} opportunities are undecided, "
+                    "concentrated in '{}' ({:.0f}%).".format(
+                        total_open, len(df), str(biggest)[:24],
+                        biggest_n / total_open * 100),
+            cause="A stage holding a large share is either the stage deals "
+                  "genuinely take longest in, or the one they stall at. "
+                  "The distinction needs stage entry dates, which this "
+                  "data does not carry.",
+            evidence="Read from '{}'. Open by stage: {}.{}{}".format(
+                stage_col,
+                ", ".join("{} {:,}".format(str(k)[:18], int(v))
+                          for k, v in open_stages.head(6).items()),
+                value_note, lost_note),
+            action="1. Compare the age of deals in '{}' against the rest — "
+                   "a fat stage and a slow stage need different fixes  "
+                   "2. Check the conversion rate out of each stage, not "
+                   "just the rate end to end  "
+                   "3. Record stage entry dates so this can be measured "
+                   "rather than inferred".format(str(biggest)[:24]),
+            impact="Pipeline coverage rests on this distribution: a stage "
+                   "that does not convert inflates the forecast without "
+                   "adding a single closed deal.",
+            severity="info", category="sales_cycle",
+        ))
+    except Exception:
+        logger.warning("funnel analysis failed", exc_info=True)
+
+
 def _quota_attainment_insights(df: pd.DataFrame, rev_col, target_col, rep_col,
                                insights: List, findings: List, risks: List,
                                opps: List) -> None:
@@ -412,6 +507,10 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                 "few large deals driving disproportionate revenue".format(med, mean))
 
     # ── Win rate and quota attainment ───────────────────────
+    try:
+        _funnel_insights(df, rev_col, insights, findings, risks, opps)
+    except Exception:
+        logger.warning("funnel analysis failed", exc_info=True)
     try:
         _win_rate_insights(df, rev_col, rep_col, insights, findings, risks, opps)
     except Exception:

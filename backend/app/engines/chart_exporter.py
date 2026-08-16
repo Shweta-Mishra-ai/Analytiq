@@ -333,6 +333,10 @@ def make_pie_chart(
 
     fig, ax = plt.subplots(figsize=(9, 6))
     fig.patch.set_facecolor(style["figure.facecolor"])
+    # Without this the wedges stretch to the axes box, and a pie scaled
+    # into a wide cell prints as an ellipse — which misreads every angle
+    # on it.
+    ax.set_aspect("equal")
 
     wedges, texts, autotexts = ax.pie(
         agg[values_col],
@@ -632,3 +636,65 @@ def generate_all_charts(
                 logger.debug("generate_all_charts: suppressed exception", exc_info=True)
 
     return charts[:max_charts]
+
+
+def make_comparison_chart(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    y2_col: str,
+    title: str = "",
+    theme_name: str = "Corporate Light",
+    top_n: int = 12,
+) -> bytes:
+    """Two measures side by side — actual against plan.
+
+    The interactive dashboard got this; the PDF path mapped a comparison
+    tile onto the single-series bar builder, so the printed page carried
+    a tile titled "revenue against budget" showing revenue alone. A chart
+    whose title names two things and plots one is worse than no chart:
+    the reader takes the bars as the answer to the question in the title.
+    """
+    style  = _get_style(theme_name)
+    colors = _get_colors(theme_name)
+
+    agg = (df.groupby(x_col)[[y_col, y2_col]].sum()
+             .reset_index()
+             .sort_values(y_col, ascending=False)
+             .head(top_n))
+    if pd.api.types.is_datetime64_any_dtype(agg[x_col]):
+        agg = agg.sort_values(x_col)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    fig.patch.set_facecolor(style["figure.facecolor"])
+    _apply_style(ax, style, axis="y")
+
+    idx = np.arange(len(agg))
+    width = 0.38
+    ax.bar(idx - width / 2, agg[y_col], width, label=str(y_col),
+           color=colors[0], edgecolor="none")
+    ax.bar(idx + width / 2, agg[y2_col], width, label=str(y2_col),
+           color=colors[1], edgecolor="none")
+
+    ax.set_xticks(idx)
+    ax.set_xticklabels([str(v)[:12] for v in agg[x_col]],
+                       rotation=35, ha="right", fontsize=8)
+    ax.legend(fontsize=8, frameon=False, ncol=2,
+              labelcolor=style["text.color"])
+    _human_axis(ax)
+
+    total_a = float(agg[y_col].sum())
+    total_b = float(agg[y2_col].sum())
+    message = ""
+    if total_b:
+        variance = (total_a - total_b) / abs(total_b) * 100
+        message = "{} came in {:+.0f}% against {} — {} versus {}".format(
+            y_col, variance, y2_col, _human_num(total_a), _human_num(total_b))
+        gaps = agg[y_col] - agg[y2_col]
+        if len(gaps) > 1 and gaps.min() < 0:
+            message += ", {} furthest behind".format(
+                str(agg.loc[gaps.idxmin(), x_col])[:20])
+    _headline(ax, style, message,
+              title or "{} against {}".format(y_col, y2_col))
+    fig.tight_layout()
+    return fig_to_bytes(fig)
