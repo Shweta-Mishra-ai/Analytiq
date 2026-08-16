@@ -127,12 +127,38 @@ def _groq_generate(system: str, user: str, max_tokens: int = 2048) -> Optional[s
         return None
 
 
+def _local_generate(system: str, user: str, max_tokens: int = 2048) -> Optional[str]:
+    from app.ai import local_llm
+    return local_llm.generate(system, user, max_tokens=max_tokens)
+
+
 def _generate(system: str, user: str, max_tokens: int = 2048) -> str:
-    text = (_gemini_generate(system, user, max_tokens)
+    """Answer with a local model where one is available or required.
+
+    A knowledge base is the most sensitive thing in this app — it holds
+    the client's own contracts, policies and reports — so privacy mode
+    routes it to a model on their hardware and never falls back to a
+    cloud provider.
+    """
+    from app.ai import local_llm
+
+    if local_llm.privacy_mode():
+        text = _local_generate(system, user, max_tokens)
+        if not text:
+            raise RuntimeError(
+                "LLM_PRIVACY_MODE is on and no local model answered. Set "
+                "LOCAL_LLM_URL and LOCAL_LLM_MODEL (any OpenAI-compatible "
+                "server: Ollama, llama.cpp, vLLM, LM Studio). No data was "
+                "sent anywhere.")
+        return text
+
+    text = (_local_generate(system, user, max_tokens)
+            or _gemini_generate(system, user, max_tokens)
             or _groq_generate(system, user, max_tokens))
     if not text:
         raise RuntimeError(
-            "No LLM available — set GEMINI_API_KEY or GROQ_API_KEY")
+            "No LLM available — set LOCAL_LLM_URL, GEMINI_API_KEY or "
+            "GROQ_API_KEY")
     return text
 
 
