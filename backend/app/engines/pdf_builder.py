@@ -35,7 +35,7 @@ from reportlab.lib.colors import HexColor, white, black
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import (
-    BaseDocTemplate, Frame, PageTemplate,
+    BaseDocTemplate, CondPageBreak, Frame, PageTemplate,
     Paragraph, Spacer, Table, TableStyle,
     Image, HRFlowable, PageBreak, KeepTogether,
 )
@@ -65,6 +65,7 @@ THEMES = {
         "warning":     "#F59E0B", "info":         "#3B82F6",
         "critical_bg": "#FEE2E2", "warning_bg":   "#FEF3C7",
         "positive_bg": "#D1FAE5", "info_bg":      "#DBEAFE",
+        "page_bg":     "#FFFFFF", "row_bg":       "#FFFFFF",
         "domain_label":"BUSINESS ANALYTICS",
         "domain_badge":"#1B4FD8",
     },
@@ -79,6 +80,7 @@ THEMES = {
         "warning":     "#E65100", "info":         "#1565C0",
         "critical_bg": "#FFEBEE", "warning_bg":   "#FFF3E0",
         "positive_bg": "#E8F5E9", "info_bg":      "#E3F2FD",
+        "page_bg":     "#FFFFFF", "row_bg":       "#FFFFFF",
         "domain_label":"HR & PEOPLE ANALYTICS",
         "domain_badge":"#1976D2",
     },
@@ -93,6 +95,7 @@ THEMES = {
         "warning":     "#E65100", "info":         "#1565C0",
         "critical_bg": "#FFEBEE", "warning_bg":   "#FFF3E0",
         "positive_bg": "#E8F5E9", "info_bg":      "#E8F0FE",
+        "page_bg":     "#FFFFFF", "row_bg":       "#FFFFFF",
         "domain_label":"E-COMMERCE ANALYTICS",
         "domain_badge":"#F4511E",
     },
@@ -107,14 +110,24 @@ THEMES = {
         "warning":     "#E65100", "info":         "#1565C0",
         "critical_bg": "#FFEBEE", "warning_bg":   "#FFF3E0",
         "positive_bg": "#E8F5E9", "info_bg":      "#E8F0FE",
+        "page_bg":     "#FFFFFF", "row_bg":       "#FFFFFF",
         "domain_label":"SALES PERFORMANCE ANALYTICS",
         "domain_badge":"#2E7D32",
     },
     "Dark Tech": {
+        # The paper itself is dark. Without page_bg the body text
+        # (#E6EDF3) was drawn on a white page and was effectively
+        # invisible — only the elements carrying their own fill, the
+        # header strip and the KPI band, were readable at all.
+        "page_bg":     "#0D1117", "row_bg":       "#161B22",
         "cover_bg":    "#0D1117", "cover_accent": "#58A6FF",
-        "header_bg":   "#0D1117", "header_text":  "#E6EDF3",
-        "accent":      "#58A6FF", "accent2":      "#3FB950",
-        "text":        "#E6EDF3", "text_muted":   "#8B949E",
+        "header_bg":   "#010409", "header_text":  "#E6EDF3",
+        # accent2 was green while accent was blue, which is what made the
+        # palette read as uncoordinated. Green is now reserved for
+        # "positive" alone, and the secondary is a lighter tint of the
+        # primary.
+        "accent":      "#58A6FF", "accent2":      "#A5D6FF",
+        "text":        "#E6EDF3", "text_muted":   "#9BA7B4",
         "bg_light":    "#161B22", "bg_card":      "#1C2128",
         "border":      "#30363D",
         "positive":    "#3FB950", "negative":     "#F85149",
@@ -135,14 +148,6 @@ DOMAIN_THEMES = {
     "general":   "Corporate Light",
 }
 
-# SHRM/Gallup/Mercer benchmarks for HR domain
-HR_BENCHMARKS = [
-    ["Attrition Rate",         "—",    "10–15%",      "<10%",          "SHRM 2024"],
-    ["Employee Satisfaction",  "—",    "0.70 (70%+)", "0.80+",         "Gallup/Mercer"],
-    ["Replacement Cost/EE",    "—",    "50–200% sal", "6–9 mo salary", "SHRM/Gallup"],
-    ["Mgr-Driven Satisfaction","—",    "70%",         "Manager train", "Gallup 2024"],
-    ["Preventable Exits",      "—",    "52%",         "Proactive 1:1", "Gallup 2024"],
-]
 
 
 # ══════════════════════════════════════════════════════════
@@ -473,7 +478,7 @@ def _gtable(story: list, T: dict, headers: list,
     tbl = Table([hrow] + body, colWidths=col_widths)
     sty = [
         ("BACKGROUND",    (0,0), (-1,0),  _c(T["header_bg"])),
-        ("ROWBACKGROUNDS",(0,1), (-1,-1), [HexColor("#FFFFFF"), _c(T["bg_light"])]),
+        ("ROWBACKGROUNDS",(0,1), (-1,-1), [_c(T["row_bg"]), _c(T["bg_light"])]),
         ("ALIGN",         (0,0), (-1,-1), "CENTER"),
         ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
         ("TOPPADDING",    (0,0), (-1,-1), 5),
@@ -565,8 +570,8 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
     body.setStyle(TableStyle([
         ("BACKGROUND",  (0,0), (0,-1), _c(T["header_bg"])),
         ("ROWBACKGROUNDS",(1,0),(1,-1),
-         [HexColor("#FFFFFF"), _c(T["bg_light"]),
-          HexColor("#FFFFFF"), _c(T["bg_light"]), HexColor("#FFFFFF")]),
+         [_c(T["row_bg"]), _c(T["bg_light"]),
+          _c(T["row_bg"]), _c(T["bg_light"]), _c(T["row_bg"])]),
         ("VALIGN",  (0,0), (-1,-1), "TOP"),
         ("ALIGN",   (0,0), (0,-1),  "CENTER"),
         ("TOPPADDING",    (0,0), (-1,-1), 6),
@@ -1145,7 +1150,7 @@ def _dataset_overview(story, s, T, df, profile, CW):
             ("FONTSIZE",     (0,0), (-1,-1), 8),
             ("TEXTCOLOR",    (0,0), (-1,0),  HexColor("#FFFFFF")),
             ("BACKGROUND",   (0,0), (-1,0),  _c(T["header_bg"])),
-            ("ROWBACKGROUNDS",(0,1),(-1,-1), [HexColor("#FFFFFF"), _c(T["bg_light"])]),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1), [_c(T["row_bg"]), _c(T["bg_light"])]),
             ("GRID",         (0,0), (-1,-1), 0.3, _c(T["border"])),
             ("ALIGN",        (0,0), (-1,-1), "CENTER"),
             ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
@@ -1568,7 +1573,23 @@ def build_pdf(
     frame = Frame(M, 17*mm, CW, H - 47*mm,
                   leftPadding=0, rightPadding=0,
                   topPadding=0,  bottomPadding=0)
-    tpl   = PageTemplate(id="main", frames=[frame], onPage=lambda c,d: None)
+    def _paint_page(canvas_obj, _doc):
+        """Fill the page with the theme's paper colour.
+
+        Only does anything for a dark theme. Without it the dark theme
+        drew near-white body text (#E6EDF3) onto a white page — legible
+        only where an element carried its own fill, which is why it
+        looked broken rather than dark.
+        """
+        paper = T.get("page_bg", "#FFFFFF")
+        if str(paper).upper() in ("#FFFFFF", "#FFF", "WHITE"):
+            return
+        canvas_obj.saveState()
+        canvas_obj.setFillColor(_c(paper))
+        canvas_obj.rect(0, 0, A4[0], A4[1], fill=1, stroke=0)
+        canvas_obj.restoreState()
+
+    tpl   = PageTemplate(id="main", frames=[frame], onPage=_paint_page)
     doc.addPageTemplates([tpl])
 
     s     = _styles(T)
@@ -1610,17 +1631,22 @@ def build_pdf(
                   findings, risks, opportunities, CW)
     story.append(PageBreak())
 
+    # The data sections are short and closely related, so they flow and
+    # break only when there is not enough room left for a useful amount of
+    # the next one. Forcing a page after each left the Data Quality note
+    # alone on an otherwise blank page — a fifth of the document was
+    # whitespace, which reads as padding.
     _dq_note(story, s, T, df, profile, CW)
-    story.append(PageBreak())
+    story.append(CondPageBreak(110 * mm))
 
     if cleaning_summary:
         _data_prep_section(story, s, T, cleaning_summary, CW,
                            table=config.get("source_table") or "source_table")
-        story.append(PageBreak())
+        story.append(CondPageBreak(110 * mm))
 
     if _has_reference_ranges(domain, df):
         _benchmark_section(story, s, T, domain, CW, df=df)
-        story.append(PageBreak())
+        story.append(CondPageBreak(110 * mm))
 
     _top_insights(story, s, T, top_insights, CW, domain=domain)
     story.append(PageBreak())
@@ -1630,15 +1656,15 @@ def build_pdf(
         story.append(PageBreak())
 
     _dataset_overview(story, s, T, df, profile, CW)
-    story.append(PageBreak())
+    story.append(CondPageBreak(110 * mm))
 
     if stats_report:
         _stats_section(story, s, T, stats_report, CW)
-        story.append(PageBreak())
+        story.append(CondPageBreak(110 * mm))
 
     if bi_report:
         _bi_section(story, s, T, bi_report, CW)
-        story.append(PageBreak())
+        story.append(CondPageBreak(110 * mm))
 
     for i, (title, img_bytes, narrative) in enumerate(chart_data, 1):
         _chart_page(story, s, T, img_bytes, title, narrative, i, CW)
