@@ -35,6 +35,7 @@ import plotly.graph_objects as go
 
 from app.engines.chart_message import (
     bar_message,
+    comparison_message,
     heatmap_message,
     histogram_message,
     human_number,
@@ -139,6 +140,82 @@ DIVERGING = PALETTES["dark"]["diverging"]
 TEMPLATE = "plotly_dark"
 
 
+# ══════════════════════════════════════════════════════════
+#  IBCS semantic notation
+# ══════════════════════════════════════════════════════════
+# The International Business Communication Standards give each kind of
+# series a fixed appearance, so a reader who knows the notation can read
+# any chart in the pack without consulting a legend:
+#
+#   actual        solid fill
+#   plan/budget   outline only, no fill
+#   forecast      hatched
+#   prior period  light grey solid
+#
+# The point is not decoration. On a chart of revenue against budget the
+# two bars were the accent and the second series colour, which says
+# "two categories" — the reader has to look at the legend to learn which
+# is the commitment and which is what happened. Notation says it without
+# a legend, and says it the same way on every chart.
+SERIES_KINDS = ("actual", "plan", "forecast", "previous")
+
+# Whole words, for the same reason the rest of the codebase uses them:
+# "ly" as a substring matches `monthly`, and "py" matches `supply`, so a
+# monthly revenue column would have been drawn in prior-period grey.
+_PLAN_WORDS = frozenset({"budget", "plan", "planned", "target", "quota",
+                         "goal", "committed"})
+_FORECAST_WORDS = frozenset({"forecast", "forecasted", "projected",
+                             "projection", "expected", "estimate",
+                             "estimated"})
+_PREVIOUS_WORDS = frozenset({"prior", "previous", "prev", "ly", "py",
+                             "lastyear", "yoy"})
+
+
+def series_kind(name: str) -> str:
+    """What a series is, from its column name.
+
+    `revenue` is an actual, `budget` is a plan, `forecast_revenue` is a
+    projection, `revenue_last_year` is a prior period. Anything
+    unrecognised is treated as an actual — drawing an unknown series as
+    a hollow "plan" bar would assert something about it that the column
+    name does not support.
+    """
+    from app.engines.domain_detect import tokenise
+
+    tokens = set(tokenise(name))
+    # "last year" arrives as two tokens; join adjacent pairs so the
+    # phrase is matched as well as the single words.
+    words = list(tokens)
+    if "last" in tokens and "year" in tokens:
+        words.append("lastyear")
+    tokens = set(words)
+
+    if tokens & _FORECAST_WORDS:
+        return "forecast"
+    if tokens & _PLAN_WORDS:
+        return "plan"
+    if tokens & _PREVIOUS_WORDS:
+        return "previous"
+    return "actual"
+
+
+def notation(kind: str, colour: str) -> dict:
+    """Plotly marker settings for one IBCS series kind."""
+    if kind == "plan":
+        # Outline only: a commitment is not an outcome, and a hollow bar
+        # reads as "the shape we said" against the solid one that
+        # happened.
+        return {"color": "rgba(0,0,0,0)",
+                "line": {"color": colour, "width": 2}}
+    if kind == "forecast":
+        return {"color": colour, "opacity": 0.45,
+                "pattern": {"shape": "/", "size": 6, "solidity": 0.35},
+                "line": {"width": 0}}
+    if kind == "previous":
+        return {"color": "#b6bcc6", "line": {"width": 0}}
+    return {"color": colour, "line": {"width": 0}}
+
+
 def palette(theme: str = None) -> dict:
     return PALETTES.get(theme or _ACTIVE, PALETTES["dark"])
 
@@ -212,6 +289,79 @@ def _style(fig: go.Figure, message: str = "", subtitle: str = "") -> go.Figure:
                      tickfont=dict(family=MONO, size=10, color=p["mute"]),
                      title=dict(font=dict(size=10, color=p["mute"])))
     return fig
+
+
+def _zero_baseline(fig: go.Figure, values) -> None:
+    """A bar chart is read by comparing lengths, so it starts at zero.
+
+    Four bars between 980 and 1,020 on an axis that starts at 975: the
+    shortest looks a fifth of the tallest and the difference is 4%. The
+    axis labels that would correct it are the part nobody checks.
+
+    Both plotting libraries happen to zero-base bars today — matplotlib
+    because a bar patch extends to zero and enters the data limits that
+    way, plotly.js because bar traces put their base into the axis
+    extremes. Neither is a promise, and the headroom this function also
+    sets is an explicit range, which is exactly the kind of change that
+    silently takes the default away. The rule is stated here, and
+    `test_chart_standards.py` measures the drawn bars in pixels rather
+    than trusting either.
+
+    Bars that go negative keep an autoscaled floor — clamping those to
+    zero would hide them.
+    """
+    try:
+        low = float(min(values))
+        high = float(max(values))
+    except (TypeError, ValueError):
+        return
+    if low < 0:
+        return
+    fig.update_yaxes(range=[0, high * 1.12 if high > 0 else 1],
+                     rangemode="tozero")
+
+
+def truncated_scale(values) -> Optional[float]:
+    """The floor a line chart will be drawn from, when it is not zero.
+
+    A line is read by its slope, and a slope is only meaningful against
+    the scale it is drawn on. Revenue moving from 980 to 1,020 on an
+    axis that starts at 975 climbs most of the height of the tile; the
+    same series against zero is a flat line. Both are honest pictures of
+    a 4% rise and a reader takes opposite conclusions from them.
+
+    Bars must start at zero. A trend line may be truncated — sometimes
+    it has to be, or a real movement disappears into the thickness of
+    the line — but then the truncation is disclosed, which is what IBCS
+    calls a scaling indicator. Returns the floor to disclose, or None
+    when the axis will reach zero on its own and there is nothing to
+    say.
+    """
+    try:
+        low = float(min(values))
+        high = float(max(values))
+    except (TypeError, ValueError):
+        return None
+    if low <= 0 or high <= 0:
+        return None
+    # Plotly pads a line axis by a fraction of the data range, so the
+    # axis reaches zero by itself once the movement is large relative to
+    # the level. Below that it does not, and the slope is magnified.
+    if (high - low) >= low:
+        return None
+    return low
+
+
+def _scale_note(fig: go.Figure, values) -> None:
+    floor = truncated_scale(values)
+    if floor is None:
+        return
+    fig.add_annotation(
+        text="scale starts at {}, not zero".format(human_number(floor)),
+        xref="paper", yref="paper", x=0, y=-0.19, showarrow=False,
+        font=dict(size=9, color=palette()["mute"], family=MONO),
+        align="left", xanchor="left",
+    )
 
 
 def _human_ticks(fig: go.Figure, axis: str = "y") -> None:
@@ -318,6 +468,7 @@ def make_bar(df, x, y, title="", top_n: int = 25):
     )
     _style(fig, bar_message(df, x, y), title or "{} by {}".format(y, x))
     _human_ticks(fig)
+    _zero_baseline(fig, agg[y])
     return fig
 
 
@@ -348,6 +499,7 @@ def make_line(df, x, y, title="", max_points: int = 120):
     )
     _style(fig, line_message(df, x, y), title or "{} over {}".format(y, x))
     _human_ticks(fig)
+    _scale_note(fig, work[y])
     return fig
 
 
@@ -449,29 +601,31 @@ def make_comparison(df, x, y, y2, title="", top_n: int = 25):
         agg = agg.sort_values(x)
 
     fig = go.Figure()
-    for name, colour in ((y, p["series"][0]), (y2, p["series"][1])):
-        fig.add_bar(x=agg[x], y=agg[name], name=str(name),
-                    marker_color=colour, marker_line_width=0,
+    # IBCS notation: the actual is solid, the plan is an outline, a
+    # forecast is hatched. Two solid bars in different colours say "two
+    # categories" and send the reader to the legend to find out which is
+    # the commitment.
+    for name in (y, y2):
+        kind = series_kind(name)
+        fig.add_bar(x=agg[x], y=agg[name],
+                    name="{} ({})".format(name, kind) if kind != "actual"
+                         else str(name),
+                    marker=notation(kind, p["series"][0]),
                     hovertemplate="<b>%{x}</b><br>" + str(name)
                                   + ": %{y:,.0f}<extra></extra>")
     fig.update_layout(barmode="group", bargap=0.25, bargroupgap=0.05)
 
-    total_a = float(agg[y].sum())
-    total_b = float(agg[y2].sum())
-    message = ""
-    if total_b:
-        variance = (total_a - total_b) / abs(total_b) * 100
-        message = ("{} came in {:+.0f}% against {} — {} versus {}".format(
-            y, variance, y2, human_number(total_a), human_number(total_b)))
-        # Where it landed matters less than where it did not: naming the
-        # worst group is the part a reader can act on.
-        gaps = agg[y] - agg[y2]
-        if len(gaps) > 1 and gaps.min() < 0:
-            worst = agg.loc[gaps.idxmin()]
-            message += ", with {} the furthest behind".format(
-                str(worst[x])[:24])
+    # Where it landed matters less than where it did not: naming the
+    # worst group is the part a reader can act on.
+    gaps = agg[y] - agg[y2]
+    worst = ""
+    if len(gaps) > 1 and gaps.min() < 0:
+        worst = str(agg.loc[gaps.idxmin(), x])
+    message = comparison_message(str(y), str(y2), float(agg[y].sum()),
+                                 float(agg[y2].sum()), worst)
     _style(fig, message, title or "{} against {}".format(y, y2))
     _human_ticks(fig)
+    _zero_baseline(fig, list(agg[y]) + list(agg[y2]))
     # Two series need a legend; the shared style hides it below the plot.
     fig.update_layout(showlegend=True)
     return fig

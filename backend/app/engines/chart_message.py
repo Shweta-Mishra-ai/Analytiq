@@ -65,6 +65,31 @@ def bar_message(df: pd.DataFrame, x_col: str, y_col: str) -> Optional[str]:
         return None
 
 
+def comparison_message(actual_col: str, plan_col: str, actual_total: float,
+                       plan_total: float, worst_group: str = "") -> str:
+    """An actual against its plan, written the way it is spoken.
+
+    "revenue came in -7% against budget" makes the reader decode a sign
+    before they can read the sentence, and the sign is the whole point.
+    "7% below budget" is the same figure in the words a finance reader
+    would use out loud.
+    """
+    if not plan_total:
+        return ""
+    variance = (actual_total - plan_total) / abs(plan_total) * 100
+    if abs(variance) < 0.5:
+        head = "{} landed on {} — {} against {}".format(
+            actual_col, plan_col, _fmt(actual_total), _fmt(plan_total))
+    else:
+        head = "{} came in {:.0f}% {} {} — {} against {}".format(
+            actual_col, abs(variance),
+            "above" if variance > 0 else "below", plan_col,
+            _fmt(actual_total), _fmt(plan_total))
+    if worst_group:
+        head += ", {} furthest behind".format(str(worst_group)[:24])
+    return head
+
+
 def line_message(df: pd.DataFrame, x_col: str, y_col: str) -> Optional[str]:
     """Where the series ended relative to where it started."""
     try:

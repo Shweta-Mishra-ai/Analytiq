@@ -172,8 +172,12 @@ def make_bar_chart(
             fontsize=7.5, color=style["text.color"]
         )
     if tallest > 0:
-        # Otherwise the label on the tallest bar is clipped by the frame.
-        ax.set_ylim(top=tallest * 1.12)
+        # Zero baseline, and headroom for the label on the tallest bar.
+        # Autoscaling four bars between 980 and 1,020 makes the shortest
+        # look a third of the tallest when the difference is 4% — the one
+        # chart-integrity rule that changes what a reader concludes.
+        shortest = min((b.get_height() for b in bars), default=0.0)
+        ax.set_ylim(bottom=0 if shortest >= 0 else None, top=tallest * 1.12)
 
     ax.set_xticks(range(len(agg)))
     ax.set_xticklabels(
@@ -669,12 +673,31 @@ def make_comparison_chart(
     fig.patch.set_facecolor(style["figure.facecolor"])
     _apply_style(ax, style, axis="y")
 
+    from app.engines.chart_engine import series_kind
+
     idx = np.arange(len(agg))
     width = 0.38
-    ax.bar(idx - width / 2, agg[y_col], width, label=str(y_col),
-           color=colors[0], edgecolor="none")
-    ax.bar(idx + width / 2, agg[y2_col], width, label=str(y2_col),
-           color=colors[1], edgecolor="none")
+    # IBCS notation, matching the interactive charts: solid for what
+    # happened, outline for what was committed, hatch for a projection.
+    for offset, col in ((-width / 2, y_col), (width / 2, y2_col)):
+        kind = series_kind(col)
+        if kind == "plan":
+            ax.bar(idx + offset, agg[col], width, label="{} (plan)".format(col),
+                   facecolor="none", edgecolor=colors[0], linewidth=1.6)
+        elif kind == "forecast":
+            ax.bar(idx + offset, agg[col], width,
+                   label="{} (forecast)".format(col), color=colors[0],
+                   alpha=0.45, hatch="//", edgecolor=colors[0])
+        elif kind == "previous":
+            ax.bar(idx + offset, agg[col], width,
+                   label="{} (prior)".format(col), color="#b6bcc6",
+                   edgecolor="none")
+        else:
+            ax.bar(idx + offset, agg[col], width, label=str(col),
+                   color=colors[0], edgecolor="none")
+    # A grouped bar is read by comparing lengths, so it starts at zero.
+    if float(min(agg[[y_col, y2_col]].min())) >= 0:
+        ax.set_ylim(bottom=0)
 
     ax.set_xticks(idx)
     ax.set_xticklabels([str(v)[:12] for v in agg[x_col]],
@@ -683,17 +706,15 @@ def make_comparison_chart(
               labelcolor=style["text.color"])
     _human_axis(ax)
 
-    total_a = float(agg[y_col].sum())
-    total_b = float(agg[y2_col].sum())
-    message = ""
-    if total_b:
-        variance = (total_a - total_b) / abs(total_b) * 100
-        message = "{} came in {:+.0f}% against {} — {} versus {}".format(
-            y_col, variance, y2_col, _human_num(total_a), _human_num(total_b))
-        gaps = agg[y_col] - agg[y2_col]
-        if len(gaps) > 1 and gaps.min() < 0:
-            message += ", {} furthest behind".format(
-                str(agg.loc[gaps.idxmin(), x_col])[:20])
+    from app.engines.chart_message import comparison_message
+
+    gaps = agg[y_col] - agg[y2_col]
+    worst = ""
+    if len(gaps) > 1 and gaps.min() < 0:
+        worst = str(agg.loc[gaps.idxmin(), x_col])
+    message = comparison_message(str(y_col), str(y2_col),
+                                 float(agg[y_col].sum()),
+                                 float(agg[y2_col].sum()), worst)
     _headline(ax, style, message,
               title or "{} against {}".format(y_col, y2_col))
     fig.tight_layout()

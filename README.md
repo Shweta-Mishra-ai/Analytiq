@@ -83,6 +83,7 @@ graph TD
 | 💬 **AI Copilot** | **Safe Chat Agent** | Plain-English query processor -> secure tool dispatcher (no code execution) -> interactive charts and tables. |
 | 🧠 **Knowledge Store** | **RAG Studio** | Custom local vector index ingestion of PDFs, DOCX, CSVs, and video/images via Gemini Vision embeddings. |
 | 📄 **Executive Reports** | **Document Generator** | Beautifully styled ReportLab PDF reports (cover page, TOC, benchmarks, and AI-narrated chart guides). |
+| ✅ **Quality Control** | **Review Checklist** | Every report is run against the [reporting standard](docs/QUALITY_STANDARD.md) and signs itself off in the appendix — exceptions printed, not hidden. |
 
 ---
 

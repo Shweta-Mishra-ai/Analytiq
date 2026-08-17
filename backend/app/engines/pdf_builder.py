@@ -1492,7 +1492,33 @@ def _prepared_by_line(config: dict) -> str:
            "conclusions drawn from it.".format(_clean(who))
 
 
-def _appendix(story, s, T, config, CW, domain: str = "general"):
+def _signoff_section(story, s, T, checks, CW):
+    """The checklist the document was reviewed against, and its result.
+
+    Printed because a reader has no other way to know which checks were
+    made. An exception is printed too — a report that discloses one
+    finding it could not trace is worth more than one that quietly
+    dropped it, and a checklist that cannot fail is decoration.
+    """
+    from app.engines.report_signoff import EXCEPTION, summary_line
+
+    if not checks:
+        return
+    story.append(Paragraph("D. Review Checklist", s["h3"]))
+    story.append(Paragraph(summary_line(checks), s["body"]))
+    rows = [[c.rule, c.outcome, c.basis] for c in checks]
+    _gtable(story, T, ["Check", "Outcome", "Basis"], rows,
+            [CW * 0.42, CW * 0.13, CW * 0.45])
+    raised = [c for c in checks if c.outcome == EXCEPTION]
+    if raised:
+        story.append(Paragraph(
+            "An exception does not invalidate the figures above it. It "
+            "marks a statement in this report that did not meet the "
+            "standard on review and is left visible so the reader can "
+            "weigh it themselves.", s["note"]))
+
+
+def _appendix(story, s, T, config, CW, domain: str = "general", checks=None):
     _sec(story, s, T, "Appendix — Methodology & Sources")
 
     # This section is what a reviewing analyst reads to decide whether to
@@ -1584,6 +1610,8 @@ def _appendix(story, s, T, config, CW, domain: str = "general"):
         story.append(Paragraph("• " + src, s["bl"]))
     if _bp.reference_note:
         story.append(Paragraph(_bp.reference_note, s["note"]))
+
+    _signoff_section(story, s, T, checks, CW)
 
     story.append(Spacer(1, 4*mm))
     disc = Table([[Paragraph(
@@ -1803,7 +1831,27 @@ def build_pdf(
     _recommendations(story, s, T, recommendations, CW)
     story.append(PageBreak())
 
-    _appendix(story, s, T, config, CW, domain=domain)
+    # The checklist is run against the document being produced, not
+    # against the intention, so it is computed here from the same text
+    # the reader is holding.
+    from app.engines.report_signoff import run_checks
+
+    try:
+        checks = run_checks(
+            executive_summary=executive_summary, findings=findings,
+            risks=risks, opportunities=opportunities,
+            recommendations=recommendations, insights=top_insights,
+            critical_issues=[i for i in top_insights
+                             if getattr(i, "severity", "") == "critical"],
+            prepared_by=str(config.get("prepared_by") or ""),
+            missing_pct=float(miss_pct), stats_report=stats_report)
+    except Exception:
+        # A checklist that took the report down with it would be worse
+        # than no checklist. The rest of the appendix still prints.
+        logger.exception("could not run the review checklist")
+        checks = []
+
+    _appendix(story, s, T, config, CW, domain=domain, checks=checks)
 
     # ── Build PDF ─────────────────────────────────────────
     doc.build(story, canvasmaker=canvas_maker)
