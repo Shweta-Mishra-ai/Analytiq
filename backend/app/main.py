@@ -9,7 +9,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -33,6 +33,15 @@ async def lifespan(app: FastAPI):
     # Set DATA_TTL_DAYS=0 to disable. Runs once immediately, then on
     # CLEANUP_INTERVAL_HOURS. Cancelled cleanly on shutdown.
     task = asyncio.create_task(cleanup_loop())
+    # A wildcard origin is right for local development and wrong for a
+    # deployment with client accounts on it. Tokens are sent in a header
+    # rather than a cookie, so this is not an immediate hole, but it
+    # lets any page on the internet call the API with a token it has
+    # obtained — and nobody notices a default they never chose.
+    if config.cors_origins.strip() == "*" and config.effective_admin_key:
+        logger.warning(
+            "CORS_ORIGINS is '*' while client accounts are enabled. Set it "
+            "to the origins that should be able to call this API.")
     try:
         yield
     finally:
@@ -62,16 +71,38 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/api/auth/login")
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, request: Request):
     """Exchange a client's username/password for their scoped bearer
     token. In single-user open mode (no admin key set, no accounts
     created yet) auth is bypassed entirely and this endpoint is unused
-    by the frontend."""
+    by the frontend.
+
+    Attempts are throttled per username and per client address. PBKDF2
+    at 200,000 iterations makes each guess slow, but slow is not the
+    same as bounded — and each guess spends that CPU on this process,
+    so an unbounded stream of them is a denial of service against
+    everyone else whether or not it ever finds a password."""
     from fastapi import HTTPException
+    from app.services.throttle import login_throttle
     from app.services.tokens import issue_token
+
+    username = (req.username or "").strip().lower()
+    client = request.client.host if request.client else ""
+    keys = ("user:" + username, "addr:" + client)
+
+    allowed, wait = login_throttle.check(*keys)
+    if not allowed:
+        raise HTTPException(
+            429, "Too many failed sign-in attempts. Try again in {} seconds — "
+                 "if this was not you, the account is still safe and no data "
+                 "has been touched.".format(wait),
+            headers={"Retry-After": str(wait)})
+
     user = user_store.verify(req.username, req.password)
     if not user:
+        login_throttle.record_failure(*keys)
         raise HTTPException(401, "Wrong username or password")
+    login_throttle.record_success(*keys)
     return {"token": issue_token(user.username), "username": user.username,
             "is_admin": user.is_admin}
 
@@ -95,7 +126,11 @@ async def health():
     from app.ai.local_llm import status as _llm_status
     from app.services.auth import _open_mode
     return {
-        "status": "ok",
+        "status": "degraded" if user_store.unreadable else "ok",
+        # Named here because this endpoint stays public: an operator
+        # whose deployment has started refusing every request can see
+        # why without a token they may no longer be able to obtain.
+        "accounts_readable": not user_store.unreadable,
         "app": config.app_name,
         "version": config.app_version,
         "auth_required": not _open_mode(),

@@ -76,6 +76,13 @@ class AppConfig(BaseSettings):
     # ── Storage ──────────────────────────────────────────
     data_dir: str = Field(default="./data", alias="DATA_DIR")
     data_ttl_days: int = Field(default=30, alias="DATA_TTL_DAYS")
+    # The TTL sweep bounds how *long* data is kept, not how much of it
+    # arrives in a day. Without a ceiling, one client filling the disk
+    # takes every other client's writes down with it — and a full disk
+    # surfaces as unrelated failures somewhere else entirely. Per owner,
+    # so the person who hits it is the person who caused it.
+    max_storage_mb_per_owner: int = Field(default=5_000,
+                                          alias="MAX_STORAGE_MB_PER_OWNER")
     cleanup_interval_hours: int = Field(default=6, alias="CLEANUP_INTERVAL_HOURS")
 
     # ── App meta ─────────────────────────────────────────

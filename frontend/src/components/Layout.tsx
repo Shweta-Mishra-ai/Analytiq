@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Upload,
   ShieldCheck,
@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { useApp } from '../store/app'
 import { getToken, setToken } from '../api/client'
+import ErrorBoundary from './ErrorBoundary'
 
 // Grouped so the sidebar stays readable as the analysis surface grows —
 // a flat list of 15 links makes it hard to find anything.
@@ -63,6 +64,7 @@ const navGroups = [
 
 export default function Layout() {
   const dataset = useApp((s) => s.dataset)
+  const { pathname } = useLocation()
   return (
     <div className="flex h-full">
       <aside className="flex w-60 shrink-0 flex-col border-r border-edge bg-panel">
@@ -151,7 +153,12 @@ export default function Layout() {
         )}
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <Outlet />
+        {/* Keyed on the route so navigating away clears a failed page
+            rather than leaving the error panel in place for the next
+            one. */}
+        <ErrorBoundary key={pathname} label="This page">
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   )

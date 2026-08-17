@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import AuthGate from './components/AuthGate'
+import ErrorBoundary from './components/ErrorBoundary'
 import Layout from './components/Layout'
 
 // Route-level code splitting: each page becomes its own chunk, fetched
@@ -34,29 +35,35 @@ function RouteFallback() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthGate>
-        <Suspense fallback={<RouteFallback />}>
-          <Routes>
-            <Route element={<Layout />}>
-              <Route path="/" element={<UploadPage />} />
-              <Route path="/quality" element={<QualityPage />} />
-              <Route path="/dashboard" element={<DashboardPage />} />
-              <Route path="/eda" element={<EdaPage />} />
-              <Route path="/insights" element={<InsightsPage />} />
-              <Route path="/bi" element={<BiPage />} />
-              <Route path="/deep-analysis" element={<DeepAnalysisPage />} />
-              <Route path="/segments" element={<SegmentsPage />} />
-              <Route path="/ab-test" element={<AbTestPage />} />
-              <Route path="/survival" element={<SurvivalPage />} />
-              <Route path="/compare" element={<ComparePage />} />
-              <Route path="/ml" element={<MlPage />} />
-              <Route path="/chat" element={<ChatPage />} />
-              <Route path="/rag" element={<RagPage />} />
-              <Route path="/reports" element={<ReportsPage />} />
-            </Route>
-          </Routes>
-        </Suspense>
-      </AuthGate>
+      {/* The inner boundary in Layout keeps a failed page inside the
+          shell. This one is the backstop for the shell itself, so even
+          a failure in the sidebar or the auth gate has a way out that
+          is not "reload and hope". */}
+      <ErrorBoundary label="The application">
+        <AuthGate>
+          <Suspense fallback={<RouteFallback />}>
+            <Routes>
+              <Route element={<Layout />}>
+                <Route path="/" element={<UploadPage />} />
+                <Route path="/quality" element={<QualityPage />} />
+                <Route path="/dashboard" element={<DashboardPage />} />
+                <Route path="/eda" element={<EdaPage />} />
+                <Route path="/insights" element={<InsightsPage />} />
+                <Route path="/bi" element={<BiPage />} />
+                <Route path="/deep-analysis" element={<DeepAnalysisPage />} />
+                <Route path="/segments" element={<SegmentsPage />} />
+                <Route path="/ab-test" element={<AbTestPage />} />
+                <Route path="/survival" element={<SurvivalPage />} />
+                <Route path="/compare" element={<ComparePage />} />
+                <Route path="/ml" element={<MlPage />} />
+                <Route path="/chat" element={<ChatPage />} />
+                <Route path="/rag" element={<RagPage />} />
+                <Route path="/reports" element={<ReportsPage />} />
+              </Route>
+            </Routes>
+          </Suspense>
+        </AuthGate>
+      </ErrorBoundary>
     </BrowserRouter>
   )
 }

@@ -55,18 +55,66 @@ class UserStore:
         self.path = path or os.path.join(config.data_dir, "users.pkl")
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self._lock = threading.RLock()
+        # Set by _load() when the account file exists but cannot be read.
+        # Nothing may be served in that state — see `unreadable`.
+        self._load_error: Optional[str] = None
         self._users: dict[str, User] = self._load()
 
     def _load(self) -> dict[str, User]:
-        if os.path.exists(self.path):
-            try:
-                with open(self.path, "rb") as f:
-                    return pickle.load(f)
-            except Exception:
-                return {}
-        return {}
+        """Load the accounts, distinguishing "none yet" from "cannot read".
+
+        These two states used to be the same empty dict, and the
+        difference is the whole security model. No accounts *and* no
+        admin key is single-user open mode: auth is bypassed and every
+        request is treated as an administrator, which is correct for a
+        fresh local install. An account file that exists but cannot be
+        read is the opposite situation — accounts were created, and the
+        store has just lost sight of them.
+
+        A corrupt file, a permission change, or a pickle that a newer
+        Python cannot load therefore turned a multi-client deployment
+        into an open one, silently, with `/api/admin/*` included. The
+        failure now stays visible: the accounts are not empty, they are
+        unknown, and requests are refused until an operator looks at it.
+        """
+        if not os.path.exists(self.path):
+            return {}
+        try:
+            with open(self.path, "rb") as f:
+                loaded = pickle.load(f)
+        except Exception as exc:
+            self._load_error = "{}: {}".format(type(exc).__name__, exc)
+            logger.error(
+                "Account file %s exists but could not be read (%s). Refusing "
+                "every request until this is resolved — restoring the file or "
+                "removing it (which resets to single-user open mode) are the "
+                "two ways out.", self.path, self._load_error)
+            return {}
+        if not isinstance(loaded, dict):
+            self._load_error = "account file does not contain an account map"
+            logger.error("Account file %s is not an account map; refusing "
+                         "every request until it is restored.", self.path)
+            return {}
+        return loaded
+
+    @property
+    def unreadable(self) -> Optional[str]:
+        """Why the accounts could not be read, or None if they were.
+
+        Consulted by the auth middleware before anything else: an
+        unreadable account file is a 503, never an open door.
+        """
+        return self._load_error
 
     def _save(self) -> None:
+        if self._load_error:
+            # Writing now would replace a file that still holds the real
+            # accounts with one holding whatever is in memory, turning a
+            # recoverable read failure into permanent data loss.
+            raise RuntimeError(
+                "Refusing to write accounts: the existing account file could "
+                "not be read ({}). Restore or remove it first.".format(
+                    self._load_error))
         tmp = self.path + ".tmp"
         with open(tmp, "wb") as f:
             pickle.dump(self._users, f, protocol=pickle.HIGHEST_PROTOCOL)

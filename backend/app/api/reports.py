@@ -74,18 +74,11 @@ def export_excel(ds_id: str, owner: str = Depends(current_owner)):
 
 @router.post("/{ds_id}/pdf")
 def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner)):
-    from app.services.load_guard import ANALYSIS, Busy
+    from app.services.load_guard import ANALYSIS, http_slot
 
     df = _df_or_404(owner, ds_id)
-    try:
-        _slot = ANALYSIS.slot()
-        _slot.__enter__()
-    except Busy as e:
-        raise HTTPException(503, str(e), headers={"Retry-After": "30"})
-    try:
+    with http_slot(ANALYSIS):
         return _generate_pdf_inner(ds_id, req, owner, df)
-    finally:
-        _slot.__exit__(None, None, None)
 
 
 def _generate_pdf_inner(ds_id, req, owner, df):

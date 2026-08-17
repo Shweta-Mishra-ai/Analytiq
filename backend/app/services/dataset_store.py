@@ -103,6 +103,24 @@ class DatasetStore:
             self._touch_mem(owner, ds_id, raw=df_raw, active=df_raw.copy(), meta=meta)
         return meta
 
+    def storage_mb(self, owner: str) -> float:
+        """How much disk this owner's datasets and caches occupy.
+
+        Measured from the files rather than from the recorded upload
+        sizes: the pickles, the cleaned copy and the cached reports are
+        several times the size of the CSV that arrived, and it is the
+        disk that fills up, not the CSV.
+        """
+        owner_dir = os.path.join(self.base_dir, self._safe(owner))
+        total = 0
+        for root, _dirs, files in os.walk(owner_dir):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    logger.debug("could not size %s", name, exc_info=True)
+        return total / (1024 * 1024)
+
     def list_meta(self, owner: str) -> list[DatasetMeta]:
         owner_dir = os.path.join(self.base_dir, self._safe(owner))
         if not os.path.isdir(owner_dir):
@@ -231,7 +249,16 @@ class DatasetStore:
             with open(self._path(owner, ds_id, f"cache_{key}.pkl"), "wb") as f:
                 pickle.dump((h, obj), f)
         except Exception:
-            pass  # cache persistence is best-effort
+            # Persistence is best-effort — the in-memory copy above is
+            # already set, so the request succeeds either way. It is not
+            # best-effort enough to happen in silence: the usual cause is
+            # a full disk, and a full disk announces itself as "the app
+            # got slower" and nothing else until something that cannot
+            # degrade fails too.
+            logger.warning("could not persist the %s cache for %s/%s — "
+                           "analysis will be recomputed next time; check "
+                           "free disk space", key, owner, ds_id,
+                           exc_info=True)
 
     # ── internals ────────────────────────────────────────
     def _save_df(self, owner: str, ds_id: str, name: str, df: pd.DataFrame) -> None:
@@ -277,6 +304,16 @@ class DatasetStore:
             if oldest == mkey:
                 break
             self._mem.pop(oldest)
+            # The analysis caches follow the frame out of memory. They
+            # were left behind: `_mem` was capped at eight datasets and
+            # `_caches` was not capped at all, so every dataset the
+            # process ever touched kept its profile, EDA, BI, story and
+            # ML reports alive until restart — measured at 3.3 MB per
+            # dataset for ML and EDA alone. Nothing is lost by dropping
+            # them; `cache_get` reloads from the pickle beside the
+            # dataset, and the hash check still decides whether it is
+            # still valid.
+            self._caches.pop(oldest, None)
 
     @staticmethod
     def _hash_df(df: pd.DataFrame) -> str:

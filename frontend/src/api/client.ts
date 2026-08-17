@@ -32,18 +32,64 @@ async function handle<T>(res: Response): Promise<T> {
     } catch {
       /* keep statusText */
     }
+    // 503 and 429 are the server saying "not now", not "no". The
+    // difference matters to whoever is reading the message: one is
+    // something to wait out, the other is something to fix.
+    if (res.status === 503 || res.status === 429) {
+      const after = res.headers.get('Retry-After')
+      if (after) detail = `${detail} (retry in about ${after}s)`
+    }
     throw new Error(detail)
   }
   return res.json() as Promise<T>
 }
 
+/**
+ * A request that cannot hang forever.
+ *
+ * `fetch` has no timeout. A dropped connection mid-analysis left the
+ * page spinning with no error and no way to cancel — indistinguishable
+ * from a slow server, so the user waits, then reloads, then re-uploads.
+ * Report and training calls are genuinely slow, so the ceiling is
+ * generous; it exists to end a request that is never coming back, not
+ * to cut a long one short.
+ */
+const DEFAULT_TIMEOUT_MS = 180_000
+
+async function fetchWithTimeout(
+  input: string,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error(
+        `The server did not answer within ${Math.round(timeoutMs / 1000)}s. ` +
+          'Nothing was lost — your dataset is still uploaded. Try again, or ' +
+          'try a smaller selection if this keeps happening.',
+      )
+    }
+    throw new Error(
+      'Could not reach the server. Check your connection and try again.',
+    )
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
-  return handle<T>(await fetch(`${BASE}${path}`, { headers: authHeaders() }))
+  return handle<T>(
+    await fetchWithTimeout(`${BASE}${path}`, { headers: authHeaders() }),
+  )
 }
 
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return handle<T>(
-    await fetch(`${BASE}${path}`, {
+    await fetchWithTimeout(`${BASE}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body ?? {}),
@@ -53,19 +99,24 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
 
 export async function apiDelete<T>(path: string): Promise<T> {
   return handle<T>(
-    await fetch(`${BASE}${path}`, { method: 'DELETE', headers: authHeaders() }),
+    await fetchWithTimeout(`${BASE}${path}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    }),
   )
 }
 
 export async function apiUpload<T>(path: string, file: File): Promise<T> {
   const form = new FormData()
   form.append('file', file)
+  // An upload is bounded by the client's connection speed, not by the
+  // server's work, so it gets its own longer ceiling.
   return handle<T>(
-    await fetch(`${BASE}${path}`, {
-      method: 'POST',
-      body: form,
-      headers: authHeaders(),
-    }),
+    await fetchWithTimeout(
+      `${BASE}${path}`,
+      { method: 'POST', body: form, headers: authHeaders() },
+      600_000,
+    ),
   )
 }
 

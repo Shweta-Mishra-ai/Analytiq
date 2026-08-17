@@ -313,15 +313,48 @@ def _evaluate_classification(y_true, y_pred, y_prob=None) -> Dict:
     return {"accuracy": round(acc, 4), "f1": round(f1, 4), "roc_auc": auc}
 
 
+def time_order_column(df: pd.DataFrame, target_col: str = "") -> Optional[str]:
+    """The column that says when each row happened, if there is one.
+
+    Most business data is a log: orders by order date, deals by created
+    date, headcount by month. On a log, a random train/test split trains
+    the model on rows that happened *after* the ones it is scored on.
+    The score that comes back is not the score the model would get in
+    use, and it is always the flattering one.
+
+    The column with the widest coverage wins; a column with a handful of
+    distinct timestamps is a status flag with a date type, not a
+    timeline.
+    """
+    best, best_spread = None, 0
+    for col in df.columns:
+        if col == target_col or not pd.api.types.is_datetime64_any_dtype(df[col]):
+            continue
+        values = df[col].dropna()
+        if len(values) < len(df) * 0.9:
+            continue
+        spread = values.nunique()
+        if spread >= 10 and spread > best_spread:
+            best, best_spread = col, spread
+    return best
+
+
 def train_models(
     X: pd.DataFrame,
     y: pd.Series,
     task: str,
     target_encoder: Optional[LabelEncoder] = None,
+    order: Optional[pd.Series] = None,
 ) -> List[ModelResult]:
     """
     Train all models, cross-validate, evaluate on holdout.
     Returns list of ModelResult sorted by cv_score descending.
+
+    `order` is the timestamp of each row where the data has one. Given
+    it, the holdout is the most recent fifth of the rows and
+    cross-validation walks forward through the earlier ones, so every
+    score is measured the way the model would actually be used:
+    fitted on the past, asked about the future.
     """
     # Encode classification target
     if task == "classification":
@@ -335,11 +368,26 @@ def train_models(
         else:
             y = y.astype(int)
 
-    # Train/test split — stratified for classification
-    stratify = y if task == "classification" and y.nunique() <= 20 else None
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=stratify
-    )
+    # Train/test split. Time-ordered where the data carries a date,
+    # random (stratified for classification) where it does not.
+    cv_splitter: Any = 5
+    if order is not None and len(order) == len(X):
+        ordered = order.sort_values(kind="mergesort").index
+        X = X.loc[ordered]
+        y = y.loc[ordered]
+        cut = max(1, int(len(X) * 0.8))
+        if len(X) - cut >= 5:
+            X_train, X_test = X.iloc[:cut], X.iloc[cut:]
+            y_train, y_test = y.iloc[:cut], y.iloc[cut:]
+            from sklearn.model_selection import TimeSeriesSplit
+            cv_splitter = TimeSeriesSplit(n_splits=min(5, max(2, cut // 50)))
+        else:
+            order = None
+    if order is None or len(order) != len(X):
+        stratify = y if task == "classification" and y.nunique() <= 20 else None
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=stratify
+        )
 
     scoring = "r2" if task == "regression" else "f1_weighted"
     results = []
@@ -369,7 +417,7 @@ def train_models(
             # Cross-validation on training set
             cv_scores = cross_val_score(
                 pipe, X_train, y_train,
-                cv=5, scoring=scoring, n_jobs=-1
+                cv=cv_splitter, scoring=scoring, n_jobs=-1
             )
 
             # Fit on full training set
@@ -809,9 +857,30 @@ def run_ml_pipeline(
         report.warnings.append("Too few rows ({}) for reliable ML. Need at least 20.".format(len(X)))
         return report
 
+    # Where the rows carry a date, the model is scored the way it would
+    # be used: fitted on the past and asked about the period after it.
+    # A random split on a log trains on rows that happened after the
+    # ones it is tested on, and reports the score that flatters.
+    split_warnings = []
+    order = None
+    time_col = time_order_column(df, target_col)
+    if time_col is not None:
+        candidate = df.loc[X.index, time_col].dropna()
+        if len(candidate) == len(X):
+            order = candidate
+            cutoff = candidate.sort_values().iloc[max(1, int(len(X) * 0.8)) - 1]
+            split_warnings.append(
+                "Scored on time, not at random: trained on rows up to {} and "
+                "tested on the {:,} rows after it, using '{}'. A random split "
+                "would have trained on rows that happened after the ones it "
+                "was tested on, which reports a higher score than the model "
+                "would earn in use.".format(
+                    pd.Timestamp(cutoff).strftime("%d %b %Y"),
+                    len(X) - max(1, int(len(X) * 0.8)), time_col))
+
     # Train models
     model_results, X_test, y_test, target_encoder, baseline = train_models(
-        X, y, task)
+        X, y, task, order=order)
     best = next((m for m in model_results if m.is_best), None)
 
     # Feature importance
@@ -852,7 +921,7 @@ def run_ml_pipeline(
         preprocessor=None,
         label_encoders=label_encoders,
         target_encoder=target_encoder,
-        warnings=([task_reason] + leakage_warnings
+        warnings=([task_reason] + split_warnings + leakage_warnings
                   + _baseline_warnings(best, baseline, task)),
     )
 

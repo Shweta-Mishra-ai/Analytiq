@@ -81,6 +81,26 @@ TRAINING = _Guard(getattr(config, "max_concurrent_training", 2), "model training
 ANALYSIS = _Guard(getattr(config, "max_concurrent_analysis", 6), "analysis")
 
 
+@contextmanager
+def http_slot(guard: _Guard, retry_after: int = 30):
+    """A slot, with a refusal expressed the way HTTP expresses one.
+
+    Every route that guards heavy work needs the same four lines, and
+    the first version of them was written out by hand in two places and
+    forgotten in five others — profiling, EDA, BI, the story engine and
+    the advanced analytics all ran unbounded while report rendering was
+    carefully limited. One helper is harder to forget than a pattern.
+    """
+    from fastapi import HTTPException
+
+    try:
+        with guard.slot():
+            yield
+    except Busy as exc:
+        raise HTTPException(503, str(exc),
+                            headers={"Retry-After": str(retry_after)})
+
+
 def snapshot() -> dict:
     """What is running now — for the health endpoint."""
     return {

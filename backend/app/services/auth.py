@@ -39,6 +39,12 @@ LOCAL_OWNER = "local"
 
 
 def _open_mode() -> bool:
+    """Single-user open mode: no admin key, and no accounts have been
+    created. An account file that cannot be *read* is not the same thing
+    as one with no accounts in it — see `UserStore.unreadable` — and must
+    never be allowed to open the app up."""
+    if user_store.unreadable:
+        return False
     return not config.effective_admin_key and user_store.is_empty()
 
 
@@ -49,6 +55,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 or path in PUBLIC_PATHS
                 or request.method == "OPTIONS"):
             return await call_next(request)
+
+        if user_store.unreadable:
+            # Accounts exist but are unknown to this process. Serving
+            # anything here means either serving one client's data to
+            # another or serving everything to everyone.
+            return JSONResponse(
+                {"detail": "The account store could not be read, so requests "
+                           "cannot be authenticated. No data has been lost — "
+                           "an administrator needs to restore the account "
+                           "file before the service will accept requests."},
+                status_code=503, headers={"Retry-After": "60"})
 
         if _open_mode():
             request.state.username = LOCAL_OWNER

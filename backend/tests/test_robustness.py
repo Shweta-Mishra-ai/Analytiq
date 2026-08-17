@@ -207,13 +207,20 @@ def test_the_memory_cache_evicts_the_least_recently_used():
 
     store = DatasetStore.__new__(DatasetStore)
     store._mem = {}
+    store._caches = {}
     store._MEM_LIMIT = 3
     for name in ("a", "b", "c"):
         store._touch_mem("o", name, meta=None)
+        store._caches["o/" + name] = {"profile": ("hash", object())}
     store._touch_mem("o", "a", meta=None)          # "a" used again
     store._touch_mem("o", "d", meta=None)          # forces an eviction
     assert "o/a" in store._mem, list(store._mem)
     assert "o/b" not in store._mem, list(store._mem)
+    # The analysis cache leaves with the frame it belongs to. It used to
+    # stay, so every dataset the process ever touched kept its reports in
+    # memory until restart.
+    assert "o/b" not in store._caches, list(store._caches)
+    assert "o/a" in store._caches, list(store._caches)
 
 
 # ══════════════════════════════════════════════════════════

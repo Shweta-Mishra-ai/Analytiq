@@ -150,6 +150,9 @@ The application remains fully functional locally without keys (AI modules degrad
 | `CLEANUP_INTERVAL_HOURS` | you choose | How often the expiry sweep runs in the background. Default `6`. A sweep also runs once at startup, and can be triggered manually via `POST /api/admin/cleanup`. |
 | `APP_SECRET` | you choose | Signs client login tokens. Optional — auto-generated and persisted to `DATA_DIR/.secret_key` if unset. Set explicitly if you run multiple backend instances behind a load balancer, so they all validate the same tokens. |
 | `TOKEN_TTL_DAYS` | you choose | How long a client's login session lasts before they must sign in again. Default `30`. |
+| `MAX_STORAGE_MB_PER_OWNER` | you choose | Disk each client may use for datasets and cached analysis. Default `5000`. The TTL sweep bounds how *long* data is kept; this bounds how much of it can arrive, so one client cannot fill the disk for everyone. |
+| `MAX_CONCURRENT_ANALYSIS` / `MAX_CONCURRENT_TRAINING` | you choose | How much heavy work may run at once in one process. Defaults `6` / `2`. Beyond the limit a request is refused with `503` and a `Retry-After` rather than accepted into an out-of-memory kill. |
+| `CORS_ORIGINS` | you choose | Comma-separated origins allowed to call the API. Default `*`, which is right for local development; set it explicitly once client accounts exist (the app logs a warning if you have not). |
 
 ### 🎬 Video-to-dataset extraction
 

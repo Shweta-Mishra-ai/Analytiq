@@ -26,6 +26,51 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
 
+_READ_CHUNK = 1024 * 1024
+
+
+async def read_capped(file: UploadFile, limit_mb: int, label: str = "File"
+                      ) -> bytes:
+    """Read an upload, refusing it before it is in memory.
+
+    `await file.read()` materialises the whole body first and the size
+    was checked afterwards, so a 2 GB upload allocated 2 GB and *then*
+    got its 413. The process is killed by the OOM killer somewhere in
+    the middle of that, and an OOM kill takes down every request in
+    flight — including the ones belonging to other clients, who did
+    nothing but be online at the wrong moment.
+
+    Two gates, cheapest first: the declared Content-Length, then a
+    running total while reading, because Content-Length is a claim by
+    the client and not a fact.
+    """
+    limit = limit_mb * 1024 * 1024
+    declared = file.headers.get("content-length") if file.headers else None
+    if declared and declared.isdigit() and int(declared) > limit:
+        raise HTTPException(
+            413, "{} is {:.1f} MB. The maximum is {} MB — nothing was "
+                 "uploaded.".format(label, int(declared) / (1024 * 1024),
+                                    limit_mb))
+
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_READ_CHUNK)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            # Drop what was read rather than keep growing while the rest
+            # of the body arrives.
+            chunks.clear()
+            raise HTTPException(
+                413, "{} exceeds the {} MB maximum. Nothing was uploaded — "
+                     "split the file or filter it down and try "
+                     "again.".format(label, limit_mb))
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 class _UploadShim:
     """Adapts FastAPI UploadFile to the file-like object load_file expects
     (Streamlit's UploadedFile: .name, .size, .read, .seek)."""
@@ -45,11 +90,29 @@ class _UploadShim:
         return getattr(self._buf, item)
 
 
+def _check_quota(owner: str) -> None:
+    """Refuse before storing, with the number and the way out.
+
+    The TTL sweep bounds how long data is kept, not how much arrives.
+    One client filling the disk takes every other client's writes with
+    it, and a full disk shows up as unrelated failures elsewhere long
+    before anyone connects it to storage.
+    """
+    used = store.storage_mb(owner)
+    if used >= config.max_storage_mb_per_owner:
+        raise HTTPException(
+            413, "You are using {:.0f} MB of your {} MB of storage. Delete a "
+                 "dataset you no longer need and upload again — nothing "
+                 "already stored has been touched.".format(
+                     used, config.max_storage_mb_per_owner))
+
+
 def _process_upload(owner: str, filename: str, data: bytes, sheet: str) -> dict:
     """Heavy parsing/validation — runs in the threadpool, off the event loop."""
     ok, msg = validate_file_size(len(data))
     if not ok:
         raise HTTPException(413, msg)
+    _check_quota(owner)
 
     shim = _UploadShim(filename, data)
     sheet_arg = int(sheet) if sheet.isdigit() else sheet
@@ -75,7 +138,8 @@ def _process_upload(owner: str, filename: str, data: bytes, sheet: str) -> dict:
 async def upload_dataset(file: UploadFile = File(...), sheet: str = Query("0"),
                           owner: str = Depends(current_owner)):
     from starlette.concurrency import run_in_threadpool
-    data = await file.read()
+    from app.engines.data_validator import MAX_FILE_MB
+    data = await read_capped(file, MAX_FILE_MB, "Dataset")
     return await run_in_threadpool(
         _process_upload, owner, file.filename or "upload.csv", data, sheet)
 
@@ -83,6 +147,7 @@ async def upload_dataset(file: UploadFile = File(...), sheet: str = Query("0"),
 def _process_image_extract(owner: str, filename: str, data: bytes) -> dict:
     from app.services.table_extractor import (ExtractionError,
                                               extract_table_from_image)
+    _check_quota(owner)
     try:
         df, extraction_warnings = extract_table_from_image(filename, data)
     except ExtractionError as e:
@@ -108,9 +173,7 @@ async def extract_from_image(file: UploadFile = File(...),
                               owner: str = Depends(current_owner)):
     """Photo/screenshot of a table → real dataset (full pipeline works)."""
     from starlette.concurrency import run_in_threadpool
-    data = await file.read()
-    if len(data) > config.max_media_mb * 1024 * 1024:
-        raise HTTPException(413, f"Image exceeds {config.max_media_mb} MB")
+    data = await read_capped(file, config.max_media_mb, "Image")
     return await run_in_threadpool(
         _process_image_extract, owner, file.filename or "image.png", data)
 
@@ -122,6 +185,7 @@ def _process_video_extract(owner: str, filename: str, data: bytes) -> dict:
     import os as _os
     from app.services.table_extractor import (ExtractionError,
                                               extract_table_from_video)
+    _check_quota(owner)
     ext = _os.path.splitext(filename.lower())[1]
     if ext not in _VIDEO_EXTS:
         raise HTTPException(422, f"Unsupported video type '{ext}'. "
@@ -153,9 +217,7 @@ async def extract_from_video(file: UploadFile = File(...),
     Slower than image extraction (Gemini File API processing + upload),
     so this route can take up to a few minutes for longer clips."""
     from starlette.concurrency import run_in_threadpool
-    data = await file.read()
-    if len(data) > config.max_media_mb * 1024 * 1024:
-        raise HTTPException(413, f"Video exceeds {config.max_media_mb} MB")
+    data = await read_capped(file, config.max_media_mb, "Video")
     return await run_in_threadpool(
         _process_video_extract, owner, file.filename or "video.mp4", data)
 

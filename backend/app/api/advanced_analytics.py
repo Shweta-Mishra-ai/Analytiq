@@ -30,10 +30,16 @@ def _df_or_404(owner: str, ds_id: str):
 
 
 def _cached(owner: str, ds_id: str, key: str, compute):
+    """Cached result, or one computed under the concurrency limit — see
+    the same helper in `api/analytics.py`."""
     obj = store.cache_get(owner, ds_id, key)
-    if obj is None:
+    if obj is not None:
+        return obj
+    from app.services.load_guard import ANALYSIS, http_slot
+
+    with http_slot(ANALYSIS):
         obj = compute()
-        store.cache_set(owner, ds_id, key, obj)
+    store.cache_set(owner, ds_id, key, obj)
     return obj
 
 

@@ -97,11 +97,9 @@ def _process_kb_upload(kb, name: str, data: bytes) -> dict:
 async def upload_file(kb_id: str, file: UploadFile = File(...),
                        owner: str = Depends(current_owner)):
     from starlette.concurrency import run_in_threadpool
+    from app.api.datasets import read_capped
     kb = _kb_or_404(owner, kb_id)
-    data = await file.read()
-    limit = config.max_media_mb * 1024 * 1024
-    if len(data) > limit:
-        raise HTTPException(413, f"File exceeds {config.max_media_mb} MB limit")
+    data = await read_capped(file, config.max_media_mb, "File")
     name = file.filename or f"upload-{int(time.time())}"
     return await run_in_threadpool(_process_kb_upload, kb, name, data)
 
