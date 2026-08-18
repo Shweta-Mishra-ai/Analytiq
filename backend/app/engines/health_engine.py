@@ -68,6 +68,35 @@ def compute_health(df: pd.DataFrame) -> dict:
         score = max(0.0, 100.0 - missing_pct)
     score = max(int(round(score)), 0)
 
+    # The score above measures how *clean* the data is — completeness,
+    # duplication, per-column health. It says nothing about whether the
+    # data can be *analysed at all*: a file with a repeating identifier
+    # has zero missing values and zero duplicate rows by the row-level
+    # definition, so it scored a clean 100 here while the Main Report's
+    # separate readiness check — which looks at whether the same entity
+    # appears twice under a supposedly unique key — printed "this
+    # dataset is not ready to analyse" on the very next page a reader
+    # turned to. Two documents from the same engagement is one place a
+    # client is certain to notice a contradiction like that. Readiness
+    # is folded in here as a ceiling: a blocking issue caps the grade at
+    # C regardless of how clean the rest of the file is, because a
+    # reader has no way to tell "clean but analysable" from "clean but
+    # not" from the number alone.
+    not_ready_reason = ""
+    try:
+        from app.engines.readiness import assess_readiness
+
+        readiness = assess_readiness(df)
+        if not readiness.ready:
+            blockers = readiness.blockers
+            score = min(score, 69)
+            not_ready_reason = (
+                "{} — {}".format(blockers[0].column, blockers[0].issue)
+                if blockers else "the dataset failed a readiness check")
+    except Exception:
+        logger.warning("readiness check failed in compute_health — the score "
+                       "will not reflect it", exc_info=True)
+
     grade_map = [(90,"A+","Excellent","#22d3a5"),
                  (80,"A", "Very Good","#42b983"),
                  (70,"B+","Good",     "#60a5fa"),
@@ -76,6 +105,9 @@ def compute_health(df: pd.DataFrame) -> dict:
                  (0, "D", "Poor",    "#ef4444")]
     grade, label, color = next(
         (g, ln, c) for thresh, g, ln, c in grade_map if score >= thresh)
+    if not_ready_reason:
+        label = "Not ready to analyse"
+        color = "#f97316"
 
     return {
         "score":       score,
@@ -88,6 +120,7 @@ def compute_health(df: pd.DataFrame) -> dict:
         "rows":        rows,
         "cols":        cols,
         "num_cols":    len(num_cols),
+        "not_ready_reason": not_ready_reason,
     }
 
 

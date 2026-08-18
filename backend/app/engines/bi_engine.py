@@ -837,13 +837,57 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
     if len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
 
-    num_cols = df.select_dtypes(include="number").columns.tolist()
+    from app.engines.chart_exporter import _rank_measures
+    from app.engines.column_roles import is_discretization
+    from app.engines.domains.base import is_id_column
+
+    # Ranked by how much a column looks like a business measure — money,
+    # then volume, then rates — rather than by where it sits in the
+    # file. Positional order (`num_cols[:2]`) picked whatever the first
+    # two numeric columns happened to be; on one file that was `Age`,
+    # which then went in front of a client as a root-cause "performance"
+    # target ("Root cause of low 'Age': 'MonthlyIncome' is the top
+    # driver") and as the metric a segment-health score was built from.
+    # `_rank_measures` also drops identifier columns outright.
+    raw_num  = df.select_dtypes(include="number").columns.tolist()
+    num_cols = _rank_measures(df, raw_num)
     cat_cols = [c for c in text_columns(df)
-                if 2 <= df[c].nunique() <= 25]
+                if 2 <= df[c].nunique() <= 25 and not is_id_column(c, df[c])]
+
+    def _usable_pairs(cats, nums, limit_cats: int, limit_nums: int):
+        """cat x num pairs to analyse, skipping any pair where the
+        categorical column is structurally a bucket of the numeric one
+        — 'AgeGroup' segmenting 'Age', a salary band segmenting salary.
+        Those are guaranteed to be "significant": the category is a
+        range of the metric, so of course the metric differs across it.
+        The pairing is still counted against each side's own quota, so
+        one derived column does not let a weaker pair take its slot."""
+        out = []
+        for cat in cats[:limit_cats]:
+            for num in nums[:limit_nums]:
+                if is_discretization(df, cat, num):
+                    continue
+                out.append((cat, num))
+        return out
+
+    def _metric_targets(nums, limit: int):
+        """Numeric columns usable as an outcome to explain, skipping any
+        that a present categorical column was binned from — a KPI is
+        something that happened, not the source a bucket was cut out
+        of."""
+        cat_set = cat_cols
+        out = []
+        for num in nums:
+            if any(is_discretization(df, c, num) for c in cat_set):
+                continue
+            out.append(num)
+            if len(out) >= limit:
+                break
+        return out
 
     report = BIReport()
 
-    # 1. Benchmarks — top 4 numeric cols
+    # 1. Benchmarks — top 4 ranked measures
     for col in num_cols[:4]:
         try:
             report.benchmarks.append(analyze_benchmark(df, col))
@@ -851,8 +895,9 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
             logger.debug("run_bi: suppressed exception", exc_info=True)
             continue
 
-    # 2. Root cause — top numeric as target
-    for col in num_cols[:2]:
+    # 2. Root cause — top ranked measures as target, excluding any that
+    # is itself the source of a present derived bucket.
+    for col in _metric_targets(num_cols, 2):
         try:
             report.root_causes.append(
                 analyze_root_cause(df, col, threshold_pct=25))
@@ -860,31 +905,35 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
             logger.debug("run_bi: suppressed exception", exc_info=True)
             continue
 
-    # 3. Cohort analysis — top cat × top numeric
-    for cat in cat_cols[:2]:
-        for num in num_cols[:2]:
-            try:
-                report.cohorts.append(analyze_cohort(df, cat, num))
-            except Exception:
-                logger.debug("run_bi: suppressed exception", exc_info=True)
-                continue
+    # 3. Cohort analysis — top cat x top ranked measure, tautological
+    # pairs skipped.
+    for cat, num in _usable_pairs(cat_cols, num_cols, 2, 2):
+        try:
+            report.cohorts.append(analyze_cohort(df, cat, num))
+        except Exception:
+            logger.debug("run_bi: suppressed exception", exc_info=True)
+            continue
 
-    # 4. Pareto — top cat × top numeric
-    for cat in cat_cols[:1]:
-        for num in num_cols[:2]:
-            try:
-                agg = "mean" if "rate" in num.lower() or "score" in num.lower() \
-                      or "rating" in num.lower() else "sum"
-                report.pareto.append(analyze_pareto(df, cat, num, agg))
-            except Exception:
-                logger.debug("run_bi: suppressed exception", exc_info=True)
-                continue
+    # 4. Pareto — top cat x top ranked measure, same guard.
+    for cat, num in _usable_pairs(cat_cols, num_cols, 1, 2):
+        try:
+            agg = "mean" if "rate" in num.lower() or "score" in num.lower() \
+                  or "rating" in num.lower() else "sum"
+            report.pareto.append(analyze_pareto(df, cat, num, agg))
+        except Exception:
+            logger.debug("run_bi: suppressed exception", exc_info=True)
+            continue
 
-    # 5. Segment health
+    # 5. Segment health — the segmenting column's own source metric is
+    # excluded from the score composed for it, so an AgeGroup's health
+    # score is not built partly out of Age.
     if cat_cols and num_cols:
         try:
-            report.segments = analyze_segment_health(
-                df, cat_cols[0], num_cols[:4])
+            health_metrics = [c for c in num_cols[:6]
+                              if not is_discretization(df, cat_cols[0], c)][:4]
+            if health_metrics:
+                report.segments = analyze_segment_health(
+                    df, cat_cols[0], health_metrics)
         except Exception:
             logger.debug("run_bi: suppressed exception", exc_info=True)
 

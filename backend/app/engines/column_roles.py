@@ -238,6 +238,62 @@ def _pick(df: pd.DataFrame, nouns: frozenset, *,
     return col, "matched on {}".format(", ".join(matched))
 
 
+def is_discretization(df: pd.DataFrame, cat_col: str, num_col: str,
+                      *, min_categories: int = 3) -> bool:
+    """True when `cat_col` looks like it was binned straight out of
+    `num_col` — `AgeGroup` out of `Age`, a salary band out of salary.
+
+    Found because a BI engine tested every categorical column against
+    every numeric one and reported "'AgeGroup' significantly segments
+    'Age': best cohort '55+' outperforms worst '18-25' by 158%,
+    Kruskal-Wallis p<0.001" as a business finding, with a recommended
+    action to "pilot the stronger segment's practices in the weaker
+    one" — advice to make the young employees older. A name-based guard
+    already existed elsewhere (`_is_obvious_segment_pair`) but required
+    the numeric column's name to be at least 4 characters, which is
+    every case except this one: "age" is 3.
+
+    A name match is fast but easy to dodge — a translated column, a
+    house abbreviation, `bucket_2` — and it is also the wrong tool for
+    the actual property that matters. What makes the pairing meaningless
+    isn't the name, it's that the categories don't overlap: every
+    'AgeGroup' member's Age falls in a range no other group's members
+    fall in, because the group *is* a range of Age. A real segmenter —
+    Department against Salary — has no such property: a low earner and
+    a high earner both exist in every department, so the ranges overlap
+    heavily. That is a structural test, so it catches the relationship
+    under any name in any language, and it does not flag a genuine
+    segmenter no matter how strongly that segmenter's ranges happen to
+    separate.
+    """
+    try:
+        if cat_col == num_col or cat_col not in df.columns \
+                or num_col not in df.columns:
+            return False
+        if not pd.api.types.is_numeric_dtype(df[num_col]):
+            return False
+        sub = df[[cat_col, num_col]].dropna()
+        if sub.empty:
+            return False
+        spans = sub.groupby(cat_col, observed=True)[num_col].agg(["min", "max"])
+        spans = spans.dropna()
+        if len(spans) < min_categories:
+            return False
+        spans = spans.sort_values("min")
+        # Adjacent groups may share exactly one boundary value (pd.cut's
+        # edges are inclusive on one side), so a span touching the next
+        # group's floor is still a clean partition; only real overlap —
+        # one group's members reaching into the interior of another's
+        # range — means the categories are not a pure discretisation.
+        overlaps = (spans["max"].to_numpy()[:-1]
+                    > spans["min"].to_numpy()[1:])
+        return not overlaps.any()
+    except Exception:
+        logger.debug("is_discretization(%r, %r) failed", cat_col, num_col,
+                     exc_info=True)
+        return False
+
+
 def resolve(df: pd.DataFrame) -> Roles:
     """Assign each role at most one column, with the reason recorded."""
     # Duplicate column names make `df[name]` return a DataFrame

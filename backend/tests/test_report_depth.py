@@ -270,8 +270,11 @@ def test_the_dashboard_fits_on_one_page(report):
 
 
 def test_every_tile_is_captioned_with_its_question(report):
+    """"Dashboard" in the first 400 characters of a page also matches
+    the table of contents, which lists the section by name — the
+    dashboard page itself is the one carrying tile questions."""
     _df, pdf = report
-    page = next(p for p in _page_text(pdf) if "Dashboard" in p[:400])
+    page = next(p for p in _page_text(pdf) if "the question it answers" in p)
     assert page.count("?") >= 4, page.count("?")
 
 
@@ -281,7 +284,7 @@ def test_the_page_matches_the_interactive_dashboard(report):
     from app.engines.dashboard_spec import build_spec
 
     df, pdf = report
-    page = next(p for p in _page_text(pdf) if "Dashboard" in p[:400])
+    page = next(p for p in _page_text(pdf) if "the question it answers" in p)
     for tile in build_spec(df, "finance", max_tiles=6)[:3]:
         assert tile.question[:30] in page, tile.question
 

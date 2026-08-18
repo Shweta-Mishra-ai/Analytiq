@@ -142,18 +142,35 @@ def make_bar_chart(
     style  = _get_style(theme_name)
     colors = _get_colors(theme_name)
 
-    agg = (df.groupby(x_col)[y_col]
-             .sum()
-             .reset_index()
-             .sort_values(y_col, ascending=False)
-             .head(top_n))
+    # "Headcount by department" is a count of rows per group, which
+    # means x and y are the same column. `groupby(x)[x].sum()` sums a
+    # categorical column, and `.reset_index()` afterwards tries to
+    # insert a column named x into a frame that already has one —
+    # "cannot insert department, already exists". A count is not a sum,
+    # and it needs its own column name; `is_count` keeps the original
+    # column name for the axis label and the headline instead of
+    # printing "count".
+    is_count = x_col == y_col
+    if is_count:
+        agg = (df.groupby(x_col, dropna=True).size()
+                 .reset_index(name="_n")
+                 .sort_values("_n", ascending=False)
+                 .head(top_n))
+        value_col = "_n"
+    else:
+        agg = (df.groupby(x_col)[y_col]
+                 .sum()
+                 .reset_index()
+                 .sort_values(y_col, ascending=False)
+                 .head(top_n))
+        value_col = y_col
 
     fig, ax = plt.subplots(figsize=(10, 5))
     fig.patch.set_facecolor(style["figure.facecolor"])
     _apply_style(ax, style, axis="y")
 
     bars = ax.bar(
-        range(len(agg)), agg[y_col],
+        range(len(agg)), agg[value_col],
         color=colors[0], alpha=0.85,
         edgecolor=style["axes.edgecolor"], linewidth=0.5
     )
@@ -184,10 +201,11 @@ def make_bar_chart(
         [str(v)[:12] for v in agg[x_col]],
         rotation=35, ha="right", fontsize=8
     )
-    ax.set_ylabel(y_col, fontsize=9, color=style["axes.labelcolor"])
+    ax.set_ylabel("Count" if is_count else y_col, fontsize=9,
+                  color=style["axes.labelcolor"])
     from app.engines.chart_message import bar_message
     _human_axis(ax)
-    _headline(ax, style, bar_message(df, x_col, y_col),
+    _headline(ax, style, bar_message(df, x_col, y_col, counts=is_count),
               title or "{} by {}".format(y_col, x_col))
     fig.tight_layout()
     return fig_to_bytes(fig)
@@ -438,6 +456,50 @@ def make_correlation_heatmap(
     return fig_to_bytes(fig)
 
 
+def make_scatter_chart(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    title: str = "",
+    theme_name: str = "Corporate Light",
+    max_points: int = 3000,
+) -> bytes:
+    """Two measures against each other — the honest chart for a pair of
+    numeric columns when there is no date column to make either of them
+    a trend.
+
+    A dataset with no time axis used to get a "trend" anyway: two
+    unrelated numeric columns paired up, one standing in for a date it
+    was not, titled "{column} Trend" and narrated as having "improved
+    84% from the first half of the data to the second" — a movement
+    read out of row order, on a file where row order carries no time
+    information at all. This draws the relationship it actually is and
+    is captioned as an association, never a trend.
+    """
+    style  = _get_style(theme_name)
+    colors = _get_colors(theme_name)
+    work = df[[x_col, y_col]].apply(pd.to_numeric, errors="coerce").dropna()
+    if len(work) > max_points:
+        work = work.sample(n=max_points, random_state=42)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    fig.patch.set_facecolor(style["figure.facecolor"])
+    _apply_style(ax, style)
+
+    ax.scatter(work[x_col], work[y_col], s=14, alpha=0.45,
+              color=colors[0], edgecolors="none")
+
+    ax.set_xlabel(x_col, fontsize=9, color=style["axes.labelcolor"])
+    ax.set_ylabel(y_col, fontsize=9, color=style["axes.labelcolor"])
+    from app.engines.chart_message import scatter_message
+    _human_axis(ax)
+    _human_axis(ax, axis="x")
+    _headline(ax, style, scatter_message(df, x_col, y_col),
+              title or "{} against {}".format(y_col, x_col))
+    fig.tight_layout()
+    return fig_to_bytes(fig)
+
+
 def make_box_plot(
     df: pd.DataFrame,
     col: str,
@@ -538,12 +600,38 @@ def _rank_measures(df: pd.DataFrame, cols: List[str]) -> List[str]:
     return [c for _, c in scored]
 
 
-def generate_all_charts(
+def _build_chart_pack(
     df: pd.DataFrame,
     theme_name: str = "Corporate Light",
     max_charts: int = 5,
-) -> List[Tuple[str, bytes]]:
-    """Auto-generate best charts for this dataset."""
+) -> List[Tuple[str, bytes, str]]:
+    """The auto-generated chart pack, each entry carrying the narrative
+    computed from the exact columns that were plotted.
+
+    Chart building and narration used to be two separate passes: this
+    function drew the pictures and returned only `(title, png)`, and a
+    second module (`ai/report_narrator`) had to *re-derive* which
+    columns had been used by pattern-matching the title string —
+    "'MonthlyIncome Trend'" was parsed for a column whose name appears
+    in "monthlyincometrend". That match is exact when the title names
+    one column; it is not when the title names two, because a short
+    column name can turn up as a substring of an unrelated one. "age"
+    matched inside "yearswithcurr**mana**ger" — the "ge" of "manager"
+    plus the "a" before it — and a chart titled "YearsWithCurrManager by
+    AgeGroup" was narrated as being about Age throughout, because `age`
+    happened to be an earlier column in the frame than the column the
+    chart actually plotted.
+
+    Passing the real x/y down to `chart_message.py` — the same functions
+    that already caption the interactive charts — removes the guessing
+    step entirely: the narrative is generated from the columns that were
+    just used to draw the picture, not reconstructed from its title
+    afterwards.
+    """
+    from app.engines.chart_message import (bar_message, heatmap_message,
+                                           histogram_message, line_message,
+                                           pie_message)
+
     # Duplicate column names make `df[name]` return a DataFrame
     # instead of a Series, and every `.dtype` / `.nunique()` /
     # `to_numeric` call below then raises. Guarded here as well as
@@ -566,7 +654,7 @@ def generate_all_charts(
         logger.info("no non-identifier numeric columns to chart")
         return []
 
-    charts    = []
+    charts: List[Tuple[str, bytes, str]] = []
 
     # 1. Bar chart — categorical x numeric
     if cat_cols and num_cols:
@@ -576,29 +664,39 @@ def generate_all_charts(
         )
         title = "{} by {}".format(num_cols[0], best_cat)
         try:
-            charts.append((title, make_bar_chart(
-                df, best_cat, num_cols[0], title, theme_name
-            )))
+            png = make_bar_chart(df, best_cat, num_cols[0], title, theme_name)
+            charts.append((title, png,
+                          bar_message(df, best_cat, num_cols[0]) or ""))
         except Exception:
-            logger.debug("generate_all_charts: suppressed exception", exc_info=True)
+            logger.debug("_build_chart_pack: suppressed exception", exc_info=True)
 
-    # 2. Line chart — trend over time or numeric
+    # 2. Line chart — a trend needs something to be trending *over*. A
+    # dataset with no date column pairing two arbitrary numeric columns
+    # and calling the result a "Trend" invented a time axis out of row
+    # order — "MonthlyIncome Trend" on a dataset with zero datetime
+    # columns claimed values "improved 84% from the first to second half
+    # of the data" when the rows carried no time information at all.
+    # Without a real date, the second-best measure is charted against
+    # the first as a relationship instead, honestly titled "against".
     if date_cols and num_cols:
         title = "{} Over Time".format(num_cols[0])
         try:
-            charts.append((title, make_line_chart(
-                df, date_cols[0], num_cols[0], title, theme_name
-            )))
+            png = make_line_chart(df, date_cols[0], num_cols[0], title,
+                                  theme_name)
+            charts.append((title, png,
+                          line_message(df, date_cols[0], num_cols[0]) or ""))
         except Exception:
-            logger.debug("generate_all_charts: suppressed exception", exc_info=True)
+            logger.debug("_build_chart_pack: suppressed exception", exc_info=True)
     elif len(num_cols) >= 2:
-        title = "{} Trend".format(num_cols[1])
+        title = "{} against {}".format(num_cols[1], num_cols[0])
         try:
-            charts.append((title, make_line_chart(
-                df, num_cols[0], num_cols[1], title, theme_name
-            )))
+            png = make_scatter_chart(df, num_cols[0], num_cols[1], title,
+                                     theme_name)
+            from app.engines.chart_message import scatter_message
+            charts.append((title, png,
+                          scatter_message(df, num_cols[0], num_cols[1]) or ""))
         except Exception:
-            logger.debug("generate_all_charts: suppressed exception", exc_info=True)
+            logger.debug("_build_chart_pack: suppressed exception", exc_info=True)
 
     # 3. Histogram — distribution of the SECOND measure where there is
     # one. Four views of a single column is not a chart pack: on a sales
@@ -607,20 +705,20 @@ def generate_all_charts(
     if num_cols:
         title = "Distribution: {}".format(dist_col)
         try:
-            charts.append((title, make_histogram(
-                df, dist_col, title, theme_name
-            )))
+            png = make_histogram(df, dist_col, title, theme_name)
+            charts.append((title, png, histogram_message(df, dist_col) or ""))
         except Exception:
-            logger.debug("generate_all_charts: suppressed exception", exc_info=True)
+            logger.debug("_build_chart_pack: suppressed exception", exc_info=True)
 
     # 4. Correlation heatmap
     if len(num_cols) >= 3:
         try:
-            charts.append(("Correlation Matrix", make_correlation_heatmap(
-                df, "Correlation Matrix", theme_name
-            )))
+            cols = sorted(num_cols[:10])
+            png = make_correlation_heatmap(df, "Correlation Matrix", theme_name)
+            charts.append(("Correlation Matrix", png,
+                          heatmap_message(df, cols) or ""))
         except Exception:
-            logger.debug("generate_all_charts: suppressed exception", exc_info=True)
+            logger.debug("_build_chart_pack: suppressed exception", exc_info=True)
 
     # 5. Pie chart — category share
     if cat_cols and num_cols:
@@ -633,13 +731,36 @@ def generate_all_charts(
                          and best_cat == cat_cols[0] else num_cols[0])
             title = "{} Share by {}".format(share_col, best_cat)
             try:
-                charts.append((title, make_pie_chart(
-                    df, best_cat, share_col, title, theme_name
-                )))
+                png = make_pie_chart(df, best_cat, share_col, title, theme_name)
+                charts.append((title, png,
+                              pie_message(df, best_cat, share_col) or ""))
             except Exception:
-                logger.debug("generate_all_charts: suppressed exception", exc_info=True)
+                logger.debug("_build_chart_pack: suppressed exception", exc_info=True)
 
     return charts[:max_charts]
+
+
+def generate_all_charts(
+    df: pd.DataFrame,
+    theme_name: str = "Corporate Light",
+    max_charts: int = 5,
+) -> List[Tuple[str, bytes]]:
+    """Auto-generate best charts for this dataset. See `_build_chart_pack`
+    for how each is built; this drops the narrative for callers that
+    only want the pictures."""
+    return [(title, png) for title, png, _narrative
+            in _build_chart_pack(df, theme_name, max_charts)]
+
+
+def generate_chart_pack_with_narratives(
+    df: pd.DataFrame,
+    theme_name: str = "Corporate Light",
+    max_charts: int = 5,
+) -> List[Tuple[str, bytes, str]]:
+    """`(title, png, narrative)` for each auto-generated chart, narrated
+    from the exact columns it was built from — see `_build_chart_pack`.
+    """
+    return _build_chart_pack(df, theme_name, max_charts)
 
 
 def make_comparison_chart(

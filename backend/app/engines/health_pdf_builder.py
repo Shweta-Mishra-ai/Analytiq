@@ -75,14 +75,18 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     CW   = W - 36 * mm
     now  = datetime.datetime.now().strftime("%B %d, %Y")
 
-    NICHE_COLORS = {
-        "hr":        "#1565C0",
-        "sales":     "#2E7D32",
-        "ecommerce": "#E64A19",
-        "finance":   "#0D47A1",
-        "general":   "#1B4FD8",
-    }
-    accent_hex  = NICHE_COLORS.get(niche, "#1B4FD8")
+    # Read from the Main Report's own theme table rather than keeping a
+    # second copy of "what colour is HR" here. The two used to drift:
+    # this file's HR blue was #1565C0 while the Main Report's was
+    # #1976D2, its e-commerce orange was #E64A19 against #F4511E, its
+    # finance blue was #0D47A1 against #1B4FD8 — close enough to look
+    # like a mistake rather than a deliberate choice, on two documents a
+    # client receives for the same engagement. Sales and the unbranded
+    # default happened to already match, which is how the drift went
+    # unnoticed rather than unnoticeable.
+    from app.engines.pdf_builder import DOMAIN_THEMES, THEMES
+
+    accent_hex = THEMES[DOMAIN_THEMES.get(niche, "Corporate Light")]["accent"]
     accent      = HexColor(accent_hex)
     dark        = HexColor("#0A1628")
     gray        = HexColor("#6B7280")
@@ -405,6 +409,27 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     ]))
     story.append(kpi_tbl)
     story.append(Spacer(1, 5*mm))
+
+    # The score above measures cleanliness — missing values, duplicate
+    # rows, per-column health — and a dataset can score well on every
+    # one of those while still having an identifier that repeats, which
+    # means the same real-world record is counted more than once in
+    # every total computed from it. That failure doesn't move any of
+    # the three numbers in the box above, so it is stated here in words
+    # rather than left for a reader to infer from a grade capped at B.
+    not_ready_reason = health.get("not_ready_reason", "")
+    if not_ready_reason:
+        story.append(Paragraph(
+            "<b>Not ready to analyse.</b> {}. Figures in this report "
+            "are computed from the dataset as supplied; resolve this "
+            "before treating a total or a rate as exact.".format(
+                _clean_text(not_ready_reason)),
+            ParagraphStyle("notready", fontName=_BF, fontSize=8.5,
+                           textColor=HexColor("#9A3412"), leading=12,
+                           backColor=HexColor("#FFF3E0"),
+                           borderColor=HexColor("#F97316"), borderWidth=0.75,
+                           borderPadding=6, spaceAfter=2)))
+        story.append(Spacer(1, 4*mm))
 
     # Dataset summary table
     story.append(Paragraph("Dataset Summary", ST["h3"]))

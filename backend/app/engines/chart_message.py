@@ -43,23 +43,39 @@ from app.services.numfmt import human_number  # noqa: E402
 _fmt = human_number
 
 
-def bar_message(df: pd.DataFrame, x_col: str, y_col: str) -> Optional[str]:
-    """Which group leads, and by how much."""
+def bar_message(df: pd.DataFrame, x_col: str, y_col: str,
+                *, counts: bool = False) -> Optional[str]:
+    """Which group leads, and by how much.
+
+    `counts=True` is for a headcount-style chart — "how many rows per
+    group" — where x and y are the same column and there is nothing to
+    sum. `df.groupby(x)[x].sum()` would add a categorical column to
+    itself; a count is the right aggregation and `y_col` is only a
+    label here, not a column read from `df`.
+    """
     try:
-        agg = df.groupby(x_col)[y_col].sum().sort_values(ascending=False)
+        if counts:
+            agg = df.groupby(x_col).size().sort_values(ascending=False)
+        else:
+            agg = df.groupby(x_col)[y_col].sum().sort_values(ascending=False)
         agg = agg[agg > 0]
         if len(agg) < 2:
             return None
         top, second = float(agg.iloc[0]), float(agg.iloc[1])
         share = top / float(agg.sum()) * 100
+        # "Dept is broadly level across Dept" repeats the column name
+        # for no reason when x and y are the same one — say what the
+        # number actually is instead.
+        measure = "records" if counts else y_col
         if second > 0 and top / second >= MIN_LEAD_RATIO:
             return ("{} leads {} at {} — {:.1f}x the next group and {:.0f}% "
                     "of the total".format(
-                        str(agg.index[0])[:24], y_col, _fmt(top),
+                        str(agg.index[0])[:24], measure, _fmt(top),
                         top / second, share))
-        return ("{} is broadly level across {} — the highest group is only "
+        return ("{} {} broadly level across {} — the highest group is only "
                 "{:.0f}% above the next".format(
-                    y_col, x_col, (top / second - 1) * 100 if second else 0))
+                    measure, "are" if counts else "is", x_col,
+                    (top / second - 1) * 100 if second else 0))
     except Exception:
         logger.debug("bar message failed", exc_info=True)
         return None
@@ -154,6 +170,37 @@ def pie_message(df: pd.DataFrame, x_col: str, y_col: str) -> Optional[str]:
                     y_col, len(agg), top_share, two))
     except Exception:
         logger.debug("pie message failed", exc_info=True)
+        return None
+
+
+def scatter_message(df: pd.DataFrame, x_col: str, y_col: str
+                    ) -> Optional[str]:
+    """Whether two measures move together, stated as association.
+
+    Used when a chart pairs two numeric columns with no time axis
+    between them — the honest alternative to calling that pairing a
+    "trend". A trend needs a date; a relationship only needs two
+    measures, and it is captioned as one.
+    """
+    try:
+        work = df[[x_col, y_col]].apply(pd.to_numeric, errors="coerce").dropna()
+        if len(work) < 20:
+            return None
+        r = float(work[x_col].corr(work[y_col]))
+        if not np.isfinite(r):
+            return None
+        strength = ("closely" if abs(r) >= 0.6 else
+                    "loosely" if abs(r) >= 0.3 else "barely")
+        if abs(r) < 0.15:
+            return ("{} and {} show no real relationship (r={:.2f}) — "
+                    "each varies independently of the other".format(
+                        x_col, y_col, r))
+        direction = "rises" if r > 0 else "falls"
+        return ("{} and {} move {} together (r={:.2f}) — {} {} as {} "
+                "increases, an association rather than a cause".format(
+                    x_col, y_col, strength, r, y_col, direction, x_col))
+    except Exception:
+        logger.debug("scatter message failed", exc_info=True)
         return None
 
 

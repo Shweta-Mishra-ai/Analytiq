@@ -12,7 +12,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.config import config
 from app.engines.data_cleaner import table_name_from_filename
 from app.services.auth import current_owner
 from app.services.dataset_store import store
@@ -86,7 +85,6 @@ def _generate_pdf_inner(ds_id, req, owner, df):
     from app.engines.data_profiler import profile_dataset
     from app.engines.story_engine import detect_domain, generate_story
     from app.engines.pdf_builder import build_pdf
-    from app.engines.chart_exporter import generate_all_charts
 
     # 1. profile
     try:
@@ -153,21 +151,33 @@ def _generate_pdf_inner(ds_id, req, owner, df):
     # 7. ML (only if previously trained)
     ml_report = store.cache_get(owner, ds_id, "ml_last") if req.include_ml else None
 
-    # 8. charts + AI narratives
+    # 8. charts + narratives
+    #
+    # The narrative used to be a second pass: charts were drawn, handed
+    # back as (title, image) with the columns they were built from
+    # thrown away, and `report_narrator.generate_chart_narrative` had to
+    # *guess* those columns back from the title string by substring
+    # match. "YearsWithCurrManager by AgeGroup" narrated Age throughout,
+    # because "age" matches inside "yearswithcurr**mana**ger" and Age
+    # happened to be an earlier column in the frame than the one the
+    # chart actually plotted — a chart and its caption disagreeing about
+    # which metric they were both showing. `generate_chart_pack_with_narratives`
+    # narrates from the exact x/y columns it just drew, using the same
+    # `chart_message` functions that already caption the interactive
+    # charts, so there is nothing left to guess.
     chart_data = []
     theme_name = req.theme_name
     try:
-        charts = generate_all_charts(df, theme_name, max_charts=req.max_charts)
-        for title, img_bytes in charts:
+        from app.engines.chart_exporter import generate_chart_pack_with_narratives
+
+        for title, img_bytes, narrative in generate_chart_pack_with_narratives(
+                df, theme_name, max_charts=req.max_charts):
             if not img_bytes:
                 continue
-            try:
-                from app.ai.report_narrator import generate_chart_narrative
-                narrative = generate_chart_narrative(
-                    df, title, config.groq_api_key, domain_name)
-            except Exception:
-                narrative = "Chart generated from dataset analysis."
-            chart_data.append((title, img_bytes, narrative))
+            chart_data.append(
+                (title, img_bytes, narrative or "No notable pattern stood "
+                                                "out beyond what the chart "
+                                                "itself shows."))
     except Exception as e:
         logger.warning(f"chart export failed: {e}")
 

@@ -1298,7 +1298,109 @@ def _chart_page(story, s, T, img_bytes, title, narrative, num, CW):
         _narrative_box(story, s, T, narrative)
 
 
-def _dashboard_page(story, s, T, df, domain, CW, theme_name):
+def _render_dashboard_tile(df, tile, theme_name):
+    """One tile's PNG, or None. Isolated so one bad tile never takes the
+    section down with it — see `build_dashboard_tiles`."""
+    from app.engines import chart_exporter as ce
+
+    if tile.type == "comparison" and tile.x and tile.y and tile.y2:
+        return ce.make_comparison_chart(df, tile.x, tile.y, tile.y2,
+                                        tile.title, theme_name)
+    if tile.type == "line" and tile.x and tile.y:
+        return ce.make_line_chart(df, tile.x, tile.y, tile.title, theme_name)
+    if tile.type == "bar" and tile.x and tile.y:
+        return ce.make_bar_chart(df, tile.x, tile.y, tile.title, theme_name)
+    if tile.type == "pie" and tile.x and tile.y:
+        return ce.make_pie_chart(df, tile.x, tile.y, tile.title, theme_name)
+    if tile.type == "histogram" and tile.x:
+        return ce.make_histogram(df, tile.x, tile.title, theme_name)
+    return None
+
+
+def _fallback_dashboard_tiles(df, theme_name):
+    """A dashboard is not allowed to be silently empty — rule 9 of the
+    reporting standard is that no section carries a heading with nothing
+    under it, and a heading that never even prints is the same failure
+    one step earlier. `dashboard_spec` is domain-aware and should
+    usually produce something; if every one of its tiles fails to
+    render on a real file, this rebuilds the two simplest possible views
+    — a ranked measure by its best category, and that measure's spread —
+    from the same column-ranking `generate_all_charts` uses, so the page
+    still shows the shape of the data instead of vanishing.
+    """
+    from app.engines import chart_exporter as ce
+    from app.engines.dashboard_spec import Tile
+    from app.engines.domains.base import is_id_column
+
+    out = []
+    try:
+        num_cols = ce._rank_measures(
+            df, df.select_dtypes(include="number").columns.tolist())
+        cat_cols = [c for c in df.select_dtypes(include=["object", "string"])
+                    .columns if not is_id_column(c, df[c])
+                    and 2 <= df[c].nunique() <= 25]
+        if num_cols and cat_cols:
+            title = "{} by {}".format(num_cols[0], cat_cols[0])
+            png = ce.make_bar_chart(df, cat_cols[0], num_cols[0], title,
+                                    theme_name)
+            if png:
+                out.append((Tile("bar", title, "Which {} leads on {}?"
+                                 .format(cat_cols[0], num_cols[0]),
+                                 x=cat_cols[0], y=num_cols[0]), png))
+        if num_cols:
+            title = "Distribution: {}".format(num_cols[0])
+            png = ce.make_histogram(df, num_cols[0], title, theme_name)
+            if png:
+                out.append((Tile("histogram", title,
+                                 "How is {} spread across records?"
+                                 .format(num_cols[0]), x=num_cols[0]), png))
+    except Exception:
+        logger.warning("dashboard fallback tiles also failed", exc_info=True)
+    return out
+
+
+def build_dashboard_tiles(df, domain, theme_name, max_tiles: int = 6):
+    """The rendered (tile, png) pairs for this file's dashboard page —
+    computed once, before the table of contents is built, so the TOC
+    can say whether the section exists rather than silently omitting
+    it. Never raises; an empty list means the fallback tiles also found
+    nothing to show, which only happens on a file with no chartable
+    column at all.
+    """
+    from app.engines.dashboard_spec import build_spec
+
+    try:
+        tiles = build_spec(df, domain, max_tiles=max_tiles)
+    except Exception:
+        logger.warning("dashboard page: spec failed for domain '%s'",
+                       domain, exc_info=True)
+        tiles = []
+
+    rendered = []
+    for tile in tiles:
+        try:
+            png = _render_dashboard_tile(df, tile, theme_name)
+            if png:
+                rendered.append((tile, png))
+        except Exception:
+            # One tile that will not render is not a reason to drop the
+            # page; the rest still show the shape of the data. Logged at
+            # warning rather than debug — a dashboard tile failing on a
+            # real client file is worth knowing about even though the
+            # page survives it.
+            logger.warning("dashboard page: tile '%s' failed to render",
+                           tile.title, exc_info=True)
+
+    if not rendered:
+        if tiles:
+            logger.warning("dashboard page: %d tile(s) from build_spec all "
+                           "failed to render — falling back to a minimal "
+                           "dashboard", len(tiles))
+        rendered = _fallback_dashboard_tiles(df, theme_name)
+    return rendered
+
+
+def _dashboard_page(story, s, T, rendered, CW):
     """The dashboard, on one page of the document.
 
     A reader who has the PDF and not the app has no way to see the shape
@@ -1307,48 +1409,10 @@ def _dashboard_page(story, s, T, df, domain, CW, theme_name):
     same tiles the interactive dashboard chooses, for the same domain,
     two to a row, each captioned with the question it answers.
 
-    Built from `dashboard_spec`, so the page and the screen cannot show
-    different views of the same file. Charts are rendered in the report's
-    own theme rather than the interface's, since this one is printed.
+    Takes already-rendered (tile, png) pairs — see `build_dashboard_tiles`
+    — rather than building the spec itself, so the TOC and the page
+    agree on whether a dashboard exists at all.
     """
-    from app.engines import chart_exporter as ce
-    from app.engines.dashboard_spec import build_spec
-
-    try:
-        tiles = build_spec(df, domain, max_tiles=6)
-    except Exception:
-        logger.warning("dashboard page: spec failed", exc_info=True)
-        return
-    if not tiles:
-        return
-
-    rendered = []
-    for tile in tiles:
-        try:
-            if tile.type == "comparison" and tile.x and tile.y and tile.y2:
-                png = ce.make_comparison_chart(df, tile.x, tile.y, tile.y2,
-                                               tile.title, theme_name)
-            elif tile.type == "line" and tile.x and tile.y:
-                png = ce.make_line_chart(df, tile.x, tile.y, tile.title,
-                                         theme_name)
-            elif tile.type == "bar" and tile.x and tile.y:
-                png = ce.make_bar_chart(df, tile.x, tile.y, tile.title,
-                                        theme_name)
-            elif tile.type == "pie" and tile.x and tile.y:
-                png = ce.make_pie_chart(df, tile.x, tile.y, tile.title,
-                                        theme_name)
-            elif tile.type == "histogram" and tile.x:
-                png = ce.make_histogram(df, tile.x, tile.title, theme_name)
-            else:
-                continue
-            if png:
-                rendered.append((tile, png))
-        except Exception:
-            # One tile that will not render is not a reason to drop the
-            # page; the rest still show the shape of the data.
-            logger.debug("dashboard page: tile %s failed", tile.title,
-                         exc_info=True)
-
     if not rendered:
         return
 
@@ -1684,6 +1748,13 @@ def build_pdf(
     config["domain"]     = domain
     config["theme_name"] = theme_name
 
+    # Computed here, before the table of contents, so the TOC can say
+    # whether a Dashboard section exists rather than silently omitting
+    # it. The section used to be built with nothing in the TOC pointing
+    # to it — invisible on the one page of the document that summarises
+    # every other page.
+    dashboard_tiles = build_dashboard_tiles(df, domain, theme_name)
+
     report_title = config.get("title", "Data Analysis Report")
     client_name  = config.get("client_name", "Client")
     report_date  = datetime.now().strftime("%B %d, %Y")
@@ -1772,6 +1843,8 @@ def build_pdf(
         _add_toc("Statistical Analysis")
     if bi_report:
         _add_toc("Business Intelligence")
+    if dashboard_tiles:
+        _add_toc("Dashboard")
     for i, (t, _, _) in enumerate(chart_data, 1):
         _add_toc("Chart {}: {}".format(i, t[:28]))
     _add_toc("Recommendations & Action Plan")
@@ -1820,9 +1893,14 @@ def build_pdf(
         _bi_section(story, s, T, bi_report, CW)
         story.append(CondPageBreak(110 * mm))
 
-    story.append(PageBreak())
-    _dashboard_page(story, s, T, df, domain, CW, theme_name)
-    story.append(PageBreak())
+    # Both breaks are conditional on there being a page to break around —
+    # unconditional breaks either side of a section that renders nothing
+    # left one blank page sitting in the middle of the document, on the
+    # rare file with no chartable column left even for the fallback.
+    if dashboard_tiles:
+        story.append(PageBreak())
+        _dashboard_page(story, s, T, dashboard_tiles, CW)
+        story.append(PageBreak())
 
     for i, (title, img_bytes, narrative) in enumerate(chart_data, 1):
         _chart_page(story, s, T, img_bytes, title, narrative, i, CW)

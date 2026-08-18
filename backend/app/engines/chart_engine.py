@@ -454,21 +454,39 @@ def recommend_charts(df: pd.DataFrame) -> List[Tuple[str, go.Figure]]:
 # ══════════════════════════════════════════════════════════
 
 def make_bar(df, x, y, title="", top_n: int = 25):
-    agg = (df.groupby(x, dropna=True)[y].sum()
-             .reset_index()
-             .sort_values(y, ascending=False)
-             .head(top_n))
-    fig = px.bar(agg, x=x, y=y)
+    # A headcount-style call ("how many rows per group") passes the same
+    # column as both x and y. Summing a categorical column against
+    # itself and then re-inserting it as an index column raises "cannot
+    # insert <col>, already exists" — a count needs its own column name.
+    # The API layer pre-aggregates around this before calling here, but
+    # this is a public entry point too and should not depend on every
+    # caller remembering to.
+    is_count = x == y
+    if is_count:
+        agg = (df.groupby(x, dropna=True).size()
+                 .reset_index(name="_n")
+                 .sort_values("_n", ascending=False)
+                 .head(top_n))
+        value_col = "_n"
+    else:
+        agg = (df.groupby(x, dropna=True)[y].sum()
+                 .reset_index()
+                 .sort_values(y, ascending=False)
+                 .head(top_n))
+        value_col = y
+    fig = px.bar(agg, x=x, y=value_col)
     # One colour. Colouring bars by their own height restates the y-axis
     # and adds a legend for a variable already on the chart.
     fig.update_traces(
         marker_color=palette()["series"][0],
         marker_line_width=0,
-        hovertemplate="<b>%{x}</b><br>" + str(y) + ": %{y:,.0f}<extra></extra>",
+        hovertemplate="<b>%{x}</b><br>" + ("Count" if is_count else str(y))
+                       + ": %{y:,.0f}<extra></extra>",
     )
-    _style(fig, bar_message(df, x, y), title or "{} by {}".format(y, x))
+    _style(fig, bar_message(df, x, y, counts=is_count),
+           title or "{} by {}".format(y, x))
     _human_ticks(fig)
-    _zero_baseline(fig, agg[y])
+    _zero_baseline(fig, agg[value_col])
     return fig
 
 

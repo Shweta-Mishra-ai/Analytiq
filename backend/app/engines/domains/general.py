@@ -229,12 +229,21 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
             "actions": actions, "insights": insights}
 
 
-def _is_obvious_segment_pair(cat: str, num: str) -> bool:
-    """True for mechanically-obvious pairings a senior analyst would never
-    headline: age/tenure by seniority-level/role (older people hold senior
-    roles), or a metric grouped by a near-synonym of itself. Statistically
-    significant but worthless as a finding — 'managers are older than interns'.
+def _is_obvious_segment_pair(df: pd.DataFrame, cat: str, num: str) -> bool:
+    """True for pairings a senior analyst would never headline: a
+    categorical column that is structurally a discretisation of the
+    numeric one ('AgeGroup' out of 'Age' — see
+    `column_roles.is_discretization` for why a structural test rather
+    than a name check), age/tenure by seniority-level/role (older people
+    hold senior roles), or a metric grouped by a near-synonym of itself.
+    Statistically significant but worthless as a finding — 'managers are
+    older than interns', or 'the 18-25 group is younger than the 55+
+    group'.
     """
+    from app.engines.column_roles import is_discretization
+
+    if is_discretization(df, cat, num):
+        return True
     c, n = cat.lower(), num.lower()
     demographic = ("age", "tenure", "years", "experience", "yearsat",
                    "yearsin", "yearssince")
@@ -243,8 +252,13 @@ def _is_obvious_segment_pair(cat: str, num: str) -> bool:
     if any(d in n for d in demographic) and any(s in c for s in seniority):
         return True
     # Metric grouped by a column whose name contains it (near-tautology).
-    stem = n.replace("_", "").replace(" ", "")[:6]
-    if len(stem) >= 4 and stem in c.replace("_", "").replace(" ", ""):
+    # The floor used to be 4 characters, which excluded "age" — 3 — and
+    # let 'AgeGroup' segments differ significantly on 'Age' straight
+    # through. 3 is low enough to catch "age", "pay", "fee" and similar
+    # short measure names without flagging on incidental two-letter
+    # overlaps.
+    stem = n.replace("_", "").replace(" ", "")
+    if len(stem) >= 3 and stem in c.replace("_", "").replace(" ", ""):
         return True
     return False
 
@@ -262,7 +276,7 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
     best = None
     for cat in cat_cols[:5]:
         for num in num_cols[:6]:
-            if _is_obvious_segment_pair(cat, num):
+            if _is_obvious_segment_pair(df, cat, num):
                 continue
             try:
                 sub = df[[cat, num]].dropna()
