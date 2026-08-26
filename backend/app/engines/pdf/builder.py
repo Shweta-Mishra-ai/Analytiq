@@ -53,6 +53,23 @@ from app.services.dtypes import is_text_dtype, text_columns
 #  MAIN PUBLIC FUNCTION  (identical signature to original)
 # ══════════════════════════════════════════════════════════
 
+def _has_predictive_section(predictive) -> bool:
+    """Whether the report carries a Predictive Risk section.
+
+    True both when the model found drivers and when it found nothing:
+    "we looked and found no signal" is a result the reader needs, and
+    gating on `top_drivers` alone made a failed model indistinguishable
+    from one that was never attempted.
+    """
+    if predictive is None:
+        return False
+    if getattr(predictive, "top_drivers", None):
+        return True
+    verdict = getattr(predictive, "verdict", None)
+    return verdict is not None and not verdict.usable
+
+
+
 def build_pdf(
     df: pd.DataFrame,
     config: dict,
@@ -174,7 +191,7 @@ def build_pdf(
         blueprint_for(domain).label))
     if attrition:
         _add_toc("Attrition Deep Dive")
-    if predictive is not None and getattr(predictive, "top_drivers", None):
+    if _has_predictive_section(predictive):
         _add_toc("Predictive Risk Analysis")
     if has_deep_page(domain):
         _add_toc("{} Analysis".format(_domain_label(domain).title()))
@@ -220,7 +237,7 @@ def build_pdf(
         _attrition_page(story, s, T, attrition, CW)
         story.append(PageBreak())
 
-    if predictive is not None and getattr(predictive, "top_drivers", None):
+    if _has_predictive_section(predictive):
         _predictive_section(story, s, T, predictive, CW,
                             avg_salary_k=avg_salary_k,
                             top_cluster=top_cluster,

@@ -172,6 +172,81 @@ def find_top_cluster(df: pd.DataFrame, target_col: str) -> Optional[TopCluster]:
         return None
 
 
+
+@dataclass
+class DecisionBand:
+    """What happens if you act on the top N% of the risk ranking.
+
+    AUC answers "does the model rank correctly". It does not answer the
+    question a manager actually asks, which is "we can call 200 customers
+    this month — which 200, and how many of them were going to leave
+    anyway?" That is precision, recall and lift at a chosen budget, and it
+    is the only form in which a model becomes a decision.
+    """
+    budget_pct: int          # share of the population targeted
+    n_targeted: int
+    n_events_caught: int
+    total_events: int
+    precision: float         # % of those targeted who record the event
+    recall: float            # % of all events captured
+    lift: float              # precision relative to the base rate
+
+
+def decision_curve(y, proba, budgets=(5, 10, 20, 30)) -> List[DecisionBand]:
+    """Precision, recall and lift at each action budget.
+
+    Ranked by predicted probability, so band k contains the k% the model
+    considers most at risk.
+    """
+    bands: List[DecisionBand] = []
+    try:
+        y_arr = np.asarray(pd.Series(y).astype(int))
+        p_arr = np.asarray(proba, dtype=float)
+        n = len(y_arr)
+        total_events = int(y_arr.sum())
+        if n == 0 or total_events == 0:
+            return bands
+        base = total_events / n
+        order = np.argsort(-p_arr)          # highest risk first
+        for pct in budgets:
+            k = int(round(n * pct / 100.0))
+            if k < 1 or k > n:
+                continue
+            picked = y_arr[order[:k]]
+            caught = int(picked.sum())
+            precision = caught / k
+            bands.append(DecisionBand(
+                budget_pct=int(pct), n_targeted=k, n_events_caught=caught,
+                total_events=total_events,
+                precision=round(precision * 100, 1),
+                recall=round(caught / total_events * 100, 1),
+                lift=round(precision / base, 2) if base else 0.0))
+    except Exception:
+        logger.warning("decision curve failed", exc_info=True)
+    return bands
+
+
+def calibration_gap(y, proba, top_pct: int = 20) -> Optional[float]:
+    """Percentage points between predicted and observed risk in the top band.
+
+    The high-risk segment is presented as "these records show an X% event
+    rate". If the model's own predicted probability for that group is far
+    from what actually happened, the number is not safe to quote.
+    """
+    try:
+        y_arr = np.asarray(pd.Series(y).astype(int))
+        p_arr = np.asarray(proba, dtype=float)
+        k = int(round(len(y_arr) * top_pct / 100.0))
+        if k < 10:
+            return None
+        order = np.argsort(-p_arr)[:k]
+        return round(abs(float(p_arr[order].mean()) -
+                         float(y_arr[order].mean())) * 100, 1)
+    except Exception:
+        logger.debug("calibration check failed", exc_info=True)
+        return None
+
+
 @dataclass
 class DriverResult:
     target: str
@@ -190,6 +265,13 @@ class DriverResult:
     # with no signal describe the noise it was fitted to.
     verdict: Any = None
     leakage: List = field(default_factory=list)
+    # What acting on the top N% of the ranking would actually yield.
+    decision_bands: List = field(default_factory=list)
+    # Precision and recall at the operating threshold, and how far the
+    # model's predicted risk is from the observed rate in the top band.
+    precision: float = 0.0
+    recall: float = 0.0
+    calibration_gap: Optional[float] = None
 
 
 def find_binary_target(df: pd.DataFrame) -> Optional[str]:
@@ -311,6 +393,22 @@ def compute_drivers(df: pd.DataFrame, target_col: str,
                             bits.append(f"{c} = '{mode_val.iloc[0]}'")
                 profile = "; ".join(bits)
 
+        # ── Turn the ranking into a decision ──────────────────
+        bands, precision, recall, calib = [], 0.0, 0.0, None
+        if proba is not None:
+            bands = decision_curve(y, proba)
+            calib = calibration_gap(y, proba)
+            try:
+                pred = (proba >= 0.5).astype(int)
+                y_arr = np.asarray(y.astype(int))
+                tp = int(((pred == 1) & (y_arr == 1)).sum())
+                fp = int(((pred == 1) & (y_arr == 0)).sum())
+                fn = int(((pred == 0) & (y_arr == 1)).sum())
+                precision = round(tp / (tp + fp) * 100, 1) if (tp + fp) else 0.0
+                recall = round(tp / (tp + fn) * 100, 1) if (tp + fn) else 0.0
+            except Exception:
+                logger.debug("precision/recall failed", exc_info=True)
+
         # ── Does this model beat always guessing the majority class? ──
         verdict = None
         leakage = []
@@ -343,7 +441,8 @@ def compute_drivers(df: pd.DataFrame, target_col: str,
             n_rows=len(data), n_features=X.shape[1],
             top_drivers=ranked, base_rate=base_rate,
             high_risk_profile=profile, high_risk_rate=hr_rate, high_risk_n=hr_n,
-            verdict=verdict, leakage=leakage,
+            verdict=verdict, leakage=leakage, decision_bands=bands,
+            precision=precision, recall=recall, calibration_gap=calib,
         )
     except Exception:
         logger.warning("compute_drivers failed", exc_info=True)

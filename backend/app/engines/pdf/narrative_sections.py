@@ -569,6 +569,70 @@ def _exec_dashboard(story, s, T, df, profile, top_insights,
 #  Model-based: what the data predicts, not only what it records.
 # ══════════════════════════════════════════════════════════
 
+def _decision_table(story, s, T, dr, CW):
+    """What acting on the top N% of the ranking would actually yield.
+
+    AUC answers "does the model rank correctly". It does not answer the
+    question a manager asks, which is "we can contact 200 people this
+    month — which 200, and how many of them were going to leave anyway?"
+    Precision, recall and lift at a chosen budget are the form in which a
+    model becomes a decision.
+    """
+    bands = list(getattr(dr, "decision_bands", None) or [])
+    if not bands:
+        return
+
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph("Where to Act", s["h3"]))
+    story.append(Paragraph(
+        "Records ranked by predicted risk. Each row is a different size of "
+        "intervention: how many records it covers, how many of the events "
+        "it would reach, and how much better that is than choosing at "
+        "random.", s["body"]))
+    story.append(Spacer(1, 2 * mm))
+
+    rows = [["If you act on", "Records", "Events reached",
+             "Hit rate", "Share of all events", "vs random"]]
+    for b in bands:
+        rows.append([
+            "top {}%".format(b.budget_pct),
+            "{:,}".format(b.n_targeted),
+            "{:,} of {:,}".format(b.n_events_caught, b.total_events),
+            "{:.0f}%".format(b.precision),
+            "{:.0f}%".format(b.recall),
+            "{:.1f}x".format(b.lift),
+        ])
+    _gtable(story, T, rows[0], rows[1:],
+            [CW * 0.16, CW * 0.13, CW * 0.22, CW * 0.13, CW * 0.22, CW * 0.14])
+
+    best = max(bands, key=lambda b: b.lift)
+    _narrative_box(
+        story, s, T,
+        "<b>Reading this:</b> targeting the top {}% — {:,} records — reaches "
+        "{:,} of the {:,} events in the data. {:.0f}% of those contacted "
+        "record the event, against {:.0f}% if the same number were chosen at "
+        "random, so the effort goes {:.1f} times further. Which row to choose "
+        "is a budget decision, not a modelling one.".format(
+            best.budget_pct, best.n_targeted, best.n_events_caught,
+            best.total_events, best.precision,
+            best.precision / best.lift if best.lift else 0, best.lift))
+    story.append(Spacer(1, 2 * mm))
+
+    gap = getattr(dr, "calibration_gap", None)
+    if gap is not None and gap > 10:
+        # The rates above come from observed outcomes, so they stand. The
+        # model's own probability scores do not, and someone will
+        # eventually read one as "this record has a 70% chance".
+        story.append(Paragraph(
+            "The rates above are what actually happened in each band, so "
+            "they can be relied on. The model's individual risk scores are "
+            "not calibrated to probabilities ({:.0f} percentage points out "
+            "in the top band), so use the ranking to prioritise and not the "
+            "score as a likelihood for any one record.".format(gap),
+            s["note"]))
+        story.append(Spacer(1, 2 * mm))
+
+
 def _leakage_note(story, s, T, dr):
     """Name any column that predicts the outcome suspiciously well.
 
@@ -769,4 +833,5 @@ def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
                 expected_events, dr.high_risk_n, avoidable, dr.base_rate,
                 roi_line))
 
+    _decision_table(story, s, T, dr, CW)
     _leakage_note(story, s, T, dr)
