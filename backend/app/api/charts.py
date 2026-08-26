@@ -90,7 +90,17 @@ def kpis(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
 @router.post("/{ds_id}/recommend")
 def recommend(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
     df = _df(owner, ds_id, body.filters)
-    charts = chart_engine.recommend_charts(df)
+    # Pass the detected domain so chart selection can prefer the metrics
+    # this kind of business actually leads with, rather than whichever
+    # numeric column happens to come first.
+    try:
+        from app.engines.story_engine import detect_domain
+        domain, _ = detect_domain(df)
+    except Exception:
+        logger.warning("domain detection failed for chart recommendation",
+                       exc_info=True)
+        domain = "general"
+    charts = chart_engine.recommend_charts(df, domain)
     return {"charts": [{"title": t, "figure": _fig_json(f)} for t, f in charts]}
 
 

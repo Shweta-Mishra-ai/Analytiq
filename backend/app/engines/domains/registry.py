@@ -68,6 +68,13 @@ class DomainSpec:
     # used to run for anything detected as HR, which is how SaaS
     # subscription data ended up with an "employee attrition rate".
     attrition_fn: Optional[Callable] = None
+    # Column-name fragments this domain would rather chart, most important
+    # first. Chart selection consults these before falling back to
+    # whichever numeric column varies most. Kept here rather than in
+    # chart_engine so adding a domain stays a one-file change — the
+    # dataforge original carried its own hardcoded per-domain table, which
+    # is exactly the drift this registry exists to stop.
+    chart_metrics: Tuple[str, ...] = ()
     # Optional per-domain overrides. When None the shared lookups in
     # report_blueprints / industry_benchmarks are used.
     blueprint: Optional[object] = None
@@ -276,6 +283,8 @@ register(DomainSpec(
     insight_fn=_insights_hr,
     pdf_theme="HR Blue",
     attrition_fn=_run_attrition,
+    chart_metrics=("attrition", "monthlyincome", "salary", "satisfaction",
+                   "performance", "tenure", "years"),
 ))
 
 register(DomainSpec(
@@ -289,6 +298,8 @@ register(DomainSpec(
               "quantity", "amount"),
     insight_fn=_insights_ecommerce,
     pdf_theme="Ecommerce Orange",
+    chart_metrics=("revenue", "amount", "price", "rating", "discount",
+                   "quantity", "qty"),
 ))
 
 register(DomainSpec(
@@ -301,6 +312,8 @@ register(DomainSpec(
               "conversion", "lead", "closed", "margin", "profit", "rep"),
     insight_fn=_insights_sales,
     pdf_theme="Sales Green",
+    chart_metrics=("revenue", "sales", "amount", "profit", "margin",
+                   "dealsize", "quota"),
 ))
 
 register(DomainSpec(
@@ -313,6 +326,8 @@ register(DomainSpec(
               "margin", "asset", "tax", "revenue", "balance", "account"),
     insight_fn=_insights_finance,
     pdf_theme="Corporate Light",
+    chart_metrics=("revenue", "profit", "margin", "ebitda", "expense",
+                   "cost", "income"),
 ))
 
 
@@ -326,6 +341,8 @@ register(DomainSpec(
               "source", "audience", "engagement", "traffic", "roi"),
     insight_fn=_insights_marketing,
     pdf_theme="Ecommerce Orange",
+    chart_metrics=("roas", "revenue", "spend", "conversions", "cpa",
+                   "clicks", "impressions", "ctr"),
 ))
 
 register(DomainSpec(
@@ -338,6 +355,8 @@ register(DomainSpec(
               "downgrade", "contract", "trial", "usage", "customer"),
     insight_fn=_insights_saas,
     pdf_theme="Dark Tech",
+    chart_metrics=("mrr", "arr", "monthlycharges", "totalcharges", "churn",
+                   "expansion", "seats", "activeusers", "nps"),
 ))
 
 register(DomainSpec(
@@ -352,6 +371,8 @@ register(DomainSpec(
               "warehouse"),
     insight_fn=_insights_operations,
     pdf_theme="Corporate Light",
+    chart_metrics=("throughput", "cycletime", "defectrate", "utilisation",
+                   "utilization", "downtime", "inventoryturns"),
 ))
 
 register(DomainSpec(
@@ -364,6 +385,8 @@ register(DomainSpec(
               "treatment", "care", "hospital", "bed", "case", "clinic"),
     insight_fn=_insights_healthcare,
     pdf_theme="HR Blue",
+    chart_metrics=("costpercase", "lengthofstay", "readmission",
+                   "bedoccupancy", "satisfaction"),
 ))
 
 # The fallback. Never competes in scoring; used whenever evidence is weak
