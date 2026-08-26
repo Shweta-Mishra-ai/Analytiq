@@ -51,16 +51,29 @@ def test_build_pdf_is_the_same_object_through_every_path():
     assert via_shim is via_package is direct
 
 
-def test_public_signature_is_unchanged():
-    """Callers pass these by keyword; renaming one breaks the API."""
+ORIGINAL_PARAMS = [
+    "df", "config", "profile", "cleaning_summary", "stats_report",
+    "bi_report", "ml_report", "chart_data", "executive_summary",
+    "findings", "risks", "opportunities", "recommendations",
+    "top_insights", "attrition", "domain",
+]
+
+
+def test_original_parameters_keep_their_names_and_order():
+    """Callers pass these by keyword and by position. The API may grow, but
+    not shift underneath anyone."""
     from app.engines.pdf_builder import build_pdf
     params = list(inspect.signature(build_pdf).parameters)
-    assert params == [
-        "df", "config", "profile", "cleaning_summary", "stats_report",
-        "bi_report", "ml_report", "chart_data", "executive_summary",
-        "findings", "risks", "opportunities", "recommendations",
-        "top_insights", "attrition", "domain",
-    ]
+    assert params[:len(ORIGINAL_PARAMS)] == ORIGINAL_PARAMS
+
+
+def test_every_added_parameter_is_optional():
+    """A new section must never make an existing call site invalid."""
+    from app.engines.pdf_builder import build_pdf
+    sig = inspect.signature(build_pdf)
+    for name, param in list(sig.parameters.items())[len(ORIGINAL_PARAMS):]:
+        assert param.default is not inspect.Parameter.empty, \
+            f"{name} was added without a default — existing callers break"
 
 
 @pytest.mark.parametrize("name", [

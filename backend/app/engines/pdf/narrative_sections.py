@@ -397,3 +397,330 @@ def _attrition_page(story, s, T, attrition, CW):
                 for dept, rate in sorted_d]
         _gtable(story, T, ["Department","Rate","Status"],
                 rows, [CW*0.50, CW*0.25, CW*0.25], severity_col=2)
+
+
+# ══════════════════════════════════════════════════════════
+#  REPORT AT A GLANCE
+#  The one page an executive reads before deciding whether to
+#  read any of the others.
+# ══════════════════════════════════════════════════════════
+
+def _exec_dashboard(story, s, T, df, profile, top_insights,
+                    executive_summary, CW, top_cluster=None,
+                    driver_result=None, avg_salary_k: float = 0.0):
+    """One-page summary: scale, quality, the verdict, the sharpest pocket of
+    risk, and the findings that need action — with the evidence for each in
+    the sections that follow."""
+    _sec(story, s, T, "Report at a Glance",
+         "One-page summary — full evidence in the sections that follow")
+    story.append(Spacer(1, 3 * mm))
+
+    # Run the same guard the Top Insights section runs. This page renders
+    # insight titles and actions directly, so without it an unsupported
+    # claim ("revenue will collapse next quarter") is withheld from the
+    # findings section and then printed on the summary page anyway — the
+    # one page most likely to be read on its own.
+    from app.engines.insight_guard import guard_insights
+    top_insights = guard_insights(list(top_insights or [])).kept
+
+    qual = getattr(profile, "overall_quality_score", None)
+    miss = float(df.isna().mean().mean() * 100)
+    n_crit = sum(1 for i in (top_insights or [])
+                 if getattr(i, "severity", "") == "critical")
+    _kpi_row(story, s, T, [
+        {"label": "RECORDS ANALYSED", "value": "{:,}".format(len(df)),
+         "sub": "{} columns".format(len(df.columns)), "color": T["accent"]},
+        {"label": "DATA QUALITY",
+         "value": str(qual) if qual is not None else "—",
+         "sub": "/ 100", "color": T["positive"]},
+        {"label": "MISSING DATA", "value": "{:.1f}%".format(miss),
+         "sub": "0% = complete",
+         "color": T["positive"] if miss < 1 else T["warning"]},
+        {"label": "CRITICAL FINDINGS", "value": str(n_crit),
+         "sub": "require action",
+         "color": T["negative"] if n_crit else T["positive"]},
+    ], CW)
+    story.append(Spacer(1, 4 * mm))
+
+    if executive_summary:
+        verdict = ". ".join(str(executive_summary).split(". ")[:2]).strip()
+        if verdict and not verdict.endswith("."):
+            verdict += "."
+        if verdict:
+            _narrative_box(story, s, T, "<b>Verdict:</b> " + verdict)
+            story.append(Spacer(1, 3 * mm))
+
+    # The headline decision: the specific segment, and what it is worth.
+    if (top_cluster is not None and driver_result is not None
+            and getattr(top_cluster, "n_events", 0) >= 10
+            and driver_result.top_drivers):
+        tc, dr = top_cluster, driver_result
+        lift = tc.rate / tc.base_rate if tc.base_rate else 0
+        avoidable = (int(round(dr.high_risk_n *
+                               max(dr.high_risk_rate - dr.base_rate, 0) / 100.0))
+                     if dr.high_risk_n else 0)
+        money = ""
+        if avg_salary_k and avg_salary_k > 0 and avoidable > 0:
+            lo, hi = avoidable * avg_salary_k * 0.5, avoidable * avg_salary_k * 1.5
+            money = (" Estimated avoidable cost: <b>{:,.0f}K–{:,.0f}K</b> per "
+                     "cycle, at the {:,.0f}K unit cost entered at report "
+                     "setup.".format(lo, hi, avg_salary_k))
+        _narrative_box(
+            story, s, T,
+            "<b>Decision headline:</b> the sharpest pocket of risk is "
+            "<b>{}</b> — {:,} records at a {:.0f}% rate ({:.1f}x base), "
+            "driving {:.0f}% of all events. The strongest predictive driver "
+            "overall is <b>{}</b>.{}".format(
+                tc.description, tc.n, tc.rate, lift, tc.share_of_events,
+                str(dr.top_drivers[0][0]).replace("_", " "), money))
+        story.append(Spacer(1, 3 * mm))
+
+    if top_insights:
+        story.append(Paragraph("Top Findings and Required Actions", s["h3"]))
+        sev_color = {"critical": T["negative"], "high": T["warning"],
+                     "warning": T["warning"], "info": T["info"],
+                     "positive": T["positive"]}
+        rows = [[Paragraph("<b>Priority</b>", s["sm"]),
+                 Paragraph("<b>Finding</b>", s["sm"]),
+                 Paragraph("<b>First action</b>", s["sm"])]]
+        for ins in top_insights[:4]:
+            sev = getattr(ins, "severity", "info")
+            first_action = str(getattr(ins, "action", "")).split("2.")[0]
+            first_action = first_action.lstrip("1.").strip()
+            rows.append([
+                Paragraph('<font color="{}"><b>{}</b></font>'.format(
+                    sev_color.get(sev, T["info"]), sev.upper()), s["sm"]),
+                Paragraph(str(getattr(ins, "title", ""))[:110], s["sm"]),
+                Paragraph(first_action[:130], s["sm"]),
+            ])
+        tbl = Table(rows, colWidths=[CW * 0.14, CW * 0.46, CW * 0.40])
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND",     (0, 0), (-1, 0),  _c(T["header_bg"])),
+            ("TEXTCOLOR",      (0, 0), (-1, 0),  white),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [white, _c(T["bg_light"])]),
+            ("VALIGN",         (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING",     (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING",  (0, 0), (-1, -1), 6),
+            ("LEFTPADDING",    (0, 0), (-1, -1), 7),
+            ("GRID",           (0, 0), (-1, -1), 0.3, _c(T["border"])),
+        ]))
+        story.append(tbl)
+        story.append(Spacer(1, 5 * mm))
+
+    # Severity mix as a proportional bar — readable in one glance.
+    sev_counts = {}
+    for ins in (top_insights or []):
+        sv = getattr(ins, "severity", "info")
+        sev_counts[sv] = sev_counts.get(sv, 0) + 1
+    total_f = sum(sev_counts.values())
+    if total_f:
+        story.append(Paragraph("Findings by Severity", s["h3"]))
+        seg_defs = [("critical", "Critical", T["negative"]),
+                    ("high", "High", T["warning"]),
+                    ("warning", "Medium", T["warning"]),
+                    ("info", "Low", T["info"]),
+                    ("positive", "Strength", T["positive"])]
+        cells, widths, styles = [], [], []
+        col = 0
+        for key, lbl, color in seg_defs:
+            c = sev_counts.get(key, 0)
+            if c == 0:
+                continue
+            cells.append(Paragraph(
+                '<font color="#FFFFFF"><b>{} {}</b></font>'.format(c, lbl),
+                ParagraphStyle("sgv", fontName="Helvetica-Bold", fontSize=8.5,
+                               alignment=TA_CENTER, textColor=white)))
+            widths.append(CW * c / total_f)
+            styles.append(("BACKGROUND", (col, 0), (col, 0), _c(color)))
+            col += 1
+        if cells:
+            segbar = Table([cells], colWidths=widths, rowHeights=[9 * mm])
+            segbar.setStyle(TableStyle(styles + [
+                ("VALIGN",    (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN",     (0, 0), (-1, -1), "CENTER"),
+                ("LINEAFTER", (0, 0), (-2, 0), 1.5, white),
+            ]))
+            story.append(segbar)
+            story.append(Spacer(1, 5 * mm))
+
+    num_n = len(df.select_dtypes(include="number").columns)
+    cat_n = len(text_columns(df))
+    dt_n = len(df.select_dtypes(include="datetime").columns)
+    story.append(Paragraph("Scope of Analysis", s["h3"]))
+    _gtable(story, T,
+            ["Dimension", "Detail"],
+            [["Records examined",
+              "{:,} rows across {} fields".format(len(df), len(df.columns))],
+             ["Field types",
+              "{} numeric · {} categorical · {} date/time".format(
+                  num_n, cat_n, dt_n)],
+             ["Methods applied",
+              "Descriptive statistics · distribution and normality tests · "
+              "correlation analysis · segment significance testing"],
+             ["Findings surfaced",
+              "{} total ({} require action)".format(
+                  total_f, sev_counts.get("critical", 0)
+                  + sev_counts.get("high", 0))]],
+            [CW * 0.26, CW * 0.74])
+
+
+# ══════════════════════════════════════════════════════════
+#  PREDICTIVE RISK
+#  Model-based: what the data predicts, not only what it records.
+# ══════════════════════════════════════════════════════════
+
+def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
+                        top_cluster=None, driver_chart=None,
+                        risk_heatmap=None):
+    """Model drivers, honest accuracy, and the highest-risk segment.
+
+    `dr` is a predictive.DriverResult, or None to skip the section. This
+    engine has been in the codebase throughout; until now build_pdf had no
+    parameter to receive its output, so it ran and was discarded.
+    """
+    if dr is None or not dr.top_drivers:
+        return
+
+    tgt = str(dr.target).replace("_", " ").title()
+    _sec(story, s, T, "Predictive Risk Analysis",
+         "A model trained to predict {} — drivers, accuracy, and the "
+         "highest-risk segment".format(tgt))
+    story.append(Spacer(1, 3 * mm))
+
+    # NaN-safe: an undertrained model returns NaN rather than a number, and
+    # "nan" must never reach the page.
+    auc_txt = "—" if (dr.auc != dr.auc) else "{:.2f}".format(dr.auc)
+    acc_txt = ("—" if (dr.accuracy != dr.accuracy)
+               else "{:.0f}%".format(dr.accuracy * 100))
+    auc_quality = (("strong" if dr.auc >= 0.8 else
+                    "moderate" if dr.auc >= 0.7 else "weak")
+                   if dr.auc == dr.auc else "not available")
+    _kpi_row(story, s, T, [
+        {"label": "MODEL AUC", "value": auc_txt,
+         "sub": "{} separation".format(auc_quality), "color": T["accent"]},
+        {"label": "ACCURACY", "value": acc_txt, "sub": "cross-validated",
+         "color": T["positive"]},
+        {"label": "RECORDS USED", "value": "{:,}".format(dr.n_rows),
+         "sub": "{} features".format(dr.n_features), "color": T["accent"]},
+        {"label": "BASE RATE", "value": "{:.0f}%".format(dr.base_rate),
+         "sub": "overall event rate", "color": T["text_muted"]},
+    ], CW)
+    story.append(Spacer(1, 3 * mm))
+
+    _narrative_box(
+        story, s, T,
+        "<b>How to read this:</b> the model was validated on held-out data, "
+        "so the {} AUC reflects genuine predictive power rather than "
+        "memorisation — 0.5 is a coin flip, 1.0 is perfect. The importances "
+        "below show what the model relies on most. They are predictive, not "
+        "proven causes.".format(auc_txt))
+    story.append(Spacer(1, 2 * mm))
+
+    story.append(Paragraph("Top Predictive Drivers", s["h3"]))
+    embedded = False
+    if driver_chart:
+        try:
+            story.append(Image(io.BytesIO(driver_chart),
+                               width=CW, height=CW * 0.42))
+            story.append(Spacer(1, 3 * mm))
+            embedded = True
+        except Exception:
+            logger.warning("driver chart embed failed", exc_info=True)
+    if not embedded:
+        top_imp = dr.top_drivers[0][1] or 1.0
+        rows = [[Paragraph("<b>#</b>", s["sm"]),
+                 Paragraph("<b>Driver</b>", s["sm"]),
+                 Paragraph("<b>Predictive weight</b>", s["sm"]),
+                 Paragraph("<b>Relative importance</b>", s["sm"])]]
+        for i, (col, imp) in enumerate(dr.top_drivers, 1):
+            bar_w = max(1, int(round(imp / top_imp * 28)))
+            rows.append([
+                Paragraph(str(i), s["sm"]),
+                Paragraph(str(col).replace("_", " "), s["sm"]),
+                Paragraph("{:.1f}%".format(imp), s["sm"]),
+                Paragraph('<font color="{}">{}</font>'.format(
+                    T["accent"], "█" * bar_w), s["sm"]),
+            ])
+        tbl = Table(rows, colWidths=[CW * 0.06, CW * 0.40, CW * 0.18, CW * 0.36])
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND",     (0, 0), (-1, 0),  _c(T["header_bg"])),
+            ("TEXTCOLOR",      (0, 0), (-1, 0),  white),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [white, _c(T["bg_light"])]),
+            ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING",     (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING",  (0, 0), (-1, -1), 5),
+            ("LEFTPADDING",    (0, 0), (-1, -1), 7),
+            ("GRID",           (0, 0), (-1, -1), 0.3, _c(T["border"])),
+        ]))
+        story.append(tbl)
+        story.append(Spacer(1, 3 * mm))
+
+    if top_cluster is not None and getattr(top_cluster, "n_events", 0) >= 10:
+        tc = top_cluster
+        lift = tc.rate / tc.base_rate if tc.base_rate else 0
+        _narrative_box(
+            story, s, T,
+            "<b>Largest risk cluster:</b> records where <b>{}</b> — {:,} of "
+            "them — show a {:.0f}% event rate ({:.1f}x the {:.0f}% base) and "
+            "account for <b>{:.0f}% of all events</b> in the dataset. This is "
+            "the most concentrated addressable pocket of risk: a targeted "
+            "intervention here reaches the most affected records for the "
+            "least effort.".format(
+                tc.description, tc.n, tc.rate, lift, tc.base_rate,
+                tc.share_of_events))
+        story.append(Spacer(1, 3 * mm))
+
+    if risk_heatmap:
+        try:
+            story.append(KeepTogether([
+                Paragraph("Risk Concentration Map", s["h3"]),
+                Image(io.BytesIO(risk_heatmap), width=CW * 0.90,
+                      height=CW * 0.60),
+                Paragraph("Darker cells carry a higher event rate. The "
+                          "hottest cell is the segment to address first.",
+                          s["sm"]),
+            ]))
+            story.append(Spacer(1, 3 * mm))
+        except Exception:
+            logger.warning("risk heatmap embed failed", exc_info=True)
+
+    if dr.high_risk_n >= 10 and dr.high_risk_rate > 0:
+        lift = dr.high_risk_rate / dr.base_rate if dr.base_rate else 0
+        prof = dr.high_risk_profile or "the model's highest-probability profile"
+        _narrative_box(
+            story, s, T,
+            "<b>Highest-risk segment:</b> {:,} records fall in the model's "
+            "top-risk quintile and show an actual event rate of "
+            "<b>{:.0f}%</b> — {:.1f}x the {:.0f}% base rate. Shared profile: "
+            "{}. This is where intervention has the highest expected return; "
+            "pull this list from the source system and act on it "
+            "first.".format(dr.high_risk_n, dr.high_risk_rate, lift,
+                            dr.base_rate, prof))
+        story.append(Spacer(1, 3 * mm))
+
+        expected_events = int(round(dr.high_risk_n * dr.high_risk_rate / 100.0))
+        avoidable = int(round(dr.high_risk_n *
+                              max(dr.high_risk_rate - dr.base_rate, 0) / 100.0))
+        story.append(Paragraph("Scenario and Expected Value", s["h3"]))
+        if avg_salary_k and avg_salary_k > 0 and avoidable > 0:
+            lo, hi = avoidable * avg_salary_k * 0.5, avoidable * avg_salary_k * 1.5
+            roi_line = (
+                " Costed at the {:,.0f}K unit cost entered at report setup and a "
+                "50–150% replacement range, the avoidable share is roughly "
+                "<b>{:,.0f}K–{:,.0f}K</b> per cycle. That unit cost is an "
+                "assumption supplied with the report, not a measured figure — "
+                "substitute your own for a board-ready number.".format(
+                    avg_salary_k, lo, hi))
+        else:
+            roi_line = (
+                " Enter a unit cost at report setup to translate the avoidable "
+                "events into a monetary range.")
+        _narrative_box(
+            story, s, T,
+            "<b>If nothing changes:</b> at the segment's current rate, about "
+            "<b>{:,}</b> of these {:,} records are expected to record the "
+            "event next cycle. <b>Roughly {:,}</b> of those are potentially "
+            "avoidable — the excess above the {:.0f}% base rate — if the "
+            "drivers above are addressed for this segment.{}".format(
+                expected_events, dr.high_risk_n, avoidable, dr.base_rate,
+                roi_line))

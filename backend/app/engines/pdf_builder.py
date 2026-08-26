@@ -14,6 +14,7 @@ import from app.engines.pdf instead.
 from app.engines.pdf.builder import build_pdf
 from app.engines.pdf.theme import (
     THEMES, HR_BENCHMARKS, W, H, CW_DEFAULT,
+    FONT_BODY, FONT_BOLD, FONT_ITALIC,
     _c, _styles, _ReportCanvas, _build_cover, _domain_theme,
 )
 from app.engines.pdf.primitives import (

@@ -30,6 +30,13 @@ logger = logging.getLogger(__name__)
 W, H = A4
 CW_DEFAULT = W - 36 * mm   # content width (18mm each side)
 
+# Named rather than repeated as string literals, so a future switch to an
+# embedded typeface is one edit. dataforge-ai ships Carlito/Caladea for
+# this; Analytiq renders in the ReportLab base fonts today.
+FONT_BODY = "Helvetica"
+FONT_BOLD = "Helvetica-Bold"
+FONT_ITALIC = "Helvetica-Oblique"
+
 
 # ══════════════════════════════════════════════════════════
 #  DOMAIN COLOUR THEMES  (matches your existing THEMES keys)

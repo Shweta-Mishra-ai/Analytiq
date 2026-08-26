@@ -82,11 +82,19 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
     from app.engines.pdf_builder import build_pdf
     from app.engines.chart_exporter import generate_all_charts
 
+    # Sections that failed to build. A report that quietly drops a section
+    # looks the same as one that never had it, so the names come back on a
+    # response header instead of vanishing into a debug log.
+    skipped: list = []
+
     # 1. profile
     try:
         profile = profile_dataset(df)
     except Exception:
+        logger.warning("profiling failed — quality figures omitted",
+                       exc_info=True)
         profile = None
+        skipped.append("profile")
 
     # 2. domain
     try:
@@ -106,7 +114,9 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
         opportunities = story_obj.opportunities
         actions = story_obj.recommended_actions
     except Exception as e:
-        logger.warning(f"story_engine failed: {e}")
+        logger.warning("story engine failed — narrative sections fall back "
+                       "to defaults: %s", e, exc_info=True)
+        skipped.append("story")
 
     # 4. structured insights
     top_insights = []
@@ -118,7 +128,9 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
             avg_salary_k=float(req.avg_salary_k),
         )
     except Exception as e:
-        logger.warning(f"insights_builder failed: {e}")
+        logger.warning("insight builder failed — findings section will be "
+                       "thin: %s", e, exc_info=True)
+        skipped.append("insights")
 
     # 5. stats
     stats_report = None
@@ -130,7 +142,9 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
                 stats_report = analyze(df)
                 store.cache_set(owner, ds_id, "stats", stats_report)
             except Exception:
-                logger.debug("generate_pdf: suppressed exception", exc_info=True)
+                logger.warning("statistics failed — section omitted",
+                               exc_info=True)
+                skipped.append("stats")
 
     # 6. BI
     bi_report = None
@@ -142,12 +156,54 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
                 bi_report = run_bi(df)
                 store.cache_set(owner, ds_id, "bi", bi_report)
             except Exception:
-                logger.debug("generate_pdf: suppressed exception", exc_info=True)
+                logger.warning("business intelligence failed — section "
+                               "omitted", exc_info=True)
+                skipped.append("bi")
 
     # 7. ML (only if previously trained)
     ml_report = store.cache_get(owner, ds_id, "ml_last") if req.include_ml else None
 
-    # 8. charts + AI narratives
+    # 8. predictive drivers + risk concentration
+    #
+    # predictive.py has been in the codebase throughout, but build_pdf had
+    # no parameter to receive its output, so this ran (when anything called
+    # it at all) and was discarded. The report now carries it.
+    predictive = top_cluster = None
+    driver_chart = risk_heatmap = None
+    try:
+        from app.engines.predictive import (
+            find_binary_target, compute_drivers, find_top_cluster,
+            pick_heatmap_dims,
+        )
+        target = find_binary_target(df)
+        if target:
+            predictive = compute_drivers(df, target)
+            top_cluster = find_top_cluster(df, target)
+            if predictive is not None and predictive.top_drivers:
+                try:
+                    from app.engines.chart_exporter import (
+                        make_driver_importance_chart, make_risk_heatmap)
+                    driver_chart = make_driver_importance_chart(
+                        predictive.top_drivers, theme_name=req.theme_name,
+                        target_label=str(target).replace("_", " "))
+                    dims = pick_heatmap_dims(df, target)
+                    if dims:
+                        risk_heatmap = make_risk_heatmap(
+                            df, target, dims[0], dims[1],
+                            theme_name=req.theme_name,
+                            event_label=str(target).replace("_", " "))
+                except Exception:
+                    logger.warning("predictive charts failed — the section "
+                                   "falls back to its table form",
+                                   exc_info=True)
+        else:
+            logger.info("no binary target column — predictive section skipped")
+    except Exception:
+        logger.warning("predictive analysis failed — section skipped",
+                       exc_info=True)
+        skipped.append("predictive")
+
+    # 9. charts + AI narratives
     chart_data = []
     theme_name = req.theme_name
     try:
@@ -163,7 +219,9 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
                 narrative = "Chart generated from dataset analysis."
             chart_data.append((title, img_bytes, narrative))
     except Exception as e:
-        logger.warning(f"chart export failed: {e}")
+        logger.warning("chart export failed — report has no figures: %s", e,
+                       exc_info=True)
+        skipped.append("charts")
 
     # 9. build PDF
     pdf_config = {
@@ -191,14 +249,24 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
             recommendations=actions, top_insights=top_insights,
             attrition=getattr(story_obj, "attrition", None),
             domain=domain_name,
+            predictive=predictive, top_cluster=top_cluster,
+            driver_chart=driver_chart, risk_heatmap=risk_heatmap,
+            avg_salary_k=float(req.avg_salary_k),
         )
     except Exception as e:
         logger.exception("PDF build failed")
         raise HTTPException(500, f"PDF build failed: {e}")
 
+    headers = {"Content-Disposition":
+               "attachment; filename=analytiq_report.pdf"}
+    if skipped:
+        # A report that quietly drops a section is indistinguishable from
+        # one that never had it. Name them so the caller can tell.
+        headers["X-Analytiq-Skipped-Sections"] = ",".join(skipped)
+        logger.warning("report built with sections omitted: %s",
+                       ", ".join(skipped))
     return StreamingResponse(
-        io.BytesIO(pdf_bytes), media_type="application/pdf",
-        headers={"Content-Disposition": "attachment; filename=analytiq_report.pdf"})
+        io.BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
 
 
 class HealthPdfRequest(BaseModel):

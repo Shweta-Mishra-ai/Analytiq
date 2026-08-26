@@ -36,13 +36,15 @@ from app.engines.pdf.primitives import (
 from app.engines.pdf.narrative_sections import (
     _exec_summary, _top_insights, _dq_note, _readiness_block,
     _benchmark_section, _attrition_page, _domain_label,
-    _has_reference_ranges,
+    _has_reference_ranges, _exec_dashboard, _predictive_section,
 )
 from app.engines.pdf.data_sections import (
     _data_prep_section, _dataset_overview, _stats_section, _bi_section,
     _chart_page, _recommendations,
 )
-from app.engines.pdf.domain_sections import _appendix, _prepared_by_line
+from app.engines.pdf.domain_sections import (
+    _appendix, _prepared_by_line, _domain_deep_page, has_deep_page,
+)
 from app.engines.report_blueprints import blueprint_for
 from app.services.dtypes import is_text_dtype, text_columns
 
@@ -68,10 +70,23 @@ def build_pdf(
     top_insights: list = None,
     attrition=None,
     domain: str = "general",
+    predictive=None,
+    top_cluster=None,
+    driver_chart: bytes = None,
+    risk_heatmap: bytes = None,
+    avg_salary_k: float = 0.0,
 ) -> bytes:
-    """
-    Build complete senior-analyst PDF report.
-    Identical public API to original pdf_builder.py — drop-in replacement.
+    """Build the report.
+
+    The first sixteen parameters are unchanged and still positional-safe;
+    everything after `domain` is optional and additive.
+
+    `predictive` is a predictive.DriverResult and `top_cluster` a
+    predictive.TopCluster. Both engines have been in the codebase all
+    along, but build_pdf had no parameter to receive their output, so the
+    Predictive Risk section simply did not exist and the work was thrown
+    away. `driver_chart` and `risk_heatmap` are optional pre-rendered PNGs
+    for that section; it falls back to a table when they are absent.
     """
     from pypdf import PdfWriter, PdfReader
 
@@ -148,6 +163,7 @@ def build_pdf(
         toc.append((sec_num, title))
         sec_num += 1
 
+    _add_toc("Report at a Glance")
     _add_toc("Executive Summary")
     _add_toc("Data Quality & Transparency Note")
     if cleaning_summary:
@@ -158,6 +174,10 @@ def build_pdf(
         blueprint_for(domain).label))
     if attrition:
         _add_toc("Attrition Deep Dive")
+    if predictive is not None and getattr(predictive, "top_drivers", None):
+        _add_toc("Predictive Risk Analysis")
+    if has_deep_page(domain):
+        _add_toc("{} Analysis".format(_domain_label(domain).title()))
     _add_toc("Dataset Overview & Descriptive Statistics")
     if stats_report:
         _add_toc("Statistical Analysis")
@@ -170,6 +190,11 @@ def build_pdf(
 
     # ── Assemble story ────────────────────────────────────
     _toc(story, s, T, toc, CW)
+    story.append(PageBreak())
+
+    _exec_dashboard(story, s, T, df, profile, top_insights,
+                    executive_summary, CW, top_cluster=top_cluster,
+                    driver_result=predictive, avg_salary_k=avg_salary_k)
     story.append(PageBreak())
 
     _exec_summary(story, s, T, executive_summary,
@@ -194,6 +219,19 @@ def build_pdf(
     if attrition:
         _attrition_page(story, s, T, attrition, CW)
         story.append(PageBreak())
+
+    if predictive is not None and getattr(predictive, "top_drivers", None):
+        _predictive_section(story, s, T, predictive, CW,
+                            avg_salary_k=avg_salary_k,
+                            top_cluster=top_cluster,
+                            driver_chart=driver_chart,
+                            risk_heatmap=risk_heatmap)
+        story.append(PageBreak())
+
+    if has_deep_page(domain):
+        if _domain_deep_page(story, s, T, df, config, CW, domain,
+                             profile=profile):
+            story.append(PageBreak())
 
     _dataset_overview(story, s, T, df, profile, CW)
     story.append(PageBreak())

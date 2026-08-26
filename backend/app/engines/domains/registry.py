@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, Optional, Tuple
 
 import pandas as pd
@@ -75,6 +75,11 @@ class DomainSpec:
     # dataforge original carried its own hardcoded per-domain table, which
     # is exactly the drift this registry exists to stop.
     chart_metrics: Tuple[str, ...] = ()
+    # Optional deep page for the PDF — a section only this domain can
+    # write (finance's P&L and margin analysis, for instance). Signature:
+    # (story, s, T, df, config, CW, profile=None). None means the report
+    # simply has no such section for this domain.
+    deep_page: Optional[Callable] = None
     # Optional per-domain overrides. When None the shared lookups in
     # report_blueprints / industry_benchmarks are used.
     blueprint: Optional[object] = None
@@ -388,6 +393,20 @@ register(DomainSpec(
     chart_metrics=("costpercase", "lengthofstay", "readmission",
                    "bedoccupancy", "satisfaction"),
 ))
+
+def attach_deep_page(domain_key: str, page_fn: Callable) -> None:
+    """Attach a PDF deep page to an already-registered domain.
+
+    Kept separate from register() because the page lives in the pdf
+    package, which imports this module — wiring it at registration time
+    would be a cycle. app.engines.pdf.domain_sections calls this on import.
+    """
+    spec = REGISTRY.get(domain_key)
+    if spec is None:
+        raise KeyError(f"cannot attach a deep page to unregistered "
+                       f"domain {domain_key!r}")
+    REGISTRY[domain_key] = replace(spec, deep_page=page_fn)
+
 
 # The fallback. Never competes in scoring; used whenever evidence is weak
 # or two domains tie.
