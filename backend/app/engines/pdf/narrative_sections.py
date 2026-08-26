@@ -569,6 +569,24 @@ def _exec_dashboard(story, s, T, df, profile, top_insights,
 #  Model-based: what the data predicts, not only what it records.
 # ══════════════════════════════════════════════════════════
 
+def _leakage_note(story, s, T, dr):
+    """Name any column that predicts the outcome suspiciously well.
+
+    A field populated only once the outcome is known makes a model look
+    excellent in validation and useless in production. Worth saying in the
+    report, because the fix is upstream in how the data is recorded.
+    """
+    findings = list(getattr(dr, "leakage", None) or [])
+    if not findings:
+        return
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph("Fields Excluded as Outcome Leakage", s["h3"]))
+    for f in findings[:4]:
+        _narrative_box(story, s, T, "<b>{}</b> — {}".format(
+            getattr(f, "column", "?"), getattr(f, "reason", "")))
+        story.append(Spacer(1, 2 * mm))
+
+
 def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
                         top_cluster=None, driver_chart=None,
                         risk_heatmap=None):
@@ -578,10 +596,36 @@ def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
     engine has been in the codebase throughout; until now build_pdf had no
     parameter to receive its output, so it ran and was discarded.
     """
-    if dr is None or not dr.top_drivers:
+    if dr is None:
         return
 
     tgt = str(dr.target).replace("_", " ").title()
+
+    verdict = getattr(dr, "verdict", None)
+    if verdict is not None and not verdict.usable:
+        # Say that the data does not support a prediction. Dropping the
+        # section silently is indistinguishable from never having tried,
+        # and "we looked and found nothing" is a real result a client
+        # should be told — particularly before they act as though there
+        # were a signal.
+        _sec(story, s, T, "Predictive Risk Analysis",
+             "Whether {} can be predicted from the rest of the "
+             "dataset".format(tgt))
+        story.append(Spacer(1, 3 * mm))
+        _narrative_box(story, s, T,
+                       "<b>No predictive signal found.</b> " + verdict.verdict)
+        story.append(Spacer(1, 3 * mm))
+        story.append(Paragraph(
+            "This is a finding, not a gap in the analysis: on this data, "
+            "{} cannot be anticipated from the fields available. Collecting "
+            "the factors thought to drive it — or recording them earlier in "
+            "the process — is the prerequisite for a usable model."
+            .format(tgt.lower()), s["body"]))
+        _leakage_note(story, s, T, dr)
+        return
+
+    if not dr.top_drivers:
+        return
     _sec(story, s, T, "Predictive Risk Analysis",
          "A model trained to predict {} — drivers, accuracy, and the "
          "highest-risk segment".format(tgt))
@@ -724,3 +768,5 @@ def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
             "drivers above are addressed for this segment.{}".format(
                 expected_events, dr.high_risk_n, avoidable, dr.base_rate,
                 roi_line))
+
+    _leakage_note(story, s, T, dr)

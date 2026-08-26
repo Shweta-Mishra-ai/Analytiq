@@ -12,7 +12,7 @@ simply omit the section rather than crash. Uses scikit-learn's RandomForest
 from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -185,6 +185,11 @@ class DriverResult:
     base_rate: float = 0.0
     high_risk_n: int = 0
     model_name: str = "Random Forest"
+    # Whether the model beat the obvious guess. When it did not, the
+    # report says so and prints no drivers — importances from a model
+    # with no signal describe the noise it was fitted to.
+    verdict: Any = None
+    leakage: List = field(default_factory=list)
 
 
 def find_binary_target(df: pd.DataFrame) -> Optional[str]:
@@ -306,11 +311,39 @@ def compute_drivers(df: pd.DataFrame, target_col: str,
                             bits.append(f"{c} = '{mode_val.iloc[0]}'")
                 profile = "; ".join(bits)
 
+        # ── Does this model beat always guessing the majority class? ──
+        verdict = None
+        leakage = []
+        try:
+            from app.engines.rigour import assess_classifier, detect_leakage
+            if proba is not None:
+                verdict = assess_classifier(
+                    y, (proba >= 0.5).astype(int), y_proba=proba, auc=auc)
+            leakage = detect_leakage(data, target_col)
+        except Exception:
+            logger.warning("rigour assessment failed for %r", target_col,
+                           exc_info=True)
+
+        if verdict is not None and not verdict.usable:
+            # No drivers, no high-risk segment, no scenario. The section
+            # reports the absence of signal, which is a real finding, and
+            # does not dress up a coin flip as a risk model.
+            logger.info("predictive: no usable signal for %r (%s)",
+                        target_col, verdict.reason)
+            return DriverResult(
+                target=target_col, auc=auc, accuracy=acc,
+                n_rows=len(data), n_features=X.shape[1],
+                top_drivers=[], base_rate=base_rate,
+                high_risk_profile="", high_risk_rate=0.0, high_risk_n=0,
+                verdict=verdict, leakage=leakage,
+            )
+
         return DriverResult(
             target=target_col, auc=auc, accuracy=acc,
             n_rows=len(data), n_features=X.shape[1],
             top_drivers=ranked, base_rate=base_rate,
             high_risk_profile=profile, high_risk_rate=hr_rate, high_risk_n=hr_n,
+            verdict=verdict, leakage=leakage,
         )
     except Exception:
         logger.warning("compute_drivers failed", exc_info=True)

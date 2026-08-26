@@ -158,9 +158,32 @@ def test_find_binary_target_returns_none_without_a_flag_column():
     assert find_binary_target(df) is None
 
 
-def test_compute_drivers_ranks_factors(hr_df):
+def _hr_with_real_drivers(n=900, seed=11):
+    """HR data where attrition genuinely depends on overtime and tenure.
+
+    The shared hr_df fixture draws attrition independently of every other
+    column, so there is nothing in it to rank — see
+    test_compute_drivers_reports_absence_of_signal below.
+    """
+    rng = np.random.default_rng(seed)
+    overtime = rng.choice(["Yes", "No"], n, p=[.35, .65])
+    tenure = rng.integers(1, 20, n)
+    p = (.06 + .30 * (overtime == "Yes") + .22 * (tenure <= 2)).clip(0, .92)
+    return pd.DataFrame({
+        "employee_id": np.arange(n),
+        "attrition": np.where(rng.random(n) < p, "Yes", "No"),
+        "overtime": overtime,
+        "tenure_years": tenure,
+        "department": rng.choice(["Sales", "Engineering", "HR"], n),
+        "salary": rng.uniform(30000, 190000, n).round(0),
+        "satisfaction": rng.integers(1, 5, n),
+    })
+
+
+def test_compute_drivers_ranks_factors():
     from app.engines.predictive import compute_drivers
-    result = compute_drivers(hr_df, "attrition")
+    df = _hr_with_real_drivers()
+    result = compute_drivers(df, "attrition")
     if result is None:
         pytest.skip("scikit-learn unavailable")
     assert result.target == "attrition"
@@ -169,9 +192,25 @@ def test_compute_drivers_ranks_factors(hr_df):
     assert importances == sorted(importances, reverse=True), \
         "drivers must be ranked most-important first"
     for feat, imp in result.top_drivers:
-        assert feat in hr_df.columns
+        assert feat in df.columns
         assert imp >= 0
     assert 0.0 <= result.auc <= 1.0
+    assert result.verdict is not None and result.verdict.usable
+
+
+def test_compute_drivers_reports_absence_of_signal(hr_df):
+    """hr_df draws attrition independently of every other column, so there
+    is nothing to predict. Returning a ranked driver list here would be
+    reporting the shape of the noise the model was fitted to."""
+    from app.engines.predictive import compute_drivers
+    result = compute_drivers(hr_df, "attrition")
+    if result is None:
+        pytest.skip("scikit-learn unavailable")
+    assert result.verdict is not None
+    assert result.verdict.usable is False
+    assert result.top_drivers == []
+    assert result.high_risk_n == 0
+    assert "No reliable predictive signal" in result.verdict.verdict
 
 
 def test_compute_drivers_returns_none_for_single_class_target(hr_df):

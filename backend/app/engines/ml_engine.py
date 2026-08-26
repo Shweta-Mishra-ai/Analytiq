@@ -90,6 +90,11 @@ class MLReport:
     target_encoder:     Any = field(default=None, repr=False)
     warnings:           List[str] = field(default_factory=list)
     insights:           List[str] = field(default_factory=list)
+    # Whether the model beat the obvious guess. When it did not, the
+    # report says so instead of quoting an accuracy that only reflects
+    # the class balance, and feature importances are withheld.
+    verdict:            Any = None
+    leakage:            List = field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════
@@ -599,19 +604,26 @@ def _generate_insights(report: MLReport) -> List[str]:
                 "Moderate model: R2={:.2f} — explains {:.0f}% of variance. "
                 "Consider adding more features.".format(r2, r2*100))
         else:
+            verdict = getattr(report, "verdict", None)
             insights.append(
-                "Weak model: R2={:.2f} — '{}' is difficult to predict "
-                "from current features.".format(r2, report.target_col))
+                verdict.verdict if verdict is not None and not verdict.usable
+                else "Weak model: R2={:.2f} — '{}' is difficult to predict "
+                     "from current features.".format(r2, report.target_col))
     else:
         acc = best.test_score
-        if acc >= 0.90:
+        verdict = getattr(report, "verdict", None)
+        if verdict is not None and not verdict.usable:
+            # Say what was actually found. Quoting the accuracy alone here
+            # described a model with AUC 0.45 and F1 0.0 as "Excellent".
+            insights.append(verdict.verdict)
+        elif verdict is not None:
+            insights.append(verdict.verdict)
+        elif acc >= 0.90:
             insights.append(
                 "Excellent classifier: {:.1f}% accuracy on held-out data.".format(acc*100))
         elif acc >= 0.75:
             insights.append(
-                "Good classifier: {:.1f}% accuracy. "
-                "Better than random by {:.1f}%.".format(
-                    acc*100, (acc - 1/max(report.n_features,1))*100))
+                "Good classifier: {:.1f}% accuracy.".format(acc*100))
         else:
             insights.append(
                 "Weak classifier: {:.1f}% accuracy. "
@@ -715,6 +727,21 @@ def run_ml_pipeline(
                 logger.debug("run_ml_pipeline: suppressed exception", exc_info=True)
                 continue
 
+    # The correlation guard above catches a near-copy of the target. It
+    # cannot see leakage carried by a column's *presence* — a churn_date
+    # populated for exactly the churners — or by a categorical field, so
+    # run the fuller check too and report what it finds.
+    detected_leakage = []
+    try:
+        from app.engines.rigour import detect_leakage
+        detected_leakage = detect_leakage(df, target_col)
+        for finding in detected_leakage:
+            leakage_warnings.append(finding.reason)
+            if finding.column in X.columns:
+                X = X.drop(columns=[finding.column])
+    except Exception:
+        logger.warning("leakage detection failed", exc_info=True)
+
     if len(X.columns) == 0:
         report = MLReport(
             task=task, target_col=target_col,
@@ -770,7 +797,39 @@ def run_ml_pipeline(
         label_encoders=label_encoders,
         target_encoder=target_encoder,
         warnings=[task_reason] + leakage_warnings,
+        leakage=detected_leakage,
     )
+
+    # ── Did the model beat the obvious guess? ─────────────
+    # Without this comparison a 91% accuracy on a 91%-imbalanced target
+    # reads as a triumph. It is a model that learned to say "no".
+    try:
+        from app.engines.rigour import assess_classifier, assess_regressor
+        if y_pred is not None and y_test is not None and len(y_test):
+            if task == "classification":
+                proba = None
+                try:
+                    if best.model is not None and hasattr(best.model,
+                                                          "predict_proba"):
+                        p = best.model.predict_proba(X_test)
+                        if p.shape[1] == 2:
+                            proba = p[:, 1]
+                except Exception:
+                    logger.debug("predict_proba unavailable", exc_info=True)
+                report.verdict = assess_classifier(
+                    y_test, y_pred, y_proba=proba,
+                    auc=best.roc_auc if best else None)
+            else:
+                report.verdict = assess_regressor(y_test, y_pred)
+    except Exception:
+        logger.warning("model verdict could not be computed", exc_info=True)
+
+    # A model that found nothing has no drivers worth naming: its
+    # importances describe the noise it was fitted to.
+    if report.verdict is not None and not report.verdict.usable:
+        report.feature_importance = []
+        report.shap_values = None
+        report.shap_feature_names = None
 
     # Suspiciously perfect scores usually mean leakage we couldn't detect
     if best and best.test_score >= 0.995:
