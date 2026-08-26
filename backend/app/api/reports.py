@@ -39,6 +39,10 @@ class PdfRequest(BaseModel):
     # under the methodology, because a review deliverable is signed by a
     # person or a firm. Nothing about the tooling is named anywhere.
     prepared_by: str = ""
+    # "pdf" (default) or "pptx". The deck is the same analysis rendered for
+    # a room rather than for a desk — in consulting it is usually the
+    # thing that actually gets presented.
+    format: str = "pdf"
 
 
 def _df_or_404(owner: str, ds_id: str):
@@ -256,6 +260,26 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
     except Exception as e:
         logger.exception("PDF build failed")
         raise HTTPException(500, f"PDF build failed: {e}")
+
+    if req.format == "pptx":
+        from app.engines.deck_builder import build_deck
+        from app.engines.kpi_engine import compute_kpis
+        try:
+            deck = build_deck(
+                df=df, config=pdf_config, domain=domain_name,
+                kpis=[c.as_dict() for c in compute_kpis(df, domain_name)],
+                executive_summary=exec_summary, findings=findings,
+                top_insights=top_insights, recommendations=actions,
+                chart_data=chart_data, predictive=predictive)
+        except Exception as e:
+            logger.exception("deck build failed")
+            raise HTTPException(500, f"Deck build failed: {e}")
+        return StreamingResponse(
+            io.BytesIO(deck),
+            media_type=("application/vnd.openxmlformats-officedocument"
+                        ".presentationml.presentation"),
+            headers={"Content-Disposition":
+                     "attachment; filename=analytiq_report.pptx"})
 
     headers = {"Content-Disposition":
                "attachment; filename=analytiq_report.pdf"}

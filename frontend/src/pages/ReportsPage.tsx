@@ -5,6 +5,7 @@ import {
   FileText,
   HeartPulse,
   Loader2,
+  Presentation,
 } from 'lucide-react'
 import { apiBlob, apiGet, downloadBlob } from '../api/client'
 import { useApp } from '../store/app'
@@ -74,11 +75,13 @@ export default function ReportsPage() {
 
   if (!dataset) return <NeedData />
 
-  const download = async (kind: 'pdf' | 'health-pdf' | 'csv' | 'excel') => {
+  const download = async (
+    kind: 'pdf' | 'pptx' | 'health-pdf' | 'csv' | 'excel',
+  ) => {
     setBusy(kind)
     setError('')
     try {
-      if (kind === 'pdf') {
+      if (kind === 'pdf' || kind === 'pptx') {
         const blob = await apiBlob(`/api/reports/${ds}/pdf`, 'POST', {
           title,
           subtitle,
@@ -88,8 +91,12 @@ export default function ReportsPage() {
           include_stats: includeStats,
           include_bi: includeBi,
           include_ml: includeMl,
+          format: kind,
         })
-        downloadBlob(blob, 'analytiq_report.pdf')
+        downloadBlob(
+          blob,
+          kind === 'pptx' ? 'analytiq_report.pptx' : 'analytiq_report.pdf',
+        )
       } else if (kind === 'health-pdf') {
         const blob = await apiBlob(`/api/reports/${ds}/health-pdf`, 'POST', {
           agency_name: agencyName,
@@ -174,20 +181,43 @@ export default function ReportsPage() {
                 </label>
               ))}
             </div>
-            <Btn onClick={() => download('pdf')} disabled={!!busy} className="w-full">
-              <span className="flex items-center justify-center gap-2">
-                {busy === 'pdf' ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <FileText className="h-4 w-4" />
-                )}
-                {busy === 'pdf' ? 'Building report… (30–60s)' : 'Generate PDF report'}
-              </span>
-            </Btn>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Btn
+                onClick={() => download('pdf')}
+                disabled={!!busy}
+                className="w-full"
+              >
+                <span className="flex items-center justify-center gap-2">
+                  {busy === 'pdf' ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <FileText className="h-4 w-4" />
+                  )}
+                  {busy === 'pdf' ? 'Building… (30–60s)' : 'Generate report'}
+                </span>
+              </Btn>
+              <Btn
+                onClick={() => download('pptx')}
+                disabled={!!busy}
+                variant="ghost"
+                className="w-full"
+              >
+                <span className="flex items-center justify-center gap-2">
+                  {busy === 'pptx' ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Presentation className="h-4 w-4" />
+                  )}
+                  {busy === 'pptx' ? 'Building deck…' : 'Generate deck'}
+                </span>
+              </Btn>
+            </div>
             <p className="text-xs text-mute">
-              Cover + TOC · executive summary · structured insight cards · industry
-              benchmarks · statistics · BI · annotated charts · data preparation with
-              SQL · recommendations.
+              The report carries the full evidence: cover, contents, executive
+              summary, numbered exhibits with sources, benchmarks, statistics,
+              annotated charts, data preparation with SQL, and a glossary. The
+              deck is the same analysis for presenting — headline numbers,
+              findings, where to act, and the charts.
             </p>
           </div>
         </Panel>
