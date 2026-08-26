@@ -78,10 +78,16 @@ export default function AuthGate({ children }: { children: ReactNode }) {
             <Database className="h-6 w-6 text-accent" />
             <div className="text-sm font-bold">Analytiq</div>
           </div>
-          <label className="mb-1 flex items-center gap-1.5 text-xs text-mute">
+          <label
+            htmlFor="analytiq-username"
+            className="mb-1 flex items-center gap-1.5 text-xs text-mute"
+          >
             <User className="h-3.5 w-3.5" /> Username
           </label>
           <input
+            id="analytiq-username"
+            name="username"
+            autoComplete="username"
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -89,10 +95,16 @@ export default function AuthGate({ children }: { children: ReactNode }) {
             autoCapitalize="off"
             className="mb-3 w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
           />
-          <label className="mb-1 flex items-center gap-1.5 text-xs text-mute">
+          <label
+            htmlFor="analytiq-password"
+            className="mb-1 flex items-center gap-1.5 text-xs text-mute"
+          >
             <Lock className="h-3.5 w-3.5" /> Password
           </label>
           <input
+            id="analytiq-password"
+            name="password"
+            autoComplete="current-password"
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
