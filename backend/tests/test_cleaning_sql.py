@@ -264,13 +264,48 @@ def test_boolean_conversion_does_not_drop_the_source_column(messy_df):
                 "boolean conversion drops the source column outright"
 
 
-def test_dedupe_keeps_one_row_of_each_group(messy_df):
+def test_dedupe_sql_is_offered_but_marked_not_applied(messy_df):
+    """Duplicates are reported, not deleted. The script still hands over
+    the statement to remove them, clearly labelled as not run — removing
+    rows is a decision about what one row means, and blanket deduplication
+    of a transactional table deletes real turnover."""
     _cleaned, report = auto_clean(messy_df)
-    dedupe = [a for a in report.actions if "duplicate rows" in a.issue]
-    assert dedupe, "duplicates were not removed"
-    sql = dedupe[0].sql
-    assert "HAVING COUNT(*) > 1" in sql
-    assert "MIN(ctid)" in sql, "no row is preserved from each duplicate group"
+    dupes = [a for a in report.actions if "identical to another row" in a.issue]
+    assert dupes, "duplicates were not reported at all"
+    action = dupes[0]
+    assert action.applied is False
+    sql = action.sql
+    assert "NOT APPLIED" in sql
+    assert "HAVING COUNT(*) > 1" in sql, "no query to inspect the duplicates"
+    assert "MIN(ctid)" in sql, "no statement offered to remove them"
+
+
+def test_dedupe_sql_is_available_for_every_dialect(messy_df):
+    """A client's data team works in their own warehouse. The script is
+    only auditable if it runs there."""
+    from app.engines.data_cleaner import DIALECTS, CleaningPolicy
+    _cleaned, report = auto_clean(messy_df, CleaningPolicy.aggressive())
+    for dialect in DIALECTS:
+        script = report.sql_script("orders", dialect)
+        assert script.strip(), f"{dialect} produced an empty script"
+    assert "ctid" in report.sql_script("orders", "postgres")
+    assert "QUALIFY" in report.sql_script("orders", "snowflake")
+    assert "EXCEPT(_rn)" in report.sql_script("orders", "bigquery")
+
+
+def test_backtick_dialects_requote_identifiers(messy_df):
+    """MySQL and BigQuery do not accept double-quoted identifiers, and the
+    column names in a client export routinely need quoting."""
+    _cleaned, report = auto_clean(messy_df)
+    for dialect in ("mysql", "bigquery"):
+        script = report.sql_script("orders", dialect)
+        assert "`orders`" in script, f"{dialect} did not requote the table"
+        assert '"orders"' not in script, f"{dialect} left ANSI quoting in place"
+
+
+def test_unknown_dialect_falls_back_to_portable_sql(messy_df):
+    _cleaned, report = auto_clean(messy_df)
+    assert report.sql_script("orders", "oracle_9i").strip()
 
 
 # ══════════════════════════════════════════════════════════
@@ -280,7 +315,9 @@ def test_dedupe_keeps_one_row_of_each_group(messy_df):
 def test_statements_appear_in_execution_order(messy_df):
     """Imputing before deduplicating gives a different table. The script
     is only reproducible if it preserves the order the steps ran in."""
-    sql = _script(messy_df)
+    from app.engines.data_cleaner import CleaningPolicy
+    _cleaned, report = auto_clean(messy_df, CleaningPolicy.aggressive())
+    sql = report.sql_script("orders")
     dedupe_at = sql.find("DELETE FROM")
     fill_at = sql.find("IS NULL;")
     assert dedupe_at != -1 and fill_at != -1
@@ -350,7 +387,7 @@ def test_report_lists_steps_in_execution_order(messy_df):
     # display grouping puts duplicates first — so this ordering can only
     # hold if the section is using execution order.
     drop_at = section.find("100% empty")
-    dedupe_at = section.find("duplicate rows")
+    dedupe_at = section.find("identical to another row")
     fill_at = section.find("filled with median")
     flag_at = section.find("extreme outliers")
     assert min(drop_at, dedupe_at, fill_at, flag_at) > -1, \

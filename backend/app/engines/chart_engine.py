@@ -112,6 +112,10 @@ def _get_analysis_columns(df: pd.DataFrame) -> Dict:
 
     id_cols, metrics, score_metrics = [], [], []
     for col in numeric_cols:
+        # Generated missingness companions belong to modelling, not to a
+        # client-facing chart.
+        if str(col).endswith("__was_missing"):
+            continue
         if _is_identifier(col, df[col], n_rows):
             id_cols.append(col)
             continue

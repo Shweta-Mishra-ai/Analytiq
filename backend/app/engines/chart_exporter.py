@@ -814,6 +814,14 @@ _ID_METRIC_KW = ("id", "index", "number", "code", "zip", "phone", "guid", "uuid"
 
 
 
+
+# Generated missingness companions (see data_cleaner). They belong to
+# modelling, not to a client-facing chart: "Monthly Income Was Missing by
+# Department" is not a finding.
+def _is_generated_indicator(col) -> bool:
+    return str(col).endswith("__was_missing")
+
+
 def _rank_measures(df: pd.DataFrame, cols: List[str]) -> List[str]:
     """Order numeric columns by how much they look like a business measure.
 
@@ -832,7 +840,7 @@ def _rank_measures(df: pd.DataFrame, cols: List[str]) -> List[str]:
     )
     scored = []
     for c in cols:
-        if is_id_column(c, df[c]):
+        if is_id_column(c, df[c]) or _is_generated_indicator(c):
             continue
         s = pd.to_numeric(df[c], errors="coerce").dropna()
         if s.empty or s.nunique() <= 1:
@@ -870,7 +878,7 @@ def _pick_best_metric(num_cols, df=None, cat_cols=None):
     best, best_score = None, -1.0
     for c in num_cols:
         cl = c.lower()
-        if any(k in cl for k in _ID_METRIC_KW):
+        if any(k in cl for k in _ID_METRIC_KW) or _is_generated_indicator(c):
             continue
         # Value-aware check as well as the name check: a monotonic 1-step
         # integer sequence is an identifier whatever it is called.
@@ -920,6 +928,7 @@ def _best_metric_by_category(df, num_cols, cat_cols, exclude_pairs=None,
         for metric in num_cols:
             if (cat, metric) in exclude_pairs or \
                     any(k in metric.lower() for k in _ID_METRIC_KW) or \
+                    _is_generated_indicator(metric) or \
                     is_id_column(metric, df[metric]):
                 continue
             try:

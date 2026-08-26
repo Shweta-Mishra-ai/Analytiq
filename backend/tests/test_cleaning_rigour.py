@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 
 from app.engines.data_cleaner import (
+    CleaningPolicy,
     _describe_key_duplicates,
     _missingness_is_informative,
     auto_clean,
@@ -102,13 +103,30 @@ def test_heavy_imputation_is_surfaced_for_caveating():
     assert "synthetic" in action.action
 
 
-def test_column_beyond_the_usable_threshold_is_dropped():
+def test_very_sparse_column_is_kept_and_reported_not_dropped():
+    """A mostly-empty column can carry the strongest signal in the frame —
+    a complaint score recorded only for customers who complained is ~90%
+    missing and near-perfectly predictive of churn. Dropping it on a
+    missingness threshold throws that away before anything has looked."""
     rng = np.random.default_rng(13)
     n = 200
     vals = rng.normal(10, 2, n)
     vals[rng.random(n) < 0.8] = np.nan           # 80% missing
     df = pd.DataFrame({"sparse": vals, "keep": rng.normal(0, 1, n)})
-    cleaned, _report = auto_clean(df)
+    cleaned, report = auto_clean(df)
+    assert "sparse" in cleaned.columns
+    assert "sparse" in report.retained_sparse
+    assert "sparse" not in report.imputed_columns, \
+        "filling 80% of a column invents most of it"
+
+
+def test_sparse_column_is_dropped_under_the_aggressive_policy():
+    rng = np.random.default_rng(13)
+    n = 200
+    vals = rng.normal(10, 2, n)
+    vals[rng.random(n) < 0.8] = np.nan
+    df = pd.DataFrame({"sparse": vals, "keep": rng.normal(0, 1, n)})
+    cleaned, _report = auto_clean(df, CleaningPolicy.aggressive())
     assert "sparse" not in cleaned.columns
 
 
@@ -116,9 +134,20 @@ def test_column_beyond_the_usable_threshold_is_dropped():
 #  Duplicates
 # ══════════════════════════════════════════════════════════
 
-def test_exact_duplicate_rows_are_removed():
+def test_exact_duplicate_rows_are_reported_not_removed():
+    """Identical rows are not automatically an error, so nothing is
+    deleted by default — the finding and the SQL are handed over instead."""
     df = pd.DataFrame({"a": [1, 1, 2, 3], "b": ["x", "x", "y", "z"]})
     cleaned, report = auto_clean(df)
+    assert len(cleaned) == 4, "rows were removed under the default policy"
+    assert report.duplicates_removed == 0
+    assert report.duplicates_flagged == 1
+    assert report.duplicate_verdict
+
+
+def test_exact_duplicate_rows_are_removed_under_the_aggressive_policy():
+    df = pd.DataFrame({"a": [1, 1, 2, 3], "b": ["x", "x", "y", "z"]})
+    cleaned, report = auto_clean(df, CleaningPolicy.aggressive())
     assert report.duplicates_removed == 1
     assert len(cleaned) == 3
 
@@ -157,7 +186,7 @@ def test_cleaning_never_silently_loses_rows():
     n = 250
     df = pd.DataFrame({"a": rng.normal(0, 1, n), "b": rng.choice(["p", "q"], n)})
     df = pd.concat([df, df.head(10)], ignore_index=True)   # 10 exact dupes
-    cleaned, report = auto_clean(df)
+    cleaned, report = auto_clean(df, CleaningPolicy.aggressive())
     assert len(df) - len(cleaned) == report.duplicates_removed
 
 

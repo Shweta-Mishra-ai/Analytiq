@@ -11,7 +11,8 @@ import io
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from app.config import config
-from app.engines.data_cleaner import (auto_clean, get_cleaning_summary,
+from app.engines.data_cleaner import (DIALECTS, CleaningPolicy,
+                                     auto_clean, get_cleaning_summary,
                                       table_name_from_filename)
 from app.engines.data_loader import load_file
 from app.engines.data_profiler import profile_dataset
@@ -211,11 +212,24 @@ def readiness(ds_id: str, owner: str = Depends(current_owner)):
 
 
 @router.post("/{ds_id}/clean")
-def clean(ds_id: str, owner: str = Depends(current_owner)):
+def clean(ds_id: str, aggressive: bool = False,
+          owner: str = Depends(current_owner)):
+    """Clean the dataset.
+
+    Non-destructive by default: whitespace, types and ordinary missing
+    values are corrected, while anything whose removal would be a
+    judgement call — duplicate rows, very sparse columns, constant
+    columns — is reported with the SQL to act on it, and kept. Blanket
+    deduplication of a transactional table deletes real turnover, and a
+    mostly-empty column can carry the strongest signal in the data.
+
+    `aggressive=true` restores the older behaviour of removing them.
+    """
     df = store.get_df(owner, ds_id)
     if df is None:
         raise HTTPException(404, "Dataset not found")
-    cleaned, report = auto_clean(df)
+    policy = CleaningPolicy.aggressive() if aggressive else CleaningPolicy()
+    cleaned, report = auto_clean(df, policy)
     store.update_active(owner, ds_id, cleaned)
     summary = get_cleaning_summary(report)
     store.cache_set(owner, ds_id, "clean_report", summary)
@@ -224,23 +238,35 @@ def clean(ds_id: str, owner: str = Depends(current_owner)):
     # apply the same cleaning upstream rather than trusting the output.
     meta = store.get_meta(owner, ds_id)
     table = table_name_from_filename(meta.filename if meta else "")
-    sql = report.sql_script(table)
-    store.cache_set(owner, ds_id, "clean_sql", sql)
+    scripts = {d: report.sql_script(table, d) for d in DIALECTS}
+    store.cache_set(owner, ds_id, "clean_sql", scripts["ansi"])
+    store.cache_set(owner, ds_id, "clean_sql_all", scripts)
 
     return {"summary": to_jsonable(summary),
             "actions": to_jsonable(report.actions),
-            "sql": sql,
+            "sql": scripts["ansi"],
+            "sql_by_dialect": scripts,
+            "dialects": list(DIALECTS),
             "sql_table": table,
             "preview": df_records(cleaned, 100)}
 
 
 @router.get("/{ds_id}/clean/sql")
-def clean_sql(ds_id: str, owner: str = Depends(current_owner)):
-    """The SQL for the last cleaning pass on this dataset."""
-    sql = store.cache_get(owner, ds_id, "clean_sql")
-    if sql is None:
-        raise HTTPException(404, "Run cleaning first")
-    return {"sql": sql}
+def clean_sql(ds_id: str, dialect: str = "ansi",
+              owner: str = Depends(current_owner)):
+    """The SQL for the last cleaning pass, in the requested dialect."""
+    scripts = store.cache_get(owner, ds_id, "clean_sql_all")
+    if scripts is None:
+        sql = store.cache_get(owner, ds_id, "clean_sql")
+        if sql is None:
+            raise HTTPException(404, "Run cleaning first")
+        return {"sql": sql, "dialect": "ansi", "dialects": list(DIALECTS)}
+    key = str(dialect or "ansi").lower()
+    if key not in scripts:
+        raise HTTPException(
+            400, "Unknown dialect {!r}. Available: {}".format(
+                dialect, ", ".join(DIALECTS)))
+    return {"sql": scripts[key], "dialect": key, "dialects": list(DIALECTS)}
 
 
 @router.post("/{ds_id}/reset")
