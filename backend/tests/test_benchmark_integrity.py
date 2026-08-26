@@ -19,6 +19,7 @@ Two rules are enforced here:
 from __future__ import annotations
 
 import io
+import re
 
 import numpy as np
 import pandas as pd
@@ -138,8 +139,13 @@ def _pdf_text(df, domain):
         recommendations=story.recommended_actions, top_insights=[],
         attrition=None, domain=domain,
     )
-    return "\n".join((p.extract_text() or "")
-                     for p in pypdf.PdfReader(io.BytesIO(pdf)).pages)
+    raw = "\n".join((p.extract_text() or "")
+                    for p in pypdf.PdfReader(io.BytesIO(pdf)).pages)
+    # Collapse whitespace. A phrase asserted here is prose, and prose wraps
+    # wherever the page happens to break it — changing a typeface moved a
+    # line break into the middle of "a prompt to look" and failed a test
+    # about meaning, not layout.
+    return re.sub(r"\s+", " ", raw)
 
 
 @pytest.fixture()

@@ -26,10 +26,13 @@ from reportlab.pdfgen import canvas as CV
 
 logger = logging.getLogger(__name__)
 
-from app.engines.pdf.theme import _c, W, H, CW_DEFAULT
+from app.engines.pdf.theme import (
+    _c, W, H, CW_DEFAULT, FONT_BODY, FONT_BOLD, FONT_ITALIC,
+    FONT_SERIF, FONT_SERIF_BOLD,
+)
 from app.engines.pdf.primitives import (
     _sec, _kpi_row, _narrative_box, _gtable, _insight_card, _clean,
-    is_id_col, truncate_label,
+    _exhibit, _exhibit_source, is_id_col, truncate_label,
 )
 from app.services.dtypes import is_text_dtype, text_columns
 
@@ -203,8 +206,8 @@ def _dataset_overview(story, s, T, df, profile, CW):
         cw_s = CW / (len(show) + 1)
         tbl  = Table(rows, colWidths=[cw_s] * (len(show)+1), repeatRows=1)
         tbl.setStyle(TableStyle([
-            ("FONTNAME",     (0,0), (-1,0),  "Helvetica-Bold"),
-            ("FONTNAME",     (0,1), (-1,-1), "Helvetica"),
+            ("FONTNAME",     (0,0), (-1,0),  FONT_BOLD),
+            ("FONTNAME",     (0,1), (-1,-1), FONT_BODY),
             ("FONTSIZE",     (0,0), (-1,-1), 8),
             ("TEXTCOLOR",    (0,0), (-1,0),  HexColor("#FFFFFF")),
             ("BACKGROUND",   (0,0), (-1,0),  _c(T["header_bg"])),
@@ -254,6 +257,8 @@ def _estimates_block(story, s, T, df, CW):
 
     story.append(Spacer(1, 3 * mm))
     story.append(Paragraph("Headline Measures, with Uncertainty", s["h3"]))
+    _exhibit(story, s, T, "Headline measures and their 95% confidence "
+                          "intervals")
     rows = []
     for e in estimates:
         rows.append([
@@ -266,6 +271,9 @@ def _estimates_block(story, s, T, df, CW):
     _gtable(story, T, ["Measure", "Mean", "95% confidence interval",
                        "Margin", "Records"], rows,
             [CW * 0.28, CW * 0.16, CW * 0.26, CW * 0.15, CW * 0.15])
+    _exhibit_source(story, s, T,
+                    "Computed from the submitted dataset; intervals from "
+                    "the t distribution.")
     story.append(Paragraph(
         "The interval is the range in which the true average plausibly "
         "sits, given this sample. A difference smaller than the margin is "
@@ -376,15 +384,19 @@ def _bi_section(story, s, T, bi_report, CW):
 #  CHART PAGE
 # ══════════════════════════════════════════════════════════
 
-def _chart_page(story, s, T, img_bytes, title, narrative, num, CW):
-    _sec(story, s, T, "Chart {}: {}".format(num, title))
+def _chart_page(story, s, T, img_bytes, title, narrative, num, CW,
+                source: str = ""):
+    _sec(story, s, T, title)
+    _exhibit(story, s, T, title)
     if img_bytes:
         try:
             img = Image(io.BytesIO(img_bytes),
                         width=CW, height=CW * 0.48)
-            story.append(KeepTogether([img, Spacer(1, 3*mm)]))
+            story.append(KeepTogether([img, Spacer(1, 2*mm)]))
         except Exception:
             logger.debug("_chart_page: suppressed exception", exc_info=True)
+    _exhibit_source(story, s, T,
+                    source or "Computed from the submitted dataset.")
     if narrative:
         story.append(Paragraph("Analysis", s["h3"]))
         _narrative_box(story, s, T, narrative)
@@ -421,7 +433,7 @@ def _recommendations(story, s, T, actions, CW):
 
         card = Table([[
             Paragraph(priority, ParagraphStyle(
-                "pri", fontName="Helvetica-Bold", fontSize=7,
+                "pri", fontName=FONT_BOLD, fontSize=7,
                 textColor=HexColor(col), alignment=TA_CENTER)),
             Paragraph(text, s["body"]),
         ]], colWidths=[CW*0.14, CW*0.86])

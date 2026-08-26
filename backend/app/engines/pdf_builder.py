@@ -25,6 +25,9 @@ from app.engines.pdf.narrative_sections import (
     _benchmark_section, _attrition_page, _domain_label,
     _has_reference_ranges,
 )
+from app.engines.pdf.predictive_sections import (
+    _decision_table, _leakage_note, _model_note, _predictive_section,
+)
 from app.engines.pdf.data_sections import (
     _SQL_COLS,
     _data_prep_section, _wrap_sql_line, _sql_escape, _dataset_overview,

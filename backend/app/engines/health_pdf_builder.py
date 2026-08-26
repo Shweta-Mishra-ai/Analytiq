@@ -103,9 +103,11 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     from reportlab.pdfbase import pdfmetrics as _pm
     from reportlab.pdfbase.ttfonts import TTFont as _TTF
 
-    # Resolve repo root: health_pdf_builder is at core/, assets/ is at root
-    _REPO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-    _FONT_DIR  = _os.path.join(_REPO_ROOT, "assets", "fonts")
+    # health_pdf_builder sits at backend/app/engines/, so the backend root
+    # — where assets/ lives — is three levels up. The old two-level walk
+    # resolved to backend/app/assets, which does not exist, so this
+    # silently fell back to Helvetica on every run.
+    from app.engines.pdf.theme import _FONT_DIR
 
     _BF, _BB, _BI = "Helvetica", "Helvetica-Bold", "Helvetica-Oblique"
     _FONTS = [

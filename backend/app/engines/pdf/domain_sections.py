@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 from app.engines.pdf.theme import (
     _c, W, H, CW_DEFAULT, FONT_BODY, FONT_BOLD, FONT_ITALIC,
+    FONT_SERIF, FONT_SERIF_BOLD,
 )
 from app.engines.pdf.primitives import (
     _sec, _kpi_row, _narrative_box, _gtable, _clean, truncate_label,
@@ -55,8 +56,9 @@ def _prepared_by_line(config: dict) -> str:
            "conclusions drawn from it.".format(_clean(who))
 
 
-def _appendix(story, s, T, config, CW, domain: str = "general"):
-    _sec(story, s, T, "Appendix — Methodology & Sources")
+def _appendix(story, s, T, config, CW, domain: str = "general",
+              used_terms=None):
+    _sec(story, s, T, "Appendix — Methodology, Sources & Glossary")
 
     # This section is what a reviewing analyst reads to decide whether to
     # trust the rest. It states the tests actually applied and why each was
@@ -182,6 +184,9 @@ def _appendix(story, s, T, config, CW, domain: str = "general"):
 #  on DomainSpec.deep_page so adding one for a new domain stays a
 #  one-file change; domains without one simply do not get the section.
 # ══════════════════════════════════════════════════════════
+
+    story.append(Spacer(1, 4 * mm))
+    _glossary(story, s, T, CW, used_terms)
 
 def _finance_page(story, s, T, df, config, CW, profile=None):
     """
@@ -451,6 +456,93 @@ def _finance_page(story, s, T, df, config, CW, profile=None):
         "Verify all figures with your accounting team before using in board materials.",
         s["note"]))
 
+
+
+# ══════════════════════════════════════════════════════════
+#  GLOSSARY
+# ══════════════════════════════════════════════════════════
+
+# Terms this report uses that carry a precise meaning a general business
+# reader is not obliged to already know. Defined in the language of what
+# the number lets you do, not the language of the method that produced it.
+GLOSSARY = (
+    ("AUC",
+     "How well the model orders records by risk, from 0.5 (no better than "
+     "shuffling them) to 1.0 (perfect order). It says nothing about how "
+     "many records the model flags — that is the threshold."),
+    ("Base rate",
+     "How often the outcome occurs across the whole dataset. Every claim "
+     "about a segment is only meaningful against it: a 20% churn rate in "
+     "one region is good news if the base rate is 30%."),
+    ("Baseline",
+     "The score achieved by the most obvious guess — always predicting the "
+     "commonest answer, or always predicting the average. A model that "
+     "cannot beat it has found nothing, whatever its accuracy."),
+    ("Calibration",
+     "Whether a predicted probability matches observed reality: of the "
+     "records scored at 30%, do roughly 30% record the outcome. An "
+     "uncalibrated score still ranks correctly but cannot be quoted as a "
+     "likelihood."),
+    ("Confidence interval",
+     "The range in which the true value plausibly sits, given that this is "
+     "a sample rather than the whole population. A difference smaller than "
+     "the interval is not evidence of a change."),
+    ("Cross-validation",
+     "Testing the model on data it was not trained on, repeatedly, so the "
+     "reported accuracy reflects how it will behave on new records rather "
+     "than how well it memorised the old ones."),
+    ("Effect size",
+     "How large a difference is, independent of how certain we are that it "
+     "exists. Significance says a difference is real; effect size says "
+     "whether it is worth acting on."),
+    ("Hit rate (precision)",
+     "Of the records the model flags, the share that actually record the "
+     "outcome. This is what determines whether an intervention is worth "
+     "its cost."),
+    ("Lift",
+     "How much better targeting by the model is than choosing at random. "
+     "A lift of 2.5x means the same effort reaches two and a half times as "
+     "many cases."),
+    ("Missing not at random",
+     "Data that is absent for a reason connected to what is being "
+     "measured — a satisfaction score missing precisely for the people who "
+     "left. Filling these gaps with an average erases the pattern."),
+    ("p-value",
+     "The chance of seeing a difference this large if there were really no "
+     "difference at all. Below 0.05 by convention, though on a large "
+     "sample almost everything clears it."),
+    ("Recall",
+     "Of all the records that record the outcome, the share the model "
+     "finds. Raising it means casting a wider net, which lowers the hit "
+     "rate — the trade-off is a budget decision."),
+    ("Target leakage",
+     "A field that is only filled in once the outcome is already known. It "
+     "makes a model look excellent in testing and useless in practice, "
+     "because the field is empty when a real prediction is needed."),
+    ("Threshold",
+     "The score above which a record is treated as at risk. Moving it "
+     "trades hit rate against coverage; 0.5 is a convention, not a "
+     "recommendation."),
+)
+
+
+def _glossary(story, s, T, CW, used_terms=None):
+    """Define the terms the report actually used.
+
+    Restricted to terms that appear in this report — a glossary listing
+    concepts the reader never encountered is padding, and padding is how a
+    document loses the reader's trust in the parts that matter.
+    """
+    entries = list(GLOSSARY)
+    if used_terms:
+        lowered = {t.lower() for t in used_terms}
+        entries = [e for e in entries if e[0].lower() in lowered] or entries
+    if not entries:
+        return
+    story.append(Paragraph("Glossary", s["h3"]))
+    _gtable(story, T, ["Term", "What it means"],
+            [[term, definition] for term, definition in entries],
+            [CW * 0.24, CW * 0.76])
 
 
 def _domain_deep_page(story, s, T, df, config, CW, domain, profile=None):

@@ -28,7 +28,10 @@ from reportlab.pdfgen import canvas as CV
 
 logger = logging.getLogger(__name__)
 
-from app.engines.pdf.theme import _c, W, H, CW_DEFAULT
+from app.engines.pdf.theme import (
+    _c, W, H, CW_DEFAULT, FONT_BODY, FONT_BOLD, FONT_ITALIC,
+    FONT_SERIF, FONT_SERIF_BOLD,
+)
 
 # Shared with the health report builder so both describe the same columns.
 from app.engines.pdf_primitives import is_id_col, truncate_label  # noqa: F401
@@ -52,18 +55,18 @@ def _kpi_row(story: list, s: dict, T: dict, kpis: list, CW: float):
     cw   = CW / cols
     vals = [Paragraph(
                 "<b>{}</b>".format(k.get("value", "")),
-                ParagraphStyle("kv", fontName="Helvetica-Bold", fontSize=18,
+                ParagraphStyle("kv", fontName=FONT_BOLD, fontSize=18,
                                textColor=HexColor(k.get("color", T["accent"])),
                                alignment=TA_CENTER))
             for k in kpis[:cols]]
     lbls = [Paragraph(
                 k.get("label", ""),
-                ParagraphStyle("kl", fontName="Helvetica-Bold", fontSize=7.5,
+                ParagraphStyle("kl", fontName=FONT_BOLD, fontSize=7.5,
                                textColor=_c(T["text"]), alignment=TA_CENTER))
             for k in kpis[:cols]]
     subs = [Paragraph(
                 k.get("sub", ""),
-                ParagraphStyle("ks", fontName="Helvetica", fontSize=7,
+                ParagraphStyle("ks", fontName=FONT_BODY, fontSize=7,
                                textColor=_c(T["text_muted"]), alignment=TA_CENTER))
             for k in kpis[:cols]]
     t = Table([vals, lbls, subs], colWidths=[cw]*cols)
@@ -95,22 +98,69 @@ def _narrative_box(story: list, s: dict, T: dict, text: str):
     story.append(Spacer(1, 2*mm))
 
 
+def next_exhibit(s: dict) -> int:
+    """The next exhibit number for this report."""
+    counter = s.setdefault("_exhibit", {"n": 0})
+    counter["n"] += 1
+    return counter["n"]
+
+
+def _exhibit(story: list, s: dict, T: dict, title: str,
+             source: str = "") -> int:
+    """Label the next table or figure, and say where its numbers came from.
+
+    Both halves matter. The number lets the narrative refer to a specific
+    exhibit rather than "the table above", which stops being true as soon
+    as a page break moves it. The source line is what separates a figure
+    computed from the client's own data from one carried in from
+    somewhere else — a distinction a reader is entitled to make without
+    asking.
+    """
+    n = next_exhibit(s)
+    story.append(Paragraph(
+        '<font color="{}"><b>Exhibit {}</b></font>&nbsp;&nbsp;{}'.format(
+            T["accent"], n, title),
+        ParagraphStyle("exh", fontName=FONT_BOLD, fontSize=8.5,
+                       textColor=_c(T["text"]), spaceAfter=2,
+                       spaceBefore=1)))
+    if source:
+        story.append(Paragraph(
+            "Source: {}".format(source),
+            ParagraphStyle("exhsrc", fontName=FONT_ITALIC, fontSize=6.8,
+                           textColor=_c(T["text_muted"]), spaceAfter=3)))
+    return n
+
+
+def _exhibit_source(story: list, s: dict, T: dict, source: str):
+    """A source line under an exhibit that was numbered earlier."""
+    story.append(Paragraph(
+        "Source: {}".format(source),
+        ParagraphStyle("exhsrc2", fontName=FONT_ITALIC, fontSize=6.8,
+                       textColor=_c(T["text_muted"]), spaceBefore=1,
+                       spaceAfter=3)))
+
+
 def _gtable(story: list, T: dict, headers: list,
             rows_data: list, col_widths: list,
             severity_col: int = -1):
     """Generic styled table."""
     hrow = [Paragraph(h, ParagraphStyle(
-                "th", fontName="Helvetica-Bold", fontSize=8,
+                "th", fontName=FONT_BOLD, fontSize=8,
                 textColor=HexColor("#FFFFFF"), alignment=TA_CENTER))
             for h in headers]
     body = []
     for row in rows_data:
         body.append([Paragraph(str(c), ParagraphStyle(
-                "td", fontName="Helvetica", fontSize=8,
+                "td", fontName=FONT_BODY, fontSize=8,
                 textColor=_c(T["text"]), leading=12))
                      for c in row])
     tbl = Table([hrow] + body, colWidths=col_widths)
     sty = [
+        # ReportLab's TableStyle default is Helvetica, which it declares in
+        # the page's font resources even when every cell is a Paragraph
+        # carrying its own face. Setting it keeps the document to one
+        # family.
+        ("FONTNAME",      (0,0), (-1,-1), FONT_BODY),
         ("BACKGROUND",    (0,0), (-1,0),  _c(T["header_bg"])),
         ("ROWBACKGROUNDS",(0,1), (-1,-1), [HexColor("#FFFFFF"), _c(T["bg_light"])]),
         ("ALIGN",         (0,0), (-1,-1), "CENTER"),
@@ -135,7 +185,7 @@ def _gtable(story: list, T: dict, headers: list,
                     sty += [
                         ("BACKGROUND", (severity_col, i), (severity_col, i), HexColor(col)),
                         ("TEXTCOLOR",  (severity_col, i), (severity_col, i), HexColor("#FFFFFF")),
-                        ("FONTNAME",   (severity_col, i), (severity_col, i), "Helvetica-Bold"),
+                        ("FONTNAME",   (severity_col, i), (severity_col, i), FONT_BOLD),
                         ("FONTSIZE",   (severity_col, i), (severity_col, i), 7),
                     ]
                     break
@@ -162,13 +212,13 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
     col = sev_c.get(sev, T["accent"])
     bg  = sev_bg.get(sev, T["bg_card"])
 
-    bs = ParagraphStyle("bi_badge", fontName="Helvetica-Bold", fontSize=7.5,
+    bs = ParagraphStyle("bi_badge", fontName=FONT_BOLD, fontSize=7.5,
                         textColor=HexColor("#FFFFFF"), alignment=TA_CENTER)
-    ts = ParagraphStyle("bi_title", fontName="Helvetica-Bold", fontSize=9.5,
+    ts = ParagraphStyle("bi_title", fontName=FONT_BOLD, fontSize=9.5,
                         textColor=_c(T["text"]))
-    rl = ParagraphStyle("bi_lbl",   fontName="Helvetica-Bold", fontSize=8,
+    rl = ParagraphStyle("bi_lbl",   fontName=FONT_BOLD, fontSize=8,
                         textColor=HexColor("#FFFFFF"), alignment=TA_CENTER)
-    rv = ParagraphStyle("bi_val",   fontName="Helvetica",      fontSize=8.5,
+    rv = ParagraphStyle("bi_val",   fontName=FONT_BODY,      fontSize=8.5,
                         textColor=_c(T["text"]),  leading=12.5)
 
     num_str = "{}. ".format(num) if num else ""
@@ -227,7 +277,7 @@ def _toc(story, s, T, entries, CW):
     for num, title in entries:
         row = Table([[
             Paragraph(str(num), ParagraphStyle(
-                "tn", fontName="Helvetica-Bold", fontSize=10,
+                "tn", fontName=FONT_BOLD, fontSize=10,
                 textColor=_c(T["accent"]), alignment=TA_CENTER)),
             Paragraph(title, s["toc"]),
         ]], colWidths=[9*mm, CW - 9*mm])

@@ -30,12 +30,76 @@ logger = logging.getLogger(__name__)
 W, H = A4
 CW_DEFAULT = W - 36 * mm   # content width (18mm each side)
 
-# Named rather than repeated as string literals, so a future switch to an
-# embedded typeface is one edit. dataforge-ai ships Carlito/Caladea for
-# this; Analytiq renders in the ReportLab base fonts today.
+# ── Typography ────────────────────────────────────────────
+# ReportLab's built-in Helvetica renders correctly but reads as a
+# PDF-library default rather than a designed document, which is the wrong
+# first impression for a report a client is paying for. Carlito and
+# Caladea are metric-compatible with Calibri and Cambria — the faces most
+# consulting templates are actually built on — and ship with the app.
+#
+# The health report already registered Carlito, but no font files were
+# ever committed, so it logged a warning and silently fell back. Both
+# reports now find them.
 FONT_BODY = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
 FONT_ITALIC = "Helvetica-Oblique"
+FONT_SERIF = "Times-Roman"
+FONT_SERIF_BOLD = "Times-Bold"
+
+# theme.py sits at backend/app/engines/pdf/, so the backend root is four
+# levels up: pdf -> engines -> app -> backend.
+_BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
+_FONT_DIR = os.path.join(_BACKEND_ROOT, "assets", "fonts")
+
+
+def register_premium_fonts() -> bool:
+    """Register the shipped typefaces. Idempotent, and safe to fail.
+
+    Returns True when the sans family registered. A missing font must
+    degrade to Helvetica rather than break the report, so every failure
+    here is a warning and not an exception.
+    """
+    global FONT_BODY, FONT_BOLD, FONT_ITALIC, FONT_SERIF, FONT_SERIF_BOLD
+    from reportlab.pdfbase import pdfmetrics as _pm
+    from reportlab.pdfbase.ttfonts import TTFont as _TTF
+
+    wanted = [
+        ("AQ-Sans", "Carlito-Regular.ttf"),
+        ("AQ-Sans-Bold", "Carlito-Bold.ttf"),
+        ("AQ-Sans-Italic", "Carlito-Italic.ttf"),
+        ("AQ-Serif", "Caladea-Regular.ttf"),
+        ("AQ-Serif-Bold", "Caladea-Bold.ttf"),
+    ]
+    done = set(_pm.getRegisteredFontNames())
+    for alias, fname in wanted:
+        if alias in done:
+            continue
+        path = os.path.join(_FONT_DIR, fname)
+        if not os.path.exists(path):
+            logger.warning("report font missing at %s — falling back to "
+                           "Helvetica", path)
+            continue
+        try:
+            _pm.registerFont(_TTF(alias, path))
+            done.add(alias)
+        except Exception:
+            logger.warning("could not register %s", alias, exc_info=True)
+
+    if "AQ-Sans" in done:
+        FONT_BODY = "AQ-Sans"
+    if "AQ-Sans-Bold" in done:
+        FONT_BOLD = "AQ-Sans-Bold"
+    if "AQ-Sans-Italic" in done:
+        FONT_ITALIC = "AQ-Sans-Italic"
+    if "AQ-Serif" in done:
+        FONT_SERIF = "AQ-Serif"
+    if "AQ-Serif-Bold" in done:
+        FONT_SERIF_BOLD = "AQ-Serif-Bold"
+    return FONT_BODY != "Helvetica"
+
+
+register_premium_fonts()
 
 
 # ══════════════════════════════════════════════════════════
@@ -146,38 +210,48 @@ def _c(hex_str: str) -> HexColor:
 
 def _styles(T: dict) -> dict:
     def ps(name, **kw):
+        # Default to the registered body face so a style declared without
+        # one cannot silently reintroduce Helvetica into an otherwise
+        # consistently-set document.
+        kw.setdefault("fontName", FONT_BODY)
         return ParagraphStyle(name, **kw)
 
     return {
-        "h1":    ps("h1",   fontName="Helvetica-Bold", fontSize=17,
+        # Exhibit counter. Consulting reports number every table and figure
+        # so the text can refer to "Exhibit 4" instead of "the table above",
+        # which stops meaning anything once a page break moves it. Carried
+        # on the style dict because that is already threaded through every
+        # section function; one counter per build_pdf call.
+        "_exhibit": {"n": 0},
+        "h1":    ps("h1",   fontName=FONT_SERIF_BOLD, fontSize=17,
                     textColor=_c(T["accent"]),     spaceAfter=4),
-        "h2":    ps("h2",   fontName="Helvetica-Bold", fontSize=13,
+        "h2":    ps("h2",   fontName=FONT_SERIF_BOLD, fontSize=13,
                     textColor=_c(T["text"]),       spaceBefore=8, spaceAfter=3),
-        "h3":    ps("h3",   fontName="Helvetica-Bold", fontSize=10,
+        "h3":    ps("h3",   fontName=FONT_BOLD, fontSize=10,
                     textColor=_c(T["accent"]),     spaceBefore=6, spaceAfter=3),
-        "body":  ps("body", fontName="Helvetica",      fontSize=9,
+        "body":  ps("body", fontName=FONT_BODY,      fontSize=9,
                     textColor=_c(T["text"]),       leading=14,  spaceAfter=3,
                     alignment=TA_JUSTIFY),
-        "sm":    ps("sm",   fontName="Helvetica",      fontSize=7.5,
+        "sm":    ps("sm",   fontName=FONT_BODY,      fontSize=7.5,
                     textColor=_c(T["text_muted"]), leading=11,  spaceAfter=2),
-        "bl":    ps("bl",   fontName="Helvetica",      fontSize=9,
+        "bl":    ps("bl",   fontName=FONT_BODY,      fontSize=9,
                     textColor=_c(T["text"]),       leading=13,  spaceAfter=3,
                     leftIndent=10, firstLineIndent=-10),
-        "toc":   ps("toc",  fontName="Helvetica",      fontSize=10,
+        "toc":   ps("toc",  fontName=FONT_BODY,      fontSize=10,
                     textColor=_c(T["text"]),       leading=16,  spaceAfter=3),
-        "wh":    ps("wh",   fontName="Helvetica",      fontSize=9,
+        "wh":    ps("wh",   fontName=FONT_BODY,      fontSize=9,
                     textColor=HexColor("#FFFFFF"),  leading=13),
-        "wbh":   ps("wbh",  fontName="Helvetica-Bold", fontSize=10,
+        "wbh":   ps("wbh",  fontName=FONT_BOLD, fontSize=10,
                     textColor=HexColor("#FFFFFF")),
-        "note":  ps("note", fontName="Helvetica-Oblique", fontSize=7.5,
+        "note":  ps("note", fontName=FONT_ITALIC, fontSize=7.5,
                     textColor=_c(T["text_muted"]), spaceAfter=3),
-        "warn":  ps("warn", fontName="Helvetica",      fontSize=8.5,
+        "warn":  ps("warn", fontName=FONT_BODY,      fontSize=8.5,
                     textColor=_c(T["text"]),       leading=13,
                     backColor=_c(T["warning_bg"])),
         # Insight card row styles
-        "rl":    ps("rl",   fontName="Helvetica-Bold", fontSize=8,
+        "rl":    ps("rl",   fontName=FONT_BOLD, fontSize=8,
                     textColor=HexColor("#FFFFFF"),  alignment=TA_CENTER),
-        "rv":    ps("rv",   fontName="Helvetica",      fontSize=8.5,
+        "rv":    ps("rv",   fontName=FONT_BODY,      fontSize=8.5,
                     textColor=_c(T["text"]),       leading=12.5),
     }
 
@@ -217,13 +291,13 @@ class _ReportCanvas(CV.Canvas):
         self.setFillColor(_c(T["accent"]))
         self.rect(0, H - 25.5*mm, W, 1.5*mm, fill=1, stroke=0)
         self.setFillColor(HexColor("#FFFFFF"))
-        self.setFont("Helvetica-Bold", 10)
+        self.setFont(FONT_BOLD, 10)
         self.drawString(18*mm, H - 14*mm, "Analytiq")
-        self.setFont("Helvetica", 7.5)
+        self.setFont(FONT_BODY, 7.5)
         self.setFillColor(HexColor(T["accent2"]))
         self.drawString(18*mm, H - 20*mm, self.report_title)
         self.setFillColor(HexColor("#FFFFFF"))
-        self.setFont("Helvetica", 7)
+        self.setFont(FONT_BODY, 7)
         self.drawRightString(W - 18*mm, H - 14*mm, self.report_date)
         self.drawRightString(W - 18*mm, H - 20*mm,
                              "CONFIDENTIAL — " + self.client_name)
@@ -233,7 +307,7 @@ class _ReportCanvas(CV.Canvas):
         self.setFillColor(_c(T["accent"]))
         self.rect(0, 12*mm, W, 1.2*mm, fill=1, stroke=0)
         self.setFillColor(HexColor("#FFFFFF"))
-        self.setFont("Helvetica", 6.5)
+        self.setFont(FONT_BODY, 6.5)
         # The footer previously named a fixed set of HR benchmark bodies
         # (SHRM · Gallup · Mercer · Deloitte) on EVERY page of EVERY report,
         # so a finance or e-commerce deliverable cited HR attrition sources
@@ -279,10 +353,10 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
 
     # Brand
     cv.setFillColor(HexColor("#FFFFFF"))
-    cv.setFont("Helvetica-Bold", 15)
+    cv.setFont(FONT_BOLD, 15)
     cv.drawString(20*mm, H - 32*mm, "Analytiq")
     cv.setFillColor(HexColor(T["accent2"]))
-    cv.setFont("Helvetica", 9.5)
+    cv.setFont(FONT_BODY, 9.5)
     cv.drawString(20*mm, H - 40*mm, "Advanced Analytics Platform")
     cv.setFillColor(_c(T["cover_accent"]))
     cv.rect(20*mm, H - 44*mm, 55*mm, 1.2*mm, fill=1, stroke=0)
@@ -305,8 +379,10 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     cv.setFillColor(_c(T["domain_badge"]))
     cv.roundRect(20*mm, H - 60*mm, 85*mm, 11*mm, 3, fill=1, stroke=0)
     cv.setFillColor(HexColor("#FFFFFF"))
-    cv.setFont("Helvetica-Bold", 8)
-    cv.drawString(25*mm, H - 56*mm, "◆  " + domain_lbl)
+    cv.setFont(FONT_BOLD, 8)
+    # Carlito has no U+25C6 diamond; U+25CF is present and reads
+    # the same at badge size. A missing glyph renders as a box.
+    cv.drawString(25*mm, H - 56*mm, "\u25CF  " + domain_lbl)
 
     # Title (word wrap at ~28 chars)
     words, lines, line = title.split(), [], ""
@@ -322,12 +398,12 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     cv.setFillColor(HexColor("#FFFFFF"))
     y_title = H / 2 + 36*mm
     for ln in lines:
-        cv.setFont("Helvetica-Bold", 30 if len(ln) <= 20 else 24)
+        cv.setFont(FONT_SERIF_BOLD, 30 if len(ln) <= 20 else 24)
         cv.drawString(20*mm, y_title, ln)
         y_title -= 11*mm
 
     cv.setFillColor(HexColor(T["accent2"]))
-    cv.setFont("Helvetica", 10)
+    cv.setFont(FONT_BODY, 10)
     cv.drawString(20*mm, H / 2 + 12*mm,
                   config.get("subtitle", "Powered by Analytiq"))
     cv.setFillColor(_c(T["cover_accent"]))
@@ -341,15 +417,15 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
         cv.setFillColor(HexColor("#1A3A5C"))
         cv.roundRect(x + 1.5, H / 2 - 14*mm, bw - 3, 18*mm, 3, fill=1, stroke=0)
         cv.setFillColor(HexColor(kpi.get("color", T["accent2"])))
-        cv.setFont("Helvetica-Bold", 16)
+        cv.setFont(FONT_BOLD, 16)
         cv.drawCentredString(x + bw / 2, H / 2 - 2*mm,
                              str(kpi.get("value", ""))[:9])
         cv.setFillColor(HexColor("#FFFFFF"))
-        cv.setFont("Helvetica-Bold", 7)
+        cv.setFont(FONT_BOLD, 7)
         cv.drawCentredString(x + bw / 2, H / 2 - 8*mm,
                              str(kpi.get("label", ""))[:18])
         cv.setFillColor(HexColor(T["accent2"]))
-        cv.setFont("Helvetica", 6.5)
+        cv.setFont(FONT_BODY, 6.5)
         cv.drawCentredString(x + bw / 2, H / 2 - 13*mm,
                              str(kpi.get("sub", ""))[:20])
 
@@ -365,9 +441,9 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     for i, (k, v) in enumerate(meta):
         x = 20*mm + i * mw
         cv.setFillColor(HexColor(T["accent2"]))
-        cv.setFont("Helvetica", 6.5); cv.drawString(x, 21*mm, k)
+        cv.setFont(FONT_BODY, 6.5); cv.drawString(x, 21*mm, k)
         cv.setFillColor(HexColor("#FFFFFF"))
-        cv.setFont("Helvetica-Bold", 8); cv.drawString(x, 13*mm, v[:22])
+        cv.setFont(FONT_BOLD, 8); cv.drawString(x, 13*mm, v[:22])
 
     # The cover previously carried "Powered by Groq Llama 3.3 70B". Naming
     # the model on the front page of a client deliverable invites the
@@ -375,7 +451,7 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     # whether the analysis is sound. Confidentiality marking belongs here
     # instead.
     cv.setFillColor(HexColor(T["accent2"]))
-    cv.setFont("Helvetica", 6.5)
+    cv.setFont(FONT_BODY, 6.5)
     cv.drawRightString(W - 21*mm, 5*mm, "Confidential")
     cv.save()
     buf.seek(0)

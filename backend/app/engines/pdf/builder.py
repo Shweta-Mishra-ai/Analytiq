@@ -36,8 +36,9 @@ from app.engines.pdf.primitives import (
 from app.engines.pdf.narrative_sections import (
     _exec_summary, _top_insights, _dq_note, _readiness_block,
     _benchmark_section, _attrition_page, _domain_label,
-    _has_reference_ranges, _exec_dashboard, _predictive_section,
+    _has_reference_ranges, _exec_dashboard,
 )
+from app.engines.pdf.predictive_sections import _predictive_section
 from app.engines.pdf.data_sections import (
     _data_prep_section, _dataset_overview, _estimates_block, _stats_section,
     _bi_section, _chart_page, _recommendations,
@@ -200,8 +201,11 @@ def build_pdf(
         _add_toc("Statistical Analysis")
     if bi_report:
         _add_toc("Business Intelligence")
-    for i, (t, _, _) in enumerate(chart_data, 1):
-        _add_toc("Chart {}: {}".format(i, t[:28]))
+    for _i, (t, _, _) in enumerate(chart_data, 1):
+        # Matches the section heading, which is the chart's own title —
+        # a contents line that reads differently from the page it points
+        # at makes the reader check whether they are in the right place.
+        _add_toc(str(t)[:38])
     _add_toc("Recommendations & Action Plan")
     _add_toc("Appendix — Methodology & Sources")
 
