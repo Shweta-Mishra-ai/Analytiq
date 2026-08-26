@@ -738,16 +738,50 @@ def _generate_key_findings(report: "EDAReport") -> List[str]:
                 top.col_a, top.col_b, top.statistic, top.p_value)
         )
 
-    # Group differences
-    sig_groups = [r for r in report.group_comparisons if r.is_significant]
+    # Group differences. Significance alone is not enough: on a large
+    # sample almost every comparison is significant, and a difference too
+    # small to act on is not a finding however certain it is.
+    try:
+        from app.engines.rigour import assess_finding
+        sig_groups = []
+        for r in report.group_comparisons:
+            if not r.is_significant:
+                continue
+            n = sum(g.get("n", 0) for g in (r.group_stats or {}).values()) \
+                if isinstance(r.group_stats, dict) else None
+            if assess_finding(p_value=r.p_value, effect_size=r.effect_size,
+                              n=n or None).reportable:
+                sig_groups.append(r)
+    except Exception:
+        logger.warning("finding gate unavailable", exc_info=True)
+        sig_groups = [r for r in report.group_comparisons if r.is_significant]
     if sig_groups:
         top = sig_groups[0]
         findings.append(
-            "Significant group difference: '{}' varies significantly "
-            "by '{}' ({}, p={:.4f}, effect={}).".format(
+            "'{}' differs by '{}' ({}, p={:.4f}, effect {}). The gap is "
+            "both statistically reliable and large enough to act on.".format(
                 top.numeric_col, top.group_col,
                 top.test_used, top.p_value, top.effect_label)
         )
+
+    # Interactions lead, because an effect that reverses across a second
+    # factor is the finding a main-effects summary reports as "no effect".
+    for inter in list(getattr(report, "interactions", None) or [])[:2]:
+        findings.insert(0, inter.description)
+
+    # Class imbalance changes how every subsequent number reads.
+    for note in list(getattr(report, "imbalance_notes", None) or [])[:1]:
+        findings.append(note.note)
+
+    # Groups too thin to carry a comparison.
+    rare = list(getattr(report, "rare_categories", None) or [])
+    if rare:
+        findings.append(
+            "{} category level(s) hold too few rows to support a finding "
+            "on their own — smallest is '{}' in '{}' at {} row(s). These "
+            "are excluded from group comparisons rather than ranked "
+            "alongside groups many times their size.".format(
+                len(rare), rare[0].level, rare[0].column, rare[0].n))
 
     # VIF issues
     severe_vif = [r for r in report.multicollinearity if r.vif >= 10]
@@ -856,7 +890,20 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
                     logger.debug("run_eda: suppressed exception", exc_info=True)
                     continue
 
-    # 6. Key findings
+    # 6. Depth layer
+    try:
+        from app.engines.eda_depth import (
+            describe_imbalance, find_interactions, find_rare_categories,
+            key_estimates,
+        )
+        report.estimates = key_estimates(df)
+        report.interactions = find_interactions(df)
+        report.rare_categories = find_rare_categories(df)
+        report.imbalance_notes = describe_imbalance(df)
+    except Exception:
+        logger.warning("EDA depth layer failed", exc_info=True)
+
+    # 7. Key findings
     report.key_findings = _generate_key_findings(report)
 
     return report

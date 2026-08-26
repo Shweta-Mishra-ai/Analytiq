@@ -39,8 +39,8 @@ from app.engines.pdf.narrative_sections import (
     _has_reference_ranges, _exec_dashboard, _predictive_section,
 )
 from app.engines.pdf.data_sections import (
-    _data_prep_section, _dataset_overview, _stats_section, _bi_section,
-    _chart_page, _recommendations,
+    _data_prep_section, _dataset_overview, _estimates_block, _stats_section,
+    _bi_section, _chart_page, _recommendations,
 )
 from app.engines.pdf.domain_sections import (
     _appendix, _prepared_by_line, _domain_deep_page, has_deep_page,
@@ -251,6 +251,7 @@ def build_pdf(
             story.append(PageBreak())
 
     _dataset_overview(story, s, T, df, profile, CW)
+    _estimates_block(story, s, T, df, CW)
     story.append(PageBreak())
 
     if stats_report:

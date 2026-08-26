@@ -235,6 +235,44 @@ def _dataset_overview(story, s, T, df, profile, CW):
 #  STATISTICAL ANALYSIS
 # ══════════════════════════════════════════════════════════
 
+def _estimates_block(story, s, T, df, CW):
+    """Headline averages with the uncertainty that belongs to them.
+
+    "Average order value is 412" and "412, and on this sample it could
+    reasonably be anywhere from 388 to 436" support different decisions.
+    A point estimate printed alone invites the reader to treat sampling
+    noise as a change worth acting on.
+    """
+    try:
+        from app.engines.eda_depth import key_estimates
+        estimates = key_estimates(df, max_results=5)
+    except Exception:
+        logger.warning("estimates block failed", exc_info=True)
+        return
+    if not estimates:
+        return
+
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph("Headline Measures, with Uncertainty", s["h3"]))
+    rows = []
+    for e in estimates:
+        rows.append([
+            str(e.column).replace("_", " "),
+            "{:,.2f}".format(e.value),
+            "{:,.2f} to {:,.2f}".format(e.ci_low, e.ci_high),
+            "±{:,.2f}".format(e.margin),
+            "{:,}".format(e.n),
+        ])
+    _gtable(story, T, ["Measure", "Mean", "95% confidence interval",
+                       "Margin", "Records"], rows,
+            [CW * 0.28, CW * 0.16, CW * 0.26, CW * 0.15, CW * 0.15])
+    story.append(Paragraph(
+        "The interval is the range in which the true average plausibly "
+        "sits, given this sample. A difference smaller than the margin is "
+        "not evidence of a change.", s["note"]))
+    story.append(Spacer(1, 2 * mm))
+
+
 def _stats_section(story, s, T, stats_report, CW):
     if stats_report is None: return
     _sec(story, s, T, "Statistical Analysis",
