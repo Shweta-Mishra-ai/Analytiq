@@ -64,10 +64,11 @@ _COL_MAP = {
     "region":                "Sales Region",
 }
 
-_DOMAIN_LABELS = {
-    "hr": "HR", "ecommerce": "eCommerce",
-    "sales": "Sales", "finance": "Finance", "general": "Business Analytics",
-}
+def _domain_label(domain: str) -> str:
+    """Prose label for a domain, from the registry — so a new domain does
+    not silently narrate itself as "Business Analytics"."""
+    from app.engines.domains.registry import label_for
+    return label_for(domain)
 
 
 from app.services.dtypes import text_columns
@@ -329,14 +330,13 @@ def _build_chart_prompt(ctype: str, stats: dict, domain: str) -> str:
     Build chart prompt using prompt_builder if available.
     Returns "" if prompt_builder unavailable — caller uses fallback.
     """
-    domain_lbl = _DOMAIN_LABELS.get(domain, "Business Analytics")
-    try:
-        from app.ai.prompt_builder import (
-            BAR_CHART_PROMPT, PIE_CHART_PROMPT,
-            LINE_CHART_PROMPT, DISTRIBUTION_CHART_PROMPT,
-        )
-    except ImportError:
-        return ""
+    domain_lbl = _domain_label(domain)
+    # Direct import — see _build_exec_prompt on why there is no
+    # ImportError guard here any more.
+    from app.ai.prompt_builder import (
+        BAR_CHART_PROMPT, PIE_CHART_PROMPT,
+        LINE_CHART_PROMPT, DISTRIBUTION_CHART_PROMPT,
+    )
 
     try:
         if ctype == "bar":
@@ -399,21 +399,18 @@ def _build_chart_prompt(ctype: str, stats: dict, domain: str) -> str:
 
 
 def _build_exec_prompt(df: pd.DataFrame, domain: str) -> str:
-    """Build executive summary prompt using prompt_builder if available."""
-    try:
-        from app.ai.prompt_builder import (
-            HR_EXECUTIVE_PROMPT, ECOMMERCE_EXECUTIVE_PROMPT,
-            SALES_EXECUTIVE_PROMPT, FINANCE_EXECUTIVE_PROMPT,
-        )
-        prompts = {
-            "hr": HR_EXECUTIVE_PROMPT,
-            "ecommerce": ECOMMERCE_EXECUTIVE_PROMPT,
-            "sales": SALES_EXECUTIVE_PROMPT,
-            "finance": FINANCE_EXECUTIVE_PROMPT,
-        }
-        template = prompts.get(domain, HR_EXECUTIVE_PROMPT)
-    except ImportError:
-        return ""
+    """Build the executive-summary prompt for this domain.
+
+    Resolved through prompt_builder.executive_prompt_for so a newly
+    registered domain gets its own prompt, and an unknown one gets the
+    general prompt rather than HR's — the old `.get(domain, HR_...)`
+    default put "employees" and "attrition" into finance and marketing
+    summaries. No ImportError guard: prompt_builder is a sibling module,
+    and when its constants went missing the guard turned every summary
+    in every report into an unprompted call without surfacing anything.
+    """
+    from app.ai.prompt_builder import executive_prompt_for
+    template = executive_prompt_for(domain)
 
     summary = _build_raw_summary(df, domain)
     try:

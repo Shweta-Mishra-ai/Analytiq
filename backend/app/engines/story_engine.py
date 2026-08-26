@@ -23,11 +23,12 @@ from scipy import stats as scipy_stats
 from app.engines.domains.base import (
     Insight, AttritionAnalysis, build_insight, col_stats, correlations,
 )
-from app.engines.domains.hr        import _insights_hr, _run_attrition
-from app.engines.domains.ecommerce import _insights_ecommerce
-from app.engines.domains.sales     import _insights_sales
-from app.engines.domains.finance   import _insights_finance
 from app.engines.domains.general   import _insights_general
+from app.engines.domains.registry import (
+    detect_domain as registry_detect_domain,
+    run_insights,
+    spec_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,32 +40,18 @@ __all__ = ["detect_domain", "generate_story", "StoryReport",
 #  DOMAIN DETECTION
 # ══════════════════════════════════════════════════════════
 
-DOMAIN_KEYWORDS = {
-    "ecommerce": ["price", "discount", "rating", "product", "category",
-                  "order", "revenue", "sales", "sku", "review", "seller",
-                  "cart", "inventory", "stock", "asin", "marketplace"],
-    "hr":        ["employee", "salary", "department", "attrition", "satisfaction",
-                  "tenure", "performance", "hire", "job", "left", "manager",
-                  "bonus", "promotion", "headcount", "workforce"],
-    "sales":     ["revenue", "sales", "profit", "margin", "target", "quota",
-                  "pipeline", "deal", "customer", "region", "territory",
-                  "forecast", "conversion", "lead", "opportunity", "closed"],
-    "finance":   ["profit", "loss", "expense", "income", "budget", "cost",
-                  "margin", "cashflow", "asset", "liability", "tax", "invoice"],
-    "marketing": ["campaign", "click", "impression", "conversion", "lead",
-                  "channel", "spend", "roi", "ctr", "cpa", "traffic"],
-}
+# Detection and per-domain dispatch now live in
+# app/engines/domains/registry.py. They used to live here as a keyword
+# table plus an if/elif chain, which is how `marketing` came to be
+# detectable without being analysable: the chain's `else` quietly routed
+# it to the general engine while the report kept the "marketing" label.
+#
+# detect_domain is re-exported so existing importers keep working.
 
 
 def detect_domain(df: pd.DataFrame) -> Tuple[str, float]:
-    col_text = " ".join(df.columns.str.lower().tolist())
-    scores   = {}
-    for domain, keywords in DOMAIN_KEYWORDS.items():
-        hits = sum(1 for kw in keywords if kw in col_text)
-        scores[domain] = hits / len(keywords)
-    best  = max(scores, key=scores.get)
-    score = scores[best]
-    return (best, round(score, 2)) if score > 0.04 else ("general", 0.0)
+    """(domain, confidence). See registry.detect_domain for the scoring."""
+    return registry_detect_domain(df)
 
 
 # ══════════════════════════════════════════════════════════
@@ -331,18 +318,13 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
     all_stats = {k:v for k,v in all_stats.items() if v}
 
     corrs     = correlations(df)
-    attrition = _run_attrition(df) if domain == "hr" else None
+    # Attrition is HR's alone. It used to run for anything detected as
+    # HR, so a SaaS dataset misrouted to HR came back with an "employee
+    # attrition rate" computed from its subscription churn column.
+    spec      = spec_for(domain)
+    attrition = spec.run_attrition(df)
 
-    if domain == "hr":
-        raw = _insights_hr(df, all_stats, corrs, attrition)
-    elif domain == "ecommerce":
-        raw = _insights_ecommerce(df, all_stats, corrs)
-    elif domain == "sales":
-        raw = _insights_sales(df, all_stats, corrs)
-    elif domain == "finance":
-        raw = _insights_finance(df, all_stats, corrs)
-    else:
-        raw = _insights_general(df, all_stats, corrs)
+    raw = run_insights(domain, df, all_stats, corrs, attrition)
 
     # Top up from the general engine only where the domain engine came back
     # thin. Previously this merged unconditionally, which meant the general

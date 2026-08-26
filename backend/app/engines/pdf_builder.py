@@ -126,14 +126,12 @@ THEMES = {
     },
 }
 
-# Auto-select theme by domain
-DOMAIN_THEMES = {
-    "hr":        "HR Blue",
-    "ecommerce": "Ecommerce Orange",
-    "sales":     "Sales Green",
-    "finance":   "Corporate Light",
-    "general":   "Corporate Light",
-}
+# Auto-select theme by domain. Derived from the domain registry so a
+# newly registered domain gets its theme automatically instead of
+# silently falling back to Corporate Light.
+def _domain_theme(domain: str) -> str:
+    from app.engines.domains.registry import theme_for
+    return theme_for(domain)
 
 # SHRM/Gallup/Mercer benchmarks for HR domain
 HR_BENCHMARKS = [
@@ -946,11 +944,11 @@ def _sql_escape(text: str) -> str:
 
 # "Published hr ranges" reads as machine output. Acronym domains keep
 # their capitalisation; the rest are title-cased.
-_DOMAIN_LABELS = {
-    "hr": "HR", "saas": "SaaS", "ecommerce": "e-commerce",
-    "finance": "finance", "sales": "sales", "marketing": "marketing",
-    "operations": "operations", "healthcare": "healthcare",
-}
+def _domain_label(domain: str) -> str:
+    """Prose label for a domain. Acronym domains keep their capitalisation
+    ("HR", "SaaS"); "Published hr ranges" reads as machine output."""
+    from app.engines.domains.registry import label_for
+    return label_for(domain)
 
 
 def _has_reference_ranges(domain, df) -> bool:
@@ -1037,7 +1035,7 @@ def _benchmark_section(story, s, T, domain, CW, df=None):
 
     _sec(story, s, T, "Performance Against Published Ranges",
          "Published {} ranges, against the figures in this dataset".format(
-             _DOMAIN_LABELS.get(domain, domain.title())))
+             _domain_label(domain)))
     story.append(Paragraph(
         "These are general, publicly-cited ranges, not a licensed benchmark "
         "set, and they move with sector, company size and region. They "
@@ -1519,7 +1517,7 @@ def build_pdf(
     # ── Theme selection ───────────────────────────────────
     theme_name = config.get("theme_name", "")
     if theme_name not in THEMES:
-        auto_key  = DOMAIN_THEMES.get(domain, "Corporate Light")
+        auto_key  = _domain_theme(domain)
         theme_name = auto_key
     T = THEMES[theme_name]
     config["domain"]     = domain
