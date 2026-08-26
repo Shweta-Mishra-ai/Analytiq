@@ -111,9 +111,18 @@ Add your domain to `BUILDERS` and `FOREIGN_VOCAB` in
 something the engine should genuinely find — the marketing fixture makes
 one channel ~6x less efficient so the waste rule has a real target.
 
+Also add a fixture to `BUILDERS` in
+`tests/test_end_to_end_matrix.py`. That file runs every engine and a full
+report build against every registered domain, and
+`test_every_registered_domain_has_a_matrix_fixture` fails if you register
+a domain without covering it there — the original defects survived
+precisely because nothing exercised the whole pipeline per domain.
+
 ```bash
 cd backend
-python -m pytest tests/test_domain_registry.py tests/test_expansion_domains.py -q
+python -m pytest tests/test_domain_registry.py \
+                tests/test_expansion_domains.py \
+                tests/test_end_to_end_matrix.py -q
 python -m pytest tests/ -q      # full suite before you commit
 ```
 
@@ -131,4 +140,8 @@ patient.
 - [ ] `DomainSpec` registered, signature words unique
 - [ ] Blueprint, benchmarks, both prompts, valid PDF theme
 - [ ] Fixture added to `test_expansion_domains.py`
+- [ ] Fixture added to `test_end_to_end_matrix.py`
+- [ ] Optional: a PDF deep page, attached with `attach_deep_page`
+- [ ] Optional: `chart_metrics` on the spec, so charts lead with the
+      metrics this domain cares about
 - [ ] Full suite green
