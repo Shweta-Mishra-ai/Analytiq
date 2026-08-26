@@ -569,6 +569,57 @@ def _exec_dashboard(story, s, T, df, profile, top_insights,
 #  Model-based: what the data predicts, not only what it records.
 # ══════════════════════════════════════════════════════════
 
+def _model_note(story, s, T, dr, CW):
+    """How the model was chosen, and how far its scores can be trusted.
+
+    A report that names a method without saying what it was measured
+    against asks the reader to take it on faith. Naming the alternatives
+    and their scores is what makes the choice checkable.
+    """
+    choice = getattr(dr, "model_choice", None)
+    if choice is None:
+        return
+
+    story.append(Paragraph("How This Model Was Selected", s["h3"]))
+    rows = []
+    for name, auc in (choice.candidates or []):
+        rows.append([name + ("  (selected)" if name == choice.name else ""),
+                     "{:.3f}".format(auc)])
+    if rows:
+        _gtable(story, T, ["Model considered", "Cross-validated AUC"], rows,
+                [CW * 0.62, CW * 0.38])
+        story.append(Spacer(1, 2 * mm))
+
+    parts = [
+        "<b>{}</b> was selected on cross-validated ranking quality, not by "
+        "preference — on a different dataset a different one wins.".format(
+            choice.name)]
+    if choice.calibrated and choice.calibration_before is not None:
+        parts.append(
+            "Its raw scores were {:.0f} percentage points away from observed "
+            "risk in the top band; after calibration they are {:.0f}. That "
+            "means a score of 0.30 now genuinely corresponds to roughly a "
+            "30% chance, so the number can be quoted and not only ranked."
+            .format(choice.calibration_before, choice.calibration_after or 0))
+    parts.append(
+        "The operating threshold is set at <b>{:.2f}</b> rather than the "
+        "conventional 0.50, because it {}. On imbalanced data the default "
+        "cut discards recall the model has already earned.".format(
+            choice.threshold, choice.threshold_basis))
+    _narrative_box(story, s, T, " ".join(parts))
+    story.append(Spacer(1, 2 * mm))
+
+    excluded = list(getattr(choice, "excluded_high_cardinality", None) or [])
+    if excluded:
+        story.append(Paragraph(
+            "Excluded from the model for having too many distinct values to "
+            "learn from: {}. These may still matter; they need grouping into "
+            "fewer categories before a model can use them.".format(
+                ", ".join("{} ({:,} values)".format(c, n)
+                          for c, n in excluded[:4])), s["note"]))
+        story.append(Spacer(1, 2 * mm))
+
+
 def _decision_table(story, s, T, dr, CW):
     """What acting on the top N% of the ranking would actually yield.
 
@@ -618,7 +669,10 @@ def _decision_table(story, s, T, dr, CW):
             best.precision / best.lift if best.lift else 0, best.lift))
     story.append(Spacer(1, 2 * mm))
 
-    gap = getattr(dr, "calibration_gap", None)
+    choice = getattr(dr, "model_choice", None)
+    gap = ((choice.calibration_after if choice is not None
+            and choice.calibration_after is not None
+            else getattr(dr, "calibration_gap", None)))
     if gap is not None and gap > 10:
         # The rates above come from observed outcomes, so they stand. The
         # model's own probability scores do not, and someone will
@@ -723,6 +777,8 @@ def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
         "below show what the model relies on most. They are predictive, not "
         "proven causes.".format(auc_txt))
     story.append(Spacer(1, 2 * mm))
+
+    _model_note(story, s, T, dr, CW)
 
     story.append(Paragraph("Top Predictive Drivers", s["h3"]))
     embedded = False

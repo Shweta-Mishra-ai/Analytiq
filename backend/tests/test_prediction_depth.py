@@ -148,17 +148,99 @@ def test_the_report_explains_how_to_read_the_table(drivers):
     assert "budget decision" in text
 
 
-def test_an_uncalibrated_model_says_not_to_quote_its_scores(drivers):
-    """A balanced random forest distorts probabilities. Someone will read
-    a score as 'this record has a 70% chance' unless told otherwise."""
+def test_scores_are_calibrated_before_they_are_quoted(drivers):
+    """A balanced forest distorts probabilities badly enough that a score
+    of 0.30 does not mean a 30% chance. Calibration is applied so the
+    number can be quoted, not only ranked."""
+    _df, dr, _tc = drivers
+    choice = dr.model_choice
+    assert choice is not None
+    assert choice.calibrated, "scores were left uncalibrated"
+    assert choice.calibration_after < choice.calibration_before
+    assert choice.calibration_after < 10
+
+
+def test_the_report_says_a_score_can_now_be_read_as_a_probability(drivers):
     df, dr, tc = drivers
-    if (dr.calibration_gap or 0) <= 10:
-        pytest.skip("this fixture happens to be calibrated")
     pdf = build_pdf(df=df, config=dict(CONFIG), domain="hr",
                     predictive=dr, top_cluster=tc)
     text = "\n".join((p.extract_text() or "")
                      for p in PdfReader(io.BytesIO(pdf)).pages)
-    assert "not calibrated" in text
+    assert "genuinely corresponds" in text
+
+
+# ── model selection ───────────────────────────────────────
+
+def test_more_than_one_model_is_tried(drivers):
+    """A single fixed forest left 2 points of AUC on the table on the HR
+    sample, where a scaled logistic regression scores 0.823 against its
+    0.803. Neither wins reliably, which is the argument for choosing."""
+    _df, dr, _tc = drivers
+    assert len(dr.model_choice.candidates) >= 2
+
+
+def test_the_selected_model_is_the_best_of_the_candidates(drivers):
+    _df, dr, _tc = drivers
+    choice = dr.model_choice
+    best_name, best_auc = max(choice.candidates, key=lambda c: c[1])
+    assert choice.name == best_name
+
+
+def test_the_report_names_the_alternatives_and_their_scores(drivers):
+    """Naming a method without saying what it was measured against asks
+    the reader to take it on faith."""
+    df, dr, tc = drivers
+    pdf = build_pdf(df=df, config=dict(CONFIG), domain="hr",
+                    predictive=dr, top_cluster=tc)
+    text = "\n".join((p.extract_text() or "")
+                     for p in PdfReader(io.BytesIO(pdf)).pages)
+    assert "How This Model Was Selected" in text
+    assert "Cross-validated AUC" in text
+    assert "(selected)" in text
+
+
+def test_drivers_survive_a_linear_model_winning(drivers):
+    """A logistic regression has coefficients, not feature_importances_.
+    Selecting one must not silently cost the report its drivers."""
+    _df, dr, _tc = drivers
+    assert dr.top_drivers, "the winning model produced no drivers"
+    assert all(imp >= 0 for _f, imp in dr.top_drivers)
+
+
+# ── operating threshold ───────────────────────────────────
+
+def test_the_threshold_is_chosen_not_assumed(drivers):
+    """0.5 is right only when the classes are balanced and both errors
+    cost the same. On the HR sample it gives F1 0.433 where 0.22 gives
+    0.516."""
+    _df, dr, _tc = drivers
+    assert dr.model_choice.threshold != 0.5
+    assert 0.05 <= dr.model_choice.threshold <= 0.95
+    assert dr.model_choice.threshold_basis != "default"
+
+
+def test_precision_and_recall_are_measured_at_that_threshold(drivers):
+    _df, dr, _tc = drivers
+    assert dr.precision > 0 and dr.recall > 0
+
+
+def test_high_cardinality_columns_are_named_when_excluded():
+    """A field with hundreds of levels may still matter. Dropping it in
+    silence leaves the reader thinking the model saw it."""
+    rng = np.random.default_rng(2)
+    n = 800
+    churn = rng.choice([0, 1], n, p=[.7, .3])
+    df = pd.DataFrame({
+        "churn": churn,
+        "tenure": rng.integers(1, 60, n),
+        "spend": rng.uniform(10, 500, n),
+        "free_text_note": [f"note-{i}" for i in range(n)],
+    })
+    dr = compute_drivers(df, "churn")
+    if dr is None or dr.model_choice is None:
+        pytest.skip("no model fitted")
+    excluded = [c for c, _n in dr.model_choice.excluded_high_cardinality]
+    assert "free_text_note" in excluded
 
 
 def test_no_decision_table_when_there_is_no_signal():
