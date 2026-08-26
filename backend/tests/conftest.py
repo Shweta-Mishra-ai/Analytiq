@@ -22,6 +22,21 @@ os.environ["APP_ADMIN_KEY"] = ""
 os.environ["APP_PASSWORD"] = ""
 
 
+@pytest.fixture(autouse=True)
+def _isolated_llm_cache(tmp_path, monkeypatch):
+    """Point the narrative cache at a fresh directory for every test.
+
+    Without this, one test's stubbed LLM response is served to the next
+    test that happens to build the same prompt — which is the cache
+    working exactly as designed, and useless for asserting on provider
+    routing or fallback behaviour.
+    """
+    from app.services import llm_cache as mod
+    monkeypatch.setattr(mod, "llm_cache",
+                        mod.LLMCache(base_dir=str(tmp_path / "llm_cache")))
+    yield
+
+
 def _make_hr_df(seed: int = 42, n: int = 500) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     return pd.DataFrame({

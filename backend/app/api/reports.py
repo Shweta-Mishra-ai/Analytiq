@@ -17,6 +17,7 @@ from app.config import config
 from app.engines.data_cleaner import table_name_from_filename
 from app.services.auth import current_owner
 from app.services.dataset_store import store
+from app.services.metrics import metrics
 from app.services.serialize import to_jsonable
 
 logger = logging.getLogger(__name__)
@@ -80,8 +81,25 @@ def export_excel(ds_id: str, owner: str = Depends(current_owner)):
         headers={"Content-Disposition": "attachment; filename=analytiq_export.xlsx"})
 
 
+def _count_skipped(skipped: list) -> None:
+    """A section that dropped out is an engine that failed. Counting them
+    by name turns "the report looks thin" into "forecast has failed 40
+    times since the last restart"."""
+    for section in skipped:
+        metrics.record_failure(f"engine.{section}", "section omitted")
+
+
 @router.post("/{ds_id}/pdf")
 def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner)):
+    # "Reports are slow" is unanswerable without a number, and the answer
+    # is rarely build_pdf itself — it is usually one engine upstream of it.
+    # The whole request is timed, and every section that drops out is
+    # counted, so /api/metrics can say which one.
+    with metrics.timed(f"report.{req.format}"):
+        return _generate_pdf(ds_id, req, owner)
+
+
+def _generate_pdf(ds_id: str, req: PdfRequest, owner: str):
     df = _df_or_404(owner, ds_id)
 
     from app.engines.data_profiler import profile_dataset
@@ -287,12 +305,18 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
         except Exception as e:
             logger.exception("deck build failed")
             raise HTTPException(500, f"Deck build failed: {e}")
+        deck_headers = {"Content-Disposition":
+                        "attachment; filename=analytiq_report.pptx"}
+        if skipped:
+            # The deck is built from the same analysis, so it drops the
+            # same sections — and used to say nothing about it.
+            deck_headers["X-Analytiq-Skipped-Sections"] = ",".join(skipped)
+            _count_skipped(skipped)
         return StreamingResponse(
             io.BytesIO(deck),
             media_type=("application/vnd.openxmlformats-officedocument"
                         ".presentationml.presentation"),
-            headers={"Content-Disposition":
-                     "attachment; filename=analytiq_report.pptx"})
+            headers=deck_headers)
 
     headers = {"Content-Disposition":
                "attachment; filename=analytiq_report.pdf"}
@@ -302,6 +326,7 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
         headers["X-Analytiq-Skipped-Sections"] = ",".join(skipped)
         logger.warning("report built with sections omitted: %s",
                        ", ".join(skipped))
+        _count_skipped(skipped)
     return StreamingResponse(
         io.BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
 

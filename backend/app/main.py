@@ -107,6 +107,20 @@ async def health():
     }
 
 
+@app.get("/api/admin/metrics")
+async def app_metrics():
+    """Operational counters: how long reports actually take, which engines
+    are failing, and how many LLM calls the narrative cache avoided.
+
+    In-process and reset by a restart — this answers "why is this slow"
+    and "why did that section disappear", it is not a time series. Under
+    /api/admin because a failure message can name a column from a
+    client's data; the auth middleware gates the whole prefix.
+    """
+    from app.services.metrics import metrics
+    return metrics.snapshot()
+
+
 class CreateUserRequest(BaseModel):
     username: str
     password: str

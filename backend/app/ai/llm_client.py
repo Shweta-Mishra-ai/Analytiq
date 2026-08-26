@@ -111,6 +111,16 @@ class LLMClient:
         Returns text or None — caller should use rule-based fallback on None.
         """
         from app.ai import local_llm
+        from app.services.llm_cache import llm_cache
+
+        # Regenerating a report re-ran every call: the same summary for the
+        # same dataset, billed again and adding thirty seconds to a rebuild
+        # that changed nothing. Keyed on the prompt, so a cleaned dataset
+        # produces a different prompt and correctly misses.
+        cached = llm_cache.get(system, user, task, self.model)
+        if cached:
+            logger.debug("llm cache hit for task=%s", task)
+            return cached
 
         provider = force or TASK_ROUTING.get(task, "groq")
         order    = (["gemini", "groq"] if provider == "gemini"
@@ -134,7 +144,9 @@ class LLMClient:
                 else:
                     continue
                 if result and result.strip():
-                    return result.strip()
+                    text = result.strip()
+                    llm_cache.put(system, user, task, self.model, text)
+                    return text
             except Exception as e:
                 logger.warning(f"[{prov}] task={task} failed: {e}")
                 continue

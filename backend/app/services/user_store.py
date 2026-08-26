@@ -5,14 +5,19 @@ Each client gets a username/password created by the admin (see
 POST /api/admin/users). Passwords are salted + PBKDF2-hashed, never
 stored or returned in plaintext. Deliberately dependency-free (stdlib
 hashlib) to match the rest of the project's minimal-dependency style.
+
+Accounts persist as JSON rather than a pickle: this is the one file
+whose contents are the login system, and unpickling it would run
+whatever it happened to contain.
 """
 from __future__ import annotations
 import logging
 
+import base64
 import hashlib
 import hmac
+import json
 import os
-import pickle
 import secrets
 import threading
 import time
@@ -52,24 +57,52 @@ class UserStore:
     """Thread-safe, disk-backed store of client accounts."""
 
     def __init__(self, path: Optional[str] = None):
-        self.path = path or os.path.join(config.data_dir, "users.pkl")
+        self.path = path or os.path.join(config.data_dir, "users.json")
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self._lock = threading.RLock()
         self._users: dict[str, User] = self._load()
 
     def _load(self) -> dict[str, User]:
-        if os.path.exists(self.path):
-            try:
-                with open(self.path, "rb") as f:
-                    return pickle.load(f)
-            except Exception:
-                return {}
-        return {}
+        if not os.path.exists(self.path):
+            return {}
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            return {
+                name: User(
+                    username=rec["username"],
+                    salt=base64.b64decode(rec["salt"]),
+                    password_hash=base64.b64decode(rec["password_hash"]),
+                    created_at=float(rec["created_at"]),
+                    is_admin=bool(rec.get("is_admin", False)),
+                )
+                for name, rec in raw.items()
+            }
+        except Exception:
+            # An unreadable account file must not silently hand out an
+            # empty store, because an empty store means first-run setup.
+            logger.error("could not read the account file at %s", self.path,
+                         exc_info=True)
+            raise
 
     def _save(self) -> None:
+        # JSON, not pickle: this file holds the credentials, and loading
+        # a pickle executes whatever it contains. Salt and hash are raw
+        # bytes, so they travel base64-encoded.
+        payload = {
+            name: {
+                "username": u.username,
+                "salt": base64.b64encode(u.salt).decode(),
+                "password_hash": base64.b64encode(u.password_hash).decode(),
+                "created_at": u.created_at,
+                "is_admin": u.is_admin,
+            }
+            for name, u in self._users.items()
+        }
         tmp = self.path + ".tmp"
-        with open(tmp, "wb") as f:
-            pickle.dump(self._users, f, protocol=pickle.HIGHEST_PROTOCOL)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
         os.replace(tmp, self.path)
 
     def is_empty(self) -> bool:

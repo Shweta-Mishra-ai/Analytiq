@@ -11,6 +11,9 @@ Pillow>=10.0.0
 reportlab>=4.0.0
 xlsxwriter>=3.1.0
 openpyxl>=3.1.0
+# Datasets are stored as parquet rather than pickled, so the storage
+# directory is data and not a code-execution path.
+pyarrow>=15.0.0
 groq>=0.4.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0

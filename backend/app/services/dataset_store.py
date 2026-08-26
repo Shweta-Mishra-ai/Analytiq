@@ -9,28 +9,39 @@ username) who uploaded it. We keep:
   - per-dataset analysis caches keyed by a content hash of the active df,
     so caches invalidate automatically when the data changes.
 
-DataFrames are pickled to disk (preserves dtypes exactly) with a small
-in-memory cache in front. Storage layout is base_dir/{owner}/{ds_id}/ —
-physical separation per owner, not just a filtered query, so a bug in
-one code path can't accidentally cross-serve another client's files.
-Every method requires an explicit `owner` argument (no default) so a
-new call site can't forget to scope it.
+Storage layout is base_dir/{owner}/{ds_id}/ — physical separation per
+owner, not just a filtered query, so a bug in one code path can't
+accidentally cross-serve another client's files. Every method requires an
+explicit `owner` argument (no default) so a new call site can't forget to
+scope it.
+
+Frames are parquet and metadata is JSON (see frame_io), because
+unpickling runs whatever the file says to run and the storage directory
+should not be a way to execute code. Analysis caches are the one
+remaining pickle — they hold fitted sklearn models and engine dataclasses
+that have no data-only form — so they are HMAC-signed with a key that
+never leaves the server, and an entry that does not verify is discarded
+unread rather than unpickled.
 """
 from __future__ import annotations
 import logging
 
 import hashlib
+import hmac
+import json
 import os
 import pickle
+import secrets
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Optional
 
 import pandas as pd
 
 from app.config import config
+from app.services.frame_io import read_frame, write_frame
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +59,33 @@ class DatasetMeta:
     warnings: list = field(default_factory=list)
 
 
+def _cache_key(base_dir: str) -> bytes:
+    """The key that signs cache entries. Prefers the configured app
+    secret so a multi-process deployment agrees on one; otherwise a
+    per-install key generated once and kept owner-readable."""
+    if config.app_secret:
+        return hashlib.sha256(
+            ("cache:" + config.app_secret).encode()).digest()
+    path = os.path.join(base_dir, ".cache_key")
+    try:
+        if os.path.exists(path):
+            with open(path, "rb") as fh:
+                stored = fh.read().strip()
+            if len(stored) >= 32:
+                return stored
+        generated = secrets.token_bytes(32)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(generated)
+        return generated
+    except Exception:
+        # Read-only storage: sign with a process-lifetime key. Caches
+        # then simply miss after a restart, which is safe.
+        logger.warning("could not persist a cache signing key in %s; "
+                       "caches will not survive a restart", base_dir)
+        return secrets.token_bytes(32)
+
+
 class DatasetStore:
     """Thread-safe store for uploaded datasets and analysis caches."""
 
@@ -59,6 +97,7 @@ class DatasetStore:
         self._lock = threading.RLock()
         self._mem: Dict[str, Dict[str, Any]] = {}      # "owner/id" -> {raw, active, meta}
         self._caches: Dict[str, Dict[str, Any]] = {}   # "owner/id" -> {key -> (hash, obj)}
+        self._sign_key = _cache_key(self.base_dir)
 
     # ── paths ────────────────────────────────────────────
     @staticmethod
@@ -92,14 +131,20 @@ class DatasetStore:
             cols=df_raw.shape[1],
             owner=owner,
             sheet_names=sheet_names or [],
-            warnings=warnings or [],
+            warnings=list(warnings or []),
         )
         with self._lock:
             os.makedirs(self._dir(owner, ds_id), exist_ok=True)
-            self._save_df(owner, ds_id, "raw.pkl", df_raw)
-            self._save_df(owner, ds_id, "active.pkl", df_raw)
-            with open(self._path(owner, ds_id, "meta.pkl"), "wb") as f:
-                pickle.dump(meta, f)
+            coerced = self._save_df(owner, ds_id, "raw", df_raw)
+            self._save_df(owner, ds_id, "active", df_raw)
+            if coerced:
+                # The user should hear this from the upload response, not
+                # discover it when a column stops summing.
+                meta.warnings.append(
+                    f"{len(coerced)} column(s) mix numbers and text and are "
+                    f"stored as text: {', '.join(coerced[:5])}"
+                    + ("…" if len(coerced) > 5 else ""))
+            self._write_meta(owner, ds_id, meta)
             self._touch_mem(owner, ds_id, raw=df_raw, active=df_raw.copy(), meta=meta)
         return meta
 
@@ -133,11 +178,18 @@ class DatasetStore:
         with self._lock:
             if mkey in self._mem:
                 return self._mem[mkey]["meta"]
-        p = self._path(owner, ds_id, "meta.pkl")
+        p = self._path(owner, ds_id, "meta.json")
         if not os.path.exists(p):
             return None
-        with open(p, "rb") as f:
-            meta = pickle.load(f)
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception:
+            logger.warning("unreadable metadata for %s/%s", owner, ds_id,
+                           exc_info=True)
+            return None
+        fields = {f.name for f in DatasetMeta.__dataclass_fields__.values()}
+        meta = DatasetMeta(**{k: v for k, v in raw.items() if k in fields})
         if meta.owner and meta.owner != owner:
             return None  # defense in depth; should be unreachable via _dir()
         return meta
@@ -165,14 +217,13 @@ class DatasetStore:
     def update_active(self, owner: str, ds_id: str, df: pd.DataFrame) -> None:
         mkey = self._mkey(owner, ds_id)
         with self._lock:
-            self._save_df(owner, ds_id, "active.pkl", df)
+            self._save_df(owner, ds_id, "active", df)
             if mkey in self._mem:
                 self._mem[mkey]["active"] = df
             meta = self.get_meta(owner, ds_id)
             if meta:
                 meta.rows, meta.cols = len(df), df.shape[1]
-                with open(self._path(owner, ds_id, "meta.pkl"), "wb") as f:
-                    pickle.dump(meta, f)
+                self._write_meta(owner, ds_id, meta)
                 if mkey in self._mem:
                     self._mem[mkey]["meta"] = meta
 
@@ -196,11 +247,15 @@ class DatasetStore:
             if entry and entry[0] == h:
                 return entry[1]
         # disk fallback
-        p = self._path(owner, ds_id, f"cache_{key}.pkl")
+        p = self._path(owner, ds_id, f"cache_{self._safe_key(key)}.bin")
         if os.path.exists(p):
             try:
                 with open(p, "rb") as f:
-                    stored_hash, obj = pickle.load(f)
+                    blob = f.read()
+                payload = self._unseal(blob)
+                if payload is None:
+                    return None
+                stored_hash, obj = pickle.loads(payload)
                 if stored_hash == h:
                     with self._lock:
                         self._caches.setdefault(mkey, {})[key] = (h, obj)
@@ -218,32 +273,61 @@ class DatasetStore:
         with self._lock:
             self._caches.setdefault(mkey, {})[key] = (h, obj)
         try:
-            with open(self._path(owner, ds_id, f"cache_{key}.pkl"), "wb") as f:
-                pickle.dump((h, obj), f)
+            blob = self._seal(pickle.dumps((h, obj),
+                                           protocol=pickle.HIGHEST_PROTOCOL))
+            with open(self._path(owner, ds_id,
+                                 f"cache_{self._safe_key(key)}.bin"), "wb") as f:
+                f.write(blob)
         except Exception:
-            pass  # cache persistence is best-effort
+            logger.debug("cache_set: persistence failed", exc_info=True)
+
+    # ── cache signing ────────────────────────────────────
+    def _seal(self, payload: bytes) -> bytes:
+        return hmac.new(self._sign_key, payload, hashlib.sha256).digest() + payload
+
+    def _unseal(self, blob: bytes) -> Optional[bytes]:
+        """Return the payload only if this server wrote it. A file
+        someone else put here is dropped, never unpickled."""
+        if len(blob) <= 32:
+            return None
+        tag, payload = blob[:32], blob[32:]
+        expected = hmac.new(self._sign_key, payload, hashlib.sha256).digest()
+        if not hmac.compare_digest(tag, expected):
+            logger.warning("discarding a cache entry that this server did "
+                           "not sign")
+            return None
+        return payload
 
     # ── internals ────────────────────────────────────────
-    def _save_df(self, owner: str, ds_id: str, name: str, df: pd.DataFrame) -> None:
-        with open(self._path(owner, ds_id, name), "wb") as f:
-            pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
+    @staticmethod
+    def _safe_key(key: str) -> str:
+        """Cache keys carry user-chosen text (``ml_{target}``), so they
+        are never pasted into a path as-is."""
+        cleaned = "".join(c if (c.isalnum() or c in "-_") else "_"
+                          for c in str(key))[:60]
+        return f"{cleaned}_{hashlib.sha256(str(key).encode()).hexdigest()[:8]}"
+
+    def _write_meta(self, owner: str, ds_id: str, meta: DatasetMeta) -> None:
+        p = self._path(owner, ds_id, "meta.json")
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(asdict(meta), f)
+        os.replace(tmp, p)
+
+    def _save_df(self, owner: str, ds_id: str, which: str,
+                 df: pd.DataFrame) -> list[str]:
+        return write_frame(self._path(owner, ds_id, f"{which}.parquet"), df)
 
     def _load(self, which: str, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
         mkey = self._mkey(owner, ds_id)
         with self._lock:
             if mkey in self._mem:
                 return self._mem[mkey][which]
-        p = self._path(owner, ds_id, f"{which}.pkl")
-        if not os.path.exists(p):
+        df = read_frame(self._path(owner, ds_id, f"{which}.parquet"))
+        if df is None:
             return None
-        with open(p, "rb") as f:
-            df = pickle.load(f)
         other = "raw" if which == "active" else "active"
-        other_df = None
-        op = self._path(owner, ds_id, f"{other}.pkl")
-        if os.path.exists(op):
-            with open(op, "rb") as f:
-                other_df = pickle.load(f)
+        other_df = read_frame(self._path(owner, ds_id, f"{other}.parquet"))
         meta = self.get_meta(owner, ds_id)
         with self._lock:
             self._touch_mem(owner, ds_id, **{which: df, other: other_df, "meta": meta})

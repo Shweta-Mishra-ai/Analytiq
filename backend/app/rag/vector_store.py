@@ -5,16 +5,17 @@ Embeddings come from Gemini's embedding model when a key is configured.
 Without a key we fall back to a deterministic local hashing embedder —
 retrieval quality is lower but the whole pipeline stays testable offline.
 
-Persistence: one pickle per knowledge base under DATA_DIR/rag/.
+Persistence: a JSON manifest plus a .npy of embeddings per
+knowledge base under DATA_DIR/rag/.
 Scale target is thousands of chunks per KB, where brute-force cosine
 similarity with numpy is faster than spinning up a vector DB.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
-import pickle
 import re
 import threading
 import time
@@ -144,14 +145,56 @@ class KnowledgeBase:
         self.files: List[dict] = []       # {filename,kind,chunks,added_at}
 
     # persistence ---------------------------------------------------------
+    # A knowledge base is text plus an array of floats, so it is stored as
+    # JSON plus a .npy — not as a pickle of this object. Unpickling runs
+    # whatever the file says to run, and a knowledge base is built from
+    # user-uploaded documents in a directory the server later re-reads.
+    @property
+    def _vec_path(self) -> str:
+        return self.path[:-5] + ".vec.npy" if self.path.endswith(".json") \
+            else self.path + ".vec.npy"
+
     def save(self):
-        with open(self.path, "wb") as f:
-            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+        payload = {
+            "kb_id": self.kb_id,
+            "name": self.name,
+            "owner": self.owner,
+            "created_at": self.created_at,
+            "chunks": self.chunks,
+            "embedder": self.embedder,
+            "files": self.files,
+        }
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp, self.path)
+        if self.vectors is None:
+            try:
+                os.remove(self._vec_path)
+            except FileNotFoundError:
+                pass
+        else:
+            vtmp = self._vec_path + ".tmp"
+            with open(vtmp, "wb") as f:
+                np.save(f, np.asarray(self.vectors), allow_pickle=False)
+            os.replace(vtmp, self._vec_path)
 
     @staticmethod
     def load(path: str) -> "KnowledgeBase":
-        with open(path, "rb") as f:
-            return pickle.load(f)
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        kb = KnowledgeBase(payload["kb_id"], payload["name"], path)
+        kb.owner = payload.get("owner", "")
+        kb.created_at = float(payload.get("created_at", time.time()))
+        kb.chunks = payload.get("chunks", [])
+        kb.embedder = payload.get("embedder", "")
+        kb.files = payload.get("files", [])
+        if os.path.exists(kb._vec_path):
+            # allow_pickle stays off: a .npy is only ever an array here,
+            # and the flag is the whole point of not using a pickle.
+            with open(kb._vec_path, "rb") as f:
+                kb.vectors = np.load(f, allow_pickle=False)
+        return kb
 
     # ops -----------------------------------------------------------------
     def add_chunks(self, chunks: List[dict], filename: str, kind: str):
@@ -219,7 +262,7 @@ class RagStore:
         return d
 
     def _path(self, owner: str, kb_id: str) -> str:
-        return os.path.join(self._owner_dir(owner), f"{self._safe(kb_id)}.pkl")
+        return os.path.join(self._owner_dir(owner), f"{self._safe(kb_id)}.json")
 
     def _ckey(self, owner: str, kb_id: str) -> str:
         return f"{owner}/{kb_id}"
@@ -252,8 +295,8 @@ class RagStore:
         if not os.path.isdir(owner_dir):
             return out
         for fn in os.listdir(owner_dir):
-            if fn.endswith(".pkl"):
-                kb = self.get(owner, fn[:-4])
+            if fn.endswith(".json"):
+                kb = self.get(owner, fn[:-5])
                 if kb:
                     out.append({"kb_id": kb.kb_id, "name": kb.name,
                                 "files": len(kb.files),
@@ -279,6 +322,12 @@ class RagStore:
             p = self._path(owner, kb_id)
             if os.path.exists(p):
                 os.unlink(p)
+                # The embeddings live in a sibling file; deleting only the
+                # manifest would leave the user's document vectors behind.
+                try:
+                    os.remove(p[:-5] + ".vec.npy")
+                except FileNotFoundError:
+                    pass
                 return True
         return False
 
