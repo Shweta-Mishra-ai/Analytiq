@@ -1,6 +1,25 @@
 import { useEffect, useState } from 'react'
 import { Gauge, Sparkles, Target } from 'lucide-react'
 import { apiGet, apiPost } from '../api/client'
+import {
+  DataCaveats,
+  DecisionBands,
+  Estimates,
+  Interactions,
+  LeakageNotes,
+  ModelSelection,
+  NoSignal,
+} from '../components/Analysis'
+import type {
+  DecisionBand,
+  ImbalanceNote,
+  Interaction,
+  LeakageFinding,
+  ModelChoice,
+  ModelVerdict,
+  RareCategory,
+  Estimate,
+} from '../components/Analysis'
 import { useApp } from '../store/app'
 import { Btn, ErrorBox, NeedData, PageHeader, Panel, Spinner } from '../components/Ui'
 
@@ -34,6 +53,21 @@ interface DriverResult {
   base_rate: number
   high_risk_n: number
   model_name: string
+  // Computed and served all along; simply never rendered here.
+  decision_bands?: DecisionBand[]
+  model_choice?: ModelChoice | null
+  verdict?: ModelVerdict | null
+  leakage?: LeakageFinding[]
+  precision?: number
+  recall?: number
+  calibration_gap?: number | null
+}
+
+interface EdaDepth {
+  estimates?: Estimate[]
+  interactions?: Interaction[]
+  rare_categories?: RareCategory[]
+  imbalance_notes?: ImbalanceNote[]
 }
 
 interface ScenarioResult {
@@ -62,6 +96,7 @@ export default function DeepAnalysisPage() {
   const [industry, setIndustry] = useState<IndustryEntry[]>([])
   const [domain, setDomain] = useState('')
   const [drivers, setDrivers] = useState<DriverResult | null>(null)
+  const [depth, setDepth] = useState<EdaDepth | null>(null)
   const [driversMsg, setDriversMsg] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -96,6 +131,10 @@ export default function DeepAnalysisPage() {
         setIndustry(r.benchmarks)
       })
       .catch(() => setIndustry([]))
+
+    apiGet<EdaDepth>(`/api/analytics/${ds}/eda`)
+      .then(setDepth)
+      .catch(() => setDepth(null))
 
     apiGet<DriverResult>(`/api/analytics/${ds}/drivers`)
       .then(setDrivers)
@@ -319,7 +358,11 @@ export default function DeepAnalysisPage() {
           )}
           {!drivers && !driversMsg && <Spinner label="Fitting model…" />}
 
-          {drivers && (
+          {drivers?.verdict && !drivers.verdict.usable && (
+            <NoSignal verdict={drivers.verdict} />
+          )}
+
+          {drivers && drivers.top_drivers.length > 0 && (
             <>
               <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
                 <MiniStat label="Model" value={drivers.model_name} />
@@ -374,9 +417,51 @@ export default function DeepAnalysisPage() {
                   {drivers.high_risk_profile}
                 </div>
               )}
+
+              {/* The question a manager actually asks: which records, and
+                  how many of them were going to churn anyway. */}
+              {drivers.decision_bands && drivers.decision_bands.length > 0 && (
+                <div className="mt-5">
+                  <DecisionBands bands={drivers.decision_bands} />
+                </div>
+              )}
+
+              {drivers.leakage && drivers.leakage.length > 0 && (
+                <div className="mt-4">
+                  <LeakageNotes findings={drivers.leakage} />
+                </div>
+              )}
+
+              {drivers.model_choice && (
+                <div className="mt-5 border-t border-edge pt-4">
+                  <ModelSelection choice={drivers.model_choice} />
+                </div>
+              )}
             </>
           )}
         </Panel>
+
+        {/* ── Uncertainty, interactions and caveats ─────────── */}
+        {depth &&
+          ((depth.estimates?.length ?? 0) > 0 ||
+            (depth.interactions?.length ?? 0) > 0 ||
+            (depth.rare_categories?.length ?? 0) > 0 ||
+            (depth.imbalance_notes?.length ?? 0) > 0) && (
+            <Panel title="Reading these numbers">
+              <div className="flex flex-col gap-5">
+                {depth.estimates && depth.estimates.length > 0 && (
+                  <Estimates estimates={depth.estimates} />
+                )}
+                {depth.interactions && depth.interactions.length > 0 && (
+                  <Interactions interactions={depth.interactions} />
+                )}
+                <DataCaveats
+                  rare={depth.rare_categories ?? []}
+                  imbalance={depth.imbalance_notes ?? []}
+                />
+              </div>
+            </Panel>
+          )}
 
         {benchmarks.length === 0 && !loading && (
           <Panel>

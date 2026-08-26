@@ -56,6 +56,11 @@ def _serialize_report(report) -> dict:
         "feature_importance": to_jsonable(report.feature_importance),
         "warnings": to_jsonable(report.warnings),
         "insights": to_jsonable(report.insights),
+        # Whether the model beat the obvious guess, and any field that
+        # knows the answer in advance. Both were computed and then
+        # dropped here, so the UI could not show either.
+        "verdict": to_jsonable(report.verdict),
+        "leakage": to_jsonable(report.leakage),
     }
 
 

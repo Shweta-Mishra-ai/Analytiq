@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Brain } from 'lucide-react'
 import { apiGet, apiPost } from '../api/client'
+import { LeakageNotes, NoSignal } from '../components/Analysis'
+import type { LeakageFinding, ModelVerdict } from '../components/Analysis'
 import { useApp } from '../store/app'
 import { Btn, ErrorBox, NeedData, PageHeader, Panel, Spinner } from '../components/Ui'
 
@@ -43,6 +45,10 @@ interface MlReport {
   feature_importance: FeatureImp[]
   warnings: string[]
   insights: string[]
+  /** Whether the model beat the obvious guess. When it did not, its
+   *  feature importances describe the noise it was fitted to. */
+  verdict?: ModelVerdict | null
+  leakage?: LeakageFinding[]
 }
 
 export default function MlPage() {
@@ -212,6 +218,18 @@ export default function MlPage() {
               ))}
             </div>
           </Panel>
+
+          {report.verdict && !report.verdict.usable && (
+            <Panel title="Model verdict">
+              <NoSignal verdict={report.verdict} />
+            </Panel>
+          )}
+
+          {report.leakage && report.leakage.length > 0 && (
+            <Panel title="Excluded fields">
+              <LeakageNotes findings={report.leakage} />
+            </Panel>
+          )}
 
           {report.insights.length > 0 && (
             <Panel title="Model insights">
