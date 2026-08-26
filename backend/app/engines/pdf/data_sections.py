@@ -1,0 +1,405 @@
+"""
+engines/pdf/data_sections.py — the sections that show the numbers.
+
+Data preparation (including the SQL lineage block), dataset overview,
+statistics, BI, chart pages and recommendations.
+"""
+import logging
+import io
+import os
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.lib.colors import HexColor, white, black
+from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.platypus import (
+    BaseDocTemplate, Frame, PageTemplate,
+    Paragraph, Spacer, Table, TableStyle,
+    Image, HRFlowable, PageBreak, KeepTogether,
+)
+from reportlab.pdfgen import canvas as CV
+
+logger = logging.getLogger(__name__)
+
+from app.engines.pdf.theme import _c, W, H, CW_DEFAULT
+from app.engines.pdf.primitives import (
+    _sec, _kpi_row, _narrative_box, _gtable, _insight_card, _clean,
+    is_id_col, truncate_label,
+)
+from app.services.dtypes import is_text_dtype, text_columns
+
+
+# ══════════════════════════════════════════════════════════
+#  DATA PREPARATION  (what was changed, and the SQL for it)
+# ══════════════════════════════════════════════════════════
+
+def _data_prep_section(story, s, T, cleaning_summary, CW, table="source_table"):
+    """Every transformation applied before analysis, with its SQL.
+
+    A reader who cannot see what was changed between the file they sent
+    and the numbers they are reading has to take the whole report on
+    trust. Listing each step — and the statement that reproduces it in
+    their own warehouse — is what makes the rest checkable.
+    """
+    if not cleaning_summary:
+        return
+    actions = cleaning_summary.get("actions")
+    if not actions:
+        # Older cached summaries carry only the display groups. Flattening
+        # them loses execution order, so the SQL block is suppressed rather
+        # than printed in an order that would not reproduce the table.
+        groups = cleaning_summary.get("groups") or {}
+        actions = [a for g in groups.values() for a in g]
+        ordered = False
+    else:
+        ordered = True
+    if not actions:
+        return
+
+    _sec(story, s, T, "Data Preparation",
+         "Every change made to the source data before any figure was computed")
+
+    story.append(Paragraph(
+        "The source file contained {:,} rows across {} columns. After the "
+        "steps below, {:,} rows and {} columns were carried into the "
+        "analysis. Nothing else was altered.".format(
+            cleaning_summary.get("original_rows", 0),
+            cleaning_summary.get("original_cols", 0),
+            cleaning_summary.get("cleaned_rows", 0),
+            cleaning_summary.get("cleaned_cols", 0)),
+        s["body"]))
+    story.append(Spacer(1, 2*mm))
+
+    rows = []
+    for a in actions[:18]:
+        rows.append([
+            getattr(a, "column", ""),
+            getattr(a, "issue", ""),
+            getattr(a, "action", ""),
+            "{:,}".format(getattr(a, "rows_affected", 0) or 0),
+        ])
+    _gtable(story, T, ["Column", "Observed", "Treatment", "Rows"],
+            rows, [CW*x for x in [0.18, 0.30, 0.42, 0.10]])
+    if len(actions) > 18:
+        story.append(Paragraph(
+            "{} further steps of the same kinds are listed in the "
+            "accompanying SQL script.".format(len(actions) - 18), s["note"]))
+
+    # ── The same steps as SQL ──────────────────────────────
+    sql_actions = [a for a in actions if getattr(a, "sql", "")] if ordered else []
+    if not sql_actions:
+        return
+    story.append(Spacer(1, 3*mm))
+    story.append(Paragraph("Equivalent SQL", s["h3"]))
+    story.append(Paragraph(
+        "The analysis itself was performed in pandas. These statements "
+        "express the same treatment against <b>{}</b> so your data team can "
+        "verify each step, or apply it upstream and stop the issue "
+        "recurring. Order matters: deduplicating after imputing does not "
+        "give the same table. None of it has been executed.".format(table),
+        s["body"]))
+    story.append(Spacer(1, 1.5*mm))
+
+    mono = ParagraphStyle(
+        "sqlmono", fontName="Courier", fontSize=7.2, leading=9.6,
+        textColor=_c(T["text"]), leftIndent=4, spaceAfter=0)
+    lines = []
+    for a in sql_actions[:14]:
+        stmt = a.sql.replace("{table}", '"{}"'.format(table))
+        for raw in stmt.splitlines():
+            lines.extend(_wrap_sql_line(raw))
+        lines.append("")
+    block = [[Paragraph(_sql_escape(ln) or "&nbsp;", mono)] for ln in lines[:70]]
+    tbl = Table(block, colWidths=[CW])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",   (0,0), (-1,-1), _c(T["bg_light"])),
+        ("BOX",          (0,0), (-1,-1), 0.5, _c(T["border"])),
+        ("LEFTPADDING",  (0,0), (-1,-1), 6),
+        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING",   (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
+    ]))
+    story.append(tbl)
+    if len(lines) > 70:
+        story.append(Paragraph(
+            "Truncated for length — the full script is available from the "
+            "Data Quality screen.", s["note"]))
+
+
+_SQL_COLS = 96   # fits Courier 7.2pt across the content frame
+
+
+def _wrap_sql_line(line: str) -> list:
+    """Break one SQL line to the page width, at a space where possible.
+
+    A `GROUP BY` over thirty columns is a single line in the script. Left
+    to itself the Paragraph cannot break it (every space is
+    non-breaking), so it runs off the page and the reader loses the tail
+    of the statement without any sign that it happened. Continuations are
+    indented so the break is visibly a wrap, not a new statement.
+    """
+    line = line.rstrip()
+    if len(line) <= _SQL_COLS:
+        return [line]
+    indent = len(line) - len(line.lstrip())
+    out, rest = [], line
+    while len(rest) > _SQL_COLS:
+        cut = rest.rfind(" ", indent + 1, _SQL_COLS)
+        if cut <= indent:
+            cut = _SQL_COLS
+        out.append(rest[:cut].rstrip())
+        rest = " " * (indent + 4) + rest[cut:].lstrip()
+    out.append(rest)
+    return out
+
+
+def _sql_escape(text: str) -> str:
+    """Escape SQL for ReportLab's mini-HTML parser.
+
+    `WHERE "x" < 108 OR "x" > 877` is a legal comparison and an illegal
+    tag; unescaped, ReportLab swallows the rest of the line. Spaces become
+    non-breaking so indentation survives — the wrapping is done by
+    `_wrap_sql_line` beforehand, where the break points can be chosen.
+    """
+    return (str(text).replace("&", "&amp;")
+            .replace("<", "&lt;").replace(">", "&gt;")
+            .replace(" ", "&nbsp;") if text else "")
+
+
+# ══════════════════════════════════════════════════════════
+#  DATASET OVERVIEW
+# ══════════════════════════════════════════════════════════
+
+def _dataset_overview(story, s, T, df, profile, CW):
+    _sec(story, s, T, "Dataset Overview & Descriptive Statistics",
+         "Column breakdown and statistical summary")
+
+    num_cols = df.select_dtypes(include="number").columns.tolist()
+    cat_cols = text_columns(df)
+    dt_cols  = df.select_dtypes(include="datetime").columns.tolist()
+
+    _gtable(story, T,
+            ["Type", "Count", "Columns (sample)"],
+            [["Numeric",     len(num_cols), ", ".join(num_cols[:6])],
+             ["Categorical", len(cat_cols), ", ".join(cat_cols[:6])],
+             ["DateTime",    len(dt_cols),  ", ".join(dt_cols[:4]) or "None"]],
+            [CW*0.20, CW*0.12, CW*0.68])
+
+    if num_cols:
+        story.append(Paragraph("Descriptive Statistics", s["h3"]))
+        show  = num_cols[:5]
+        desc  = df[show].describe().round(3)
+        hrow  = ["Stat"] + [c[:10] for c in show]
+        rows  = [hrow] + [
+            [stat] + [str(desc.loc[stat, c]) for c in show]
+            for stat in ["mean","std","min","25%","50%","75%","max"]
+            if stat in desc.index
+        ]
+        cw_s = CW / (len(show) + 1)
+        tbl  = Table(rows, colWidths=[cw_s] * (len(show)+1), repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ("FONTNAME",     (0,0), (-1,0),  "Helvetica-Bold"),
+            ("FONTNAME",     (0,1), (-1,-1), "Helvetica"),
+            ("FONTSIZE",     (0,0), (-1,-1), 8),
+            ("TEXTCOLOR",    (0,0), (-1,0),  HexColor("#FFFFFF")),
+            ("BACKGROUND",   (0,0), (-1,0),  _c(T["header_bg"])),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1), [HexColor("#FFFFFF"), _c(T["bg_light"])]),
+            ("GRID",         (0,0), (-1,-1), 0.3, _c(T["border"])),
+            ("ALIGN",        (0,0), (-1,-1), "CENTER"),
+            ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
+            ("TOPPADDING",   (0,0), (-1,-1), 4),
+            ("BOTTOMPADDING",(0,0), (-1,-1), 4),
+        ]))
+        story.append(KeepTogether([tbl]))
+        story.append(Spacer(1, 2*mm))
+
+        # Skew warning
+        for col in num_cols[:6]:
+            try:
+                sk = float(df[col].skew())
+                if abs(sk) > 1.0:
+                    story.append(Paragraph(
+                        "★ {} is heavily skewed (skew={:.2f}) — "
+                        "use median not mean for reporting.".format(col, sk),
+                        s["note"]))
+            except Exception:
+                logger.debug("_dataset_overview: suppressed exception", exc_info=True)
+
+
+# ══════════════════════════════════════════════════════════
+#  STATISTICAL ANALYSIS
+# ══════════════════════════════════════════════════════════
+
+def _stats_section(story, s, T, stats_report, CW):
+    if stats_report is None: return
+    _sec(story, s, T, "Statistical Analysis",
+         "Distribution, normality, correlations")
+
+    # Correlation honest-warning box
+    warn_t = Table([[Paragraph(
+        "<b>⚠ Analyst Note:</b> "
+        "Correlation r does NOT mean 'Variable A changes Variable B by r%.' "
+        "That is a dangerous misread. r = -0.35 means the two variables share "
+        "12.3% of their variance (r² = 0.123). Association only — "
+        "NOT causation, NOT magnitude of effect.",
+        s["warn"])]],
+        colWidths=["100%"])
+    warn_t.setStyle(TableStyle([
+        ("LEFTPADDING",  (0,0), (-1,-1), 10),
+        ("RIGHTPADDING", (0,0), (-1,-1), 10),
+        ("TOPPADDING",   (0,0), (-1,-1), 8),
+        ("BOTTOMPADDING",(0,0), (-1,-1), 8),
+        ("BOX",          (0,0), (-1,-1), 1, _c(T["warning"])),
+    ]))
+    story.append(warn_t)
+    story.append(Spacer(1, 3*mm))
+
+    # Distribution summary
+    col_stats = getattr(stats_report, "column_stats", {})
+    if col_stats:
+        story.append(Paragraph("Distribution Summary", s["h3"]))
+        for col, cs in list(col_stats.items())[:8]:
+            if getattr(cs, "mean", None) is None: continue
+            normal = "Normal" if getattr(cs, "is_normal", False) else "Non-normal"
+            sk_lbl = getattr(cs, "skew_label", "") or ""
+            outs   = getattr(cs, "outlier_count_iqr", 0)
+            story.append(Paragraph(
+                "• '{}': {} | {} | Outliers: {}".format(col, normal, sk_lbl, outs),
+                s["bl"]))
+
+    # Correlations
+    corrs = getattr(stats_report, "correlations", [])
+    sig   = [c for c in corrs
+             if getattr(c, "is_significant", False)
+             and abs(getattr(c, "pearson_r", 0)) >= 0.15]
+    if sig:
+        story.append(Spacer(1, 2*mm))
+        story.append(Paragraph("Significant Correlations (Correct Interpretation)", s["h3"]))
+        rows = [[c.col_a, c.col_b,
+                 str(round(c.pearson_r, 4)),
+                 str(round(getattr(c, "p_value", 0), 4)),
+                 c.strength.title(),
+                 "r²={:.3f} — {:.1f}% variance shared. Association only.".format(
+                     c.pearson_r**2, c.pearson_r**2 * 100)]
+                for c in sig[:6]]
+        _gtable(story, T,
+                ["Col A", "Col B", "r", "p", "Strength", "Interpretation"],
+                rows, [CW*x for x in [0.17, 0.17, 0.08, 0.08, 0.12, 0.38]])
+
+
+# ══════════════════════════════════════════════════════════
+#  BUSINESS INTELLIGENCE
+# ══════════════════════════════════════════════════════════
+
+def _bi_section(story, s, T, bi_report, CW):
+    if bi_report is None: return
+    _sec(story, s, T, "Business Intelligence",
+         "Benchmarking, cohort analysis, segment performance")
+
+    brief = getattr(bi_report, "executive_brief", "")
+    if brief:
+        _narrative_box(story, s, T, brief)
+
+    # Benchmarks
+    bms = getattr(bi_report, "benchmarks", [])
+    if bms:
+        story.append(Paragraph("Benchmarking Summary", s["h3"]))
+        rows = [[bm.column, str(bm.mean), str(bm.median),
+                 str(bm.top_10_pct), str(bm.bottom_10_pct),
+                 bm.benchmark_label.split("—")[0].strip()[:15]]
+                for bm in bms[:4]]
+        _gtable(story, T,
+                ["Metric","Mean","Median","Top 10%","Bottom 10%","Variation"],
+                rows, [CW*x for x in [0.22,0.12,0.12,0.12,0.13,0.29]])
+
+    # Cohorts
+    sig_c = [c for c in getattr(bi_report, "cohorts", [])
+             if c.is_significant]
+    if sig_c:
+        story.append(Paragraph("Significant Cohort Differences", s["h3"]))
+        for c in sig_c[:3]:
+            story.append(Paragraph("• " + c.interpretation, s["bl"]))
+
+    # Key insights
+    ki = getattr(bi_report, "key_insights", [])
+    if ki:
+        story.append(Spacer(1, 2*mm))
+        story.append(Paragraph("Key Business Insights", s["h3"]))
+        for ins in ki[:5]:
+            story.append(Paragraph("• " + str(ins), s["bl"]))
+
+
+# ══════════════════════════════════════════════════════════
+#  CHART PAGE
+# ══════════════════════════════════════════════════════════
+
+def _chart_page(story, s, T, img_bytes, title, narrative, num, CW):
+    _sec(story, s, T, "Chart {}: {}".format(num, title))
+    if img_bytes:
+        try:
+            img = Image(io.BytesIO(img_bytes),
+                        width=CW, height=CW * 0.48)
+            story.append(KeepTogether([img, Spacer(1, 3*mm)]))
+        except Exception:
+            logger.debug("_chart_page: suppressed exception", exc_info=True)
+    if narrative:
+        story.append(Paragraph("Analysis", s["h3"]))
+        _narrative_box(story, s, T, narrative)
+
+
+# ══════════════════════════════════════════════════════════
+#  RECOMMENDATIONS
+# ══════════════════════════════════════════════════════════
+
+def _recommendations(story, s, T, actions, CW):
+    _sec(story, s, T, "Recommendations & Action Plan",
+         "Prioritised by urgency — act on CRITICAL items first")
+
+    pri_map = {
+        "CRITICAL":   (T["negative"],  T["critical_bg"]),
+        "SHORT TERM": (T["warning"],   T["warning_bg"]),
+        "LONG TERM":  (T["info"],      T["info_bg"]),
+    }
+
+    for action in actions[:9]:
+        action_str = str(action)
+        priority   = "LONG TERM"
+        for p in ("CRITICAL", "SHORT TERM"):
+            if p in action_str.upper():
+                priority = p
+                break
+
+        col, bg = pri_map.get(priority, (T["accent"], T["bg_light"]))
+        text    = (action_str
+                   .replace("[CRITICAL] ", "")
+                   .replace("[SHORT TERM] ", "")
+                   .replace("[LONG TERM] ", "")
+                   .strip())
+
+        card = Table([[
+            Paragraph(priority, ParagraphStyle(
+                "pri", fontName="Helvetica-Bold", fontSize=7,
+                textColor=HexColor(col), alignment=TA_CENTER)),
+            Paragraph(text, s["body"]),
+        ]], colWidths=[CW*0.14, CW*0.86])
+        card.setStyle(TableStyle([
+            ("BACKGROUND",    (0,0), (-1,-1), HexColor(bg)),
+            ("LINEBEFORE",    (0,0), (0,-1),  3, HexColor(col)),
+            ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+            ("TOPPADDING",    (0,0), (-1,-1), 5),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+            ("LEFTPADDING",   (0,0), (-1,-1), 6),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 6),
+        ]))
+        story.append(KeepTogether([card, Spacer(1, 2*mm)]))
+
+    story.append(Spacer(1, 3*mm))
+    story.append(Paragraph(
+        "All recommendations are based solely on the provided dataset. "
+        "Verify with domain experts before implementation.",
+        s["sm"]))
