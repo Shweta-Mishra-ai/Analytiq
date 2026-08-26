@@ -78,7 +78,7 @@ graph TD
 | 🧹 **Data Sanitization** | **Data Quality Hub** | Instant per-column quality profiling, outlier detection, and one-click auto-cleaning with undo features. |
 | 📊 **BI & Analytics** | **Power BI Dashboard** | Draggable, resizable layout tiles, dynamic KPI strip, custom tile builder, and automatic cross-filtering. |
 | 🔬 **Statistical Suite** | **Deep EDA** | Normality testing, distribution fitting, time-series stationarity checks, ANOVA, and VIF calculations. |
-| 💡 **Strategic Insights** | **Business Intel** | Domain-aware insight cards (HR/Sales/E-commerce), Root Cause analysis, cohort tracking, and Pareto charts. |
+| 💡 **Strategic Insights** | **Business Intel** | Domain-aware insight cards across eight domains (HR, Sales, Finance, E-commerce, Marketing, SaaS, Operations, Healthcare), Root Cause analysis, cohort tracking, and Pareto charts. See [docs/ADDING_A_DOMAIN.md](docs/ADDING_A_DOMAIN.md). |
 | 🤖 **Automated ML** | **Predictive modeling** | Auto task detection (Classification/Regression), CV leaderboard scoring, and feature importance mappings. |
 | 💬 **AI Copilot** | **Safe Chat Agent** | Plain-English query processor -> secure tool dispatcher (no code execution) -> interactive charts and tables. |
 | 🧠 **Knowledge Store** | **RAG Studio** | Custom local vector index ingestion of PDFs, DOCX, CSVs, and video/images via Gemini Vision embeddings. |

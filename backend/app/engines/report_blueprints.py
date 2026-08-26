@@ -268,11 +268,145 @@ GENERAL = Blueprint(
 )
 
 
+
+# ══════════════════════════════════════════════════════════
+#  EXPANSION DOMAINS
+#  Categories below match those emitted by the matching engine in
+#  app/engines/domains/<domain>.py — group_insights routes on them, so
+#  the two have to agree.
+# ══════════════════════════════════════════════════════════
+
+MARKETING = Blueprint(
+    domain="marketing",
+    label="Marketing Performance Review",
+    headline_metrics=("return on spend", "cost per acquisition",
+                      "channel mix", "funnel conversion"),
+    sections=_COMMON_OPENING + (
+        Section("efficiency", "Spend & Return",
+                "What was spent, what it returned, and at what efficiency.",
+                ("marketing_efficiency",)),
+        Section("channels", "Channel Performance",
+                "Which channels carry the result and which consume budget "
+                "without returning it.",
+                ("marketing_channel", "marketing_waste")),
+        Section("funnel", "Funnel Conversion",
+                "Where prospects are lost between impression, click and "
+                "conversion.",
+                ("marketing_funnel",)),
+        Section("risk", "Concentration & Risk",
+                "Dependencies in the current channel mix.",
+                ("marketing_risk", "risk")),
+        Section("charts", "Supporting Analysis",
+                "The figures above, plotted."),
+    ) + _COMMON_CLOSING,
+    reference_note=(
+        "Channel benchmarks vary by sector, auction and season, so a "
+        "published range is context rather than a target. The internal "
+        "comparison between this account's own channels is the stronger "
+        "evidence, because it holds the business constant."),
+)
+
+SAAS = Blueprint(
+    domain="saas",
+    label="Subscription Performance Review",
+    headline_metrics=("recurring revenue", "customer churn",
+                      "net revenue retention", "expansion"),
+    sections=_COMMON_OPENING + (
+        Section("position", "Recurring Revenue Position",
+                "Scale and shape of the recurring revenue base.",
+                ("saas_revenue",)),
+        Section("retention", "Retention & Churn",
+                "Where the base is leaking, and which segment carries it. "
+                "Churn here is customer churn, not staff attrition.",
+                ("saas_retention", "retention")),
+        Section("growth", "Expansion & Growth",
+                "Revenue available from the existing base.",
+                ("saas_growth", "opportunity")),
+        Section("risk", "Concentration & Risk",
+                "Dependence on a single segment, tier or cohort.",
+                ("saas_risk", "risk")),
+        Section("charts", "Supporting Analysis",
+                "The figures above, plotted."),
+    ) + _COMMON_CLOSING,
+    reference_note=(
+        "Subscription benchmarks are heavily stage- and segment-dependent: "
+        "an early-stage self-serve product and a mature enterprise one are "
+        "not comparable on the same churn range. Treat published figures as "
+        "orientation only."),
+)
+
+OPERATIONS = Blueprint(
+    domain="operations",
+    label="Operational Performance Review",
+    headline_metrics=("cycle time", "defect rate", "on-time delivery",
+                      "capacity utilisation"),
+    sections=_COMMON_OPENING + (
+        Section("stability", "Process Stability",
+                "How predictable the process is, not only how fast.",
+                ("ops_stability",)),
+        Section("quality", "Quality & Yield",
+                "Defects, rework and first-pass yield.",
+                ("ops_quality", "quality")),
+        Section("delivery", "Delivery Reliability",
+                "Commitments met, and what drives the misses.",
+                ("ops_delivery",)),
+        Section("capacity", "Capacity & Utilisation",
+                "Whether the operation has the slack to absorb variation.",
+                ("ops_capacity",)),
+        Section("variance", "Site & Line Variance",
+                "Differences between sites running the same process.",
+                ("ops_variance",)),
+        Section("charts", "Supporting Analysis",
+                "The figures above, plotted."),
+    ) + _COMMON_CLOSING,
+    reference_note=(
+        "Operational ranges such as OEE and on-time delivery come from "
+        "widely-used definitions (SCOR, TPM) rather than a licensed "
+        "dataset, and differ by process type. Internal site-to-site "
+        "comparison is the more actionable evidence."),
+)
+
+HEALTHCARE = Blueprint(
+    domain="healthcare",
+    label="Healthcare Operations Review",
+    headline_metrics=("bed occupancy", "length of stay",
+                      "readmission rate", "cost per case"),
+    sections=_COMMON_OPENING + (
+        Section("capacity", "Capacity & Occupancy",
+                "Bed availability and the buffer left to absorb demand.",
+                ("healthcare_capacity",)),
+        Section("flow", "Patient Flow",
+                "Length of stay and the non-clinical delays within it.",
+                ("healthcare_flow",)),
+        Section("quality", "Quality Indicators",
+                "Readmission and related operational quality measures.",
+                ("healthcare_quality", "quality")),
+        Section("cost", "Cost Variation",
+                "Cost per case across departments, and what case mix "
+                "explains.",
+                ("healthcare_cost",)),
+        Section("charts", "Supporting Analysis",
+                "The figures above, plotted."),
+    ) + _COMMON_CLOSING,
+    reference_note=(
+        "This is an operational and administrative analysis of aggregate "
+        "records. It is not clinical guidance, contains no diagnosis or "
+        "treatment recommendation, and draws no conclusion about any "
+        "individual patient. Case mix drives most variation between "
+        "departments, so comparisons hold only within a specialty and any "
+        "clinical interpretation requires the responsible clinical team."),
+)
+
+
 BLUEPRINTS: Dict[str, Blueprint] = {
     "finance": FINANCE,
     "hr": HR,
     "sales": SALES,
     "ecommerce": ECOMMERCE,
+    "marketing": MARKETING,
+    "saas": SAAS,
+    "operations": OPERATIONS,
+    "healthcare": HEALTHCARE,
     "general": GENERAL,
 }
 

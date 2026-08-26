@@ -248,6 +248,10 @@ from app.engines.domains.ecommerce import _insights_ecommerce            # noqa:
 from app.engines.domains.sales     import _insights_sales                # noqa: E402
 from app.engines.domains.finance   import _insights_finance              # noqa: E402
 from app.engines.domains.general   import _insights_general              # noqa: E402
+from app.engines.domains.marketing import _insights_marketing            # noqa: E402
+from app.engines.domains.saas      import _insights_saas                 # noqa: E402
+from app.engines.domains.operations import _insights_operations          # noqa: E402
+from app.engines.domains.healthcare import _insights_healthcare          # noqa: E402
 
 
 REGISTRY: Dict[str, DomainSpec] = {}
@@ -309,6 +313,57 @@ register(DomainSpec(
               "margin", "asset", "tax", "revenue", "balance", "account"),
     insight_fn=_insights_finance,
     pdf_theme="Corporate Light",
+))
+
+
+register(DomainSpec(
+    key="marketing",
+    label="marketing",
+    signature=("impressions", "clicks", "ctr", "cpa", "cpc", "cpm", "roas",
+               "campaign", "adspend", "clickthrough", "adgroup", "creative",
+               "placement", "adset"),
+    keywords=("spend", "channel", "conversions", "reach", "budget", "medium",
+              "source", "audience", "engagement", "traffic", "roi"),
+    insight_fn=_insights_marketing,
+    pdf_theme="Ecommerce Orange",
+))
+
+register(DomainSpec(
+    key="saas",
+    label="SaaS",
+    signature=("mrr", "arr", "churn", "seats", "nps", "expansionrevenue",
+               "netrevenueretention", "trialtopaid", "activeusers",
+               "subscription", "renewal", "licenses"),
+    keywords=("plan", "tier", "account", "revenue", "tenure", "upgrade",
+              "downgrade", "contract", "trial", "usage", "customer"),
+    insight_fn=_insights_saas,
+    pdf_theme="Dark Tech",
+))
+
+register(DomainSpec(
+    key="operations",
+    label="operations",
+    signature=("cycletime", "defectrate", "throughput", "downtime", "oee",
+               "scraprate", "inventoryturns", "leadtime", "firstpassyield",
+               "ontimedelivery", "utilisation", "utilization", "stoppage",
+               "workorder"),
+    keywords=("plant", "shift", "line", "machine", "capacity", "output",
+              "quality", "delivery", "inventory", "yield", "process",
+              "warehouse"),
+    insight_fn=_insights_operations,
+    pdf_theme="Corporate Light",
+))
+
+register(DomainSpec(
+    key="healthcare",
+    label="healthcare",
+    signature=("patient", "readmission", "lengthofstay", "bedoccupancy",
+               "diagnosis", "mortality", "admission", "discharge", "ward",
+               "triage", "icd", "clinical", "inpatient", "outpatient"),
+    keywords=("department", "cost", "age", "satisfaction", "specialty",
+              "treatment", "care", "hospital", "bed", "case", "clinic"),
+    insight_fn=_insights_healthcare,
+    pdf_theme="HR Blue",
 ))
 
 # The fallback. Never competes in scoring; used whenever evidence is weak
