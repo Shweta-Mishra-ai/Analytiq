@@ -37,6 +37,9 @@ export default function DashboardPage() {
   const { dataset, filters, addFilter } = useApp()
   const [fields, setFields] = useState<Field[]>([])
   const [kpis, setKpis] = useState<Kpi[]>([])
+  // Record counts and completeness describe the file, not the
+  // business. Shown, but not mixed in with the KPIs.
+  const [quality, setQuality] = useState<Kpi[]>([])
   const [tiles, setTiles] = useState<TileSpec[]>([])
   const [tileState, setTileState] = useState<Record<string, TileState>>({})
   const [layout, setLayout] = useState<LayoutItem[]>([])
@@ -122,8 +125,12 @@ export default function DashboardPage() {
   // ── refetch KPIs + all tiles when filters change ──────
   const loadKpis = useCallback(() => {
     if (!ds) return
-    apiPost<{ kpis: Kpi[] }>(`/api/charts/${ds}/kpis`, { filters })
-      .then((r) => setKpis(r.kpis))
+    apiPost<{ kpis: Kpi[]; data_quality?: Kpi[] }>(
+      `/api/charts/${ds}/kpis`, { filters })
+      .then((r) => {
+        setKpis(r.kpis)
+        setQuality(r.data_quality ?? [])
+      })
       .catch(() => {})
   }, [ds, filters])
 
@@ -204,11 +211,27 @@ export default function DashboardPage() {
         <FilterBar />
       </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
+      <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         {kpis.map((k) => (
           <KpiCard key={k.label} kpi={k} />
         ))}
       </div>
+
+      {quality.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-1
+                        text-[11px] text-mute">
+          {quality.map((q) => (
+            <span key={q.label} className="font-data">
+              {q.label}:{' '}
+              <span className="text-ink">
+                {q.format === 'pct'
+                  ? `${q.value}%`
+                  : q.value.toLocaleString()}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
 
       <div id="dash-grid-wrap">
         <GridLayout

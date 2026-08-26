@@ -52,6 +52,10 @@ def test_every_domain_is_complete(key):
 
     if key != "general":
         assert spec.signature, f"{key}: no signature keywords — undetectable"
+        # KPI specs: without them the panel falls back to generic
+        # measures, which is how it came to sum employee ID numbers.
+        assert spec.kpis, f"{key}: no KPI specs"
+        assert spec.chart_metrics, f"{key}: no chart metric priorities"
         from app.engines.industry_benchmarks import DOMAIN_BENCHMARKS
         assert spec.benchmarks is not None or key in DOMAIN_BENCHMARKS, \
             f"{key}: no benchmark set"

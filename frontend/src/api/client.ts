@@ -147,4 +147,13 @@ export interface Kpi {
   value: number
   format: 'int' | 'pct' | 'num'
   mean?: number
+  unit?: string
+  /** Column(s) the figure came from, so a reader can check it. */
+  source_column?: string
+  /** Published range for this metric, where one exists. */
+  benchmark?: string
+  /** Drives wording only — a panel that colours a high defect rate green
+   *  is worse than one with no colour at all. */
+  higher_is_better?: boolean | null
+  note?: string
 }

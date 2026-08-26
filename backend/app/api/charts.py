@@ -66,25 +66,33 @@ def fields(ds_id: str, owner: str = Depends(current_owner)):
 
 @router.post("/{ds_id}/kpis")
 def kpis(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
+    """The headline numbers for this dataset, in its domain.
+
+    This used to return four data-quality counts followed by the sum of
+    the first four numeric columns — on an HR extract, a total of employee
+    ID numbers and a total of ages. KPIs are now resolved from the
+    domain's own specs with the aggregation each metric deserves, and the
+    file-shape figures are returned separately because they answer a
+    different kind of question.
+    """
     df = _df(owner, ds_id, body.filters)
-    num_cols = df.select_dtypes(include="number").columns.tolist()
-    cards = [
-        {"label": "Rows", "value": len(df), "format": "int"},
-        {"label": "Columns", "value": df.shape[1], "format": "int"},
-        {"label": "Missing %",
-         "value": round(float(df.isna().mean().mean()) * 100, 1),
-         "format": "pct"},
-        {"label": "Duplicates", "value": int(df.duplicated().sum()),
-         "format": "int"},
-    ]
-    for col in num_cols[:4]:
-        s = pd.to_numeric(df[col], errors="coerce").dropna()
-        if len(s):
-            cards.append({
-                "label": f"Σ {col}", "value": float(s.sum()), "format": "num",
-                "mean": float(s.mean()),
-            })
-    return {"kpis": to_jsonable(cards)}
+    try:
+        from app.engines.story_engine import detect_domain
+        domain, confidence = detect_domain(df)
+    except Exception:
+        logger.warning("domain detection failed for KPIs", exc_info=True)
+        domain, confidence = "general", 0.0
+
+    from app.engines.kpi_engine import compute_kpis, data_quality_cards
+    cards = compute_kpis(df, domain)
+    quality = data_quality_cards(df)
+
+    return {
+        "kpis": to_jsonable([c.as_dict() for c in cards]),
+        "data_quality": to_jsonable([c.as_dict() for c in quality]),
+        "domain": domain,
+        "domain_confidence": confidence,
+    }
 
 
 @router.post("/{ds_id}/recommend")

@@ -36,6 +36,8 @@ from typing import Callable, Dict, Optional, Tuple
 
 import pandas as pd
 
+from app.engines.kpi_engine import KpiSpec as K
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,6 +77,11 @@ class DomainSpec:
     # dataforge original carried its own hardcoded per-domain table, which
     # is exactly the drift this registry exists to stop.
     chart_metrics: Tuple[str, ...] = ()
+    # The headline numbers a reader of this kind of data looks for first.
+    # Held here so a new domain brings its KPIs in the same file as its
+    # insight engine, rather than in a table somewhere else that nobody
+    # remembers to update.
+    kpis: Tuple = ()
     # Optional deep page for the PDF — a section only this domain can
     # write (finance's P&L and margin analysis, for instance). Signature:
     # (story, s, T, df, config, CW, profile=None). None means the report
@@ -290,6 +297,21 @@ register(DomainSpec(
     attrition_fn=_run_attrition,
     chart_metrics=("attrition", "monthlyincome", "salary", "satisfaction",
                    "performance", "tenure", "years"),
+    kpis=(
+        K("headcount", "Headcount", "count"),
+        K("attrition", "Attrition Rate", "rate",
+          ("attrition", "left", "exited", "terminated", "churn"),
+          unit="%", benchmark="attrition_rate", higher_is_better=False),
+        K("median_pay", "Median Salary", "median",
+          ("monthlyincome", "salary", "compensation", "pay", "ctc"),
+          exclude=("hourlyrate", "dailyrate")),
+        K("tenure", "Average Tenure", "mean",
+          ("yearsatcompany", "tenure", "yearsofservice", "lengthofservice")),
+        K("satisfaction", "Average Satisfaction", "mean",
+          ("jobsatisfaction", "satisfaction", "engagement")),
+        K("overtime", "Working Overtime", "rate", ("overtime",), unit="%",
+          higher_is_better=False),
+    ),
 ))
 
 register(DomainSpec(
@@ -305,6 +327,20 @@ register(DomainSpec(
     pdf_theme="Ecommerce Orange",
     chart_metrics=("revenue", "amount", "price", "rating", "discount",
                    "quantity", "qty"),
+    kpis=(
+        K("revenue", "Total Revenue", "sum",
+          ("revenue", "amount", "sales", "discountedprice")),
+        K("orders", "Orders", "count"),
+        K("aov", "Average Order Value", "mean",
+          ("amount", "revenue", "discountedprice", "ordervalue")),
+        K("rating", "Average Rating", "mean", ("rating",),
+          exclude=("ratingcount",)),
+        K("discount", "Average Discount", "mean",
+          ("discountpercentage", "discount"), unit="%",
+          higher_is_better=False),
+        K("skus", "Distinct Products", "nunique",
+          ("sku", "productname", "product", "asin")),
+    ),
 ))
 
 register(DomainSpec(
@@ -319,6 +355,18 @@ register(DomainSpec(
     pdf_theme="Sales Green",
     chart_metrics=("revenue", "sales", "amount", "profit", "margin",
                    "dealsize", "quota"),
+    kpis=(
+        K("revenue", "Total Revenue", "sum", ("revenue", "sales", "amount")),
+        K("win_rate", "Win Rate", "rate", ("won", "closed", "converted"),
+          unit="%", benchmark="win_rate", higher_is_better=True),
+        K("deal_size", "Average Deal Size", "mean",
+          ("dealsize", "amount", "value", "revenue")),
+        K("quota_attainment", "Quota Attainment", "ratio",
+          ("revenue", "sales", "actual"), denominator=("quota", "target"),
+          unit="%", higher_is_better=True),
+        K("pipeline", "Pipeline Value", "sum", ("pipeline", "forecast")),
+        K("reps", "Active Reps", "nunique", ("salesrep", "rep", "owner")),
+    ),
 ))
 
 register(DomainSpec(
@@ -333,6 +381,23 @@ register(DomainSpec(
     pdf_theme="Corporate Light",
     chart_metrics=("revenue", "profit", "margin", "ebitda", "expense",
                    "cost", "income"),
+    kpis=(
+        K("revenue", "Total Revenue", "sum",
+          ("revenue", "turnover", "income", "sales"),
+          exclude=("costofrevenue",)),
+        K("gross_margin", "Gross Margin", "ratio",
+          ("grossprofit", "grossmargin"), denominator=("revenue", "turnover"),
+          unit="%", benchmark="gross_margin", higher_is_better=True),
+        K("opex_ratio", "Opex as % of Revenue", "ratio",
+          ("operatingexpense", "opex", "overhead"),
+          denominator=("revenue", "turnover"), unit="%",
+          higher_is_better=False),
+        K("ebitda", "EBITDA", "sum", ("ebitda",)),
+        K("cost", "Total Cost", "sum", ("cost", "cogs", "expense"),
+          exclude=("costper",)),
+        K("budget_var", "Average Budget Variance", "mean",
+          ("budgetvariance", "variance"), unit="%"),
+    ),
 ))
 
 
@@ -348,6 +413,22 @@ register(DomainSpec(
     pdf_theme="Ecommerce Orange",
     chart_metrics=("roas", "revenue", "spend", "conversions", "cpa",
                    "clicks", "impressions", "ctr"),
+    kpis=(
+        K("spend", "Total Spend", "sum", ("spend", "cost", "budget"),
+          exclude=("costper", "cpa", "cpc")),
+        K("roas", "Return on Ad Spend", "ratio", ("revenue", "conversionvalue"),
+          denominator=("spend", "cost"), higher_is_better=True),
+        K("cpa", "Cost per Acquisition", "ratio", ("spend", "cost"),
+          denominator=("conversions", "conversion", "leads"),
+          higher_is_better=False),
+        K("ctr", "Click-Through Rate", "ratio", ("clicks",),
+          denominator=("impressions",), unit="%",
+          benchmark="paid_search_ctr", higher_is_better=True),
+        K("conversions", "Conversions", "sum",
+          ("conversions", "conversion", "leads", "signups")),
+        K("channels", "Active Channels", "nunique",
+          ("channel", "campaign", "medium")),
+    ),
 ))
 
 register(DomainSpec(
@@ -362,6 +443,20 @@ register(DomainSpec(
     pdf_theme="Dark Tech",
     chart_metrics=("mrr", "arr", "monthlycharges", "totalcharges", "churn",
                    "expansion", "seats", "activeusers", "nps"),
+    kpis=(
+        K("mrr", "Monthly Recurring Revenue", "sum",
+          ("mrr", "monthlycharges", "monthlyrevenue")),
+        K("churn", "Customer Churn", "rate",
+          ("churn", "churned", "cancelled", "canceled"), unit="%",
+          benchmark="logo_churn_monthly", higher_is_better=False),
+        K("arpa", "Revenue per Account", "mean",
+          ("mrr", "monthlycharges", "arr", "revenue")),
+        K("expansion", "Expansion Revenue", "sum",
+          ("expansionrevenue", "expansion", "upsell")),
+        K("tenure", "Average Tenure", "mean",
+          ("tenuremonths", "tenure", "subscriptionage")),
+        K("accounts", "Accounts", "count"),
+    ),
 ))
 
 register(DomainSpec(
@@ -378,6 +473,23 @@ register(DomainSpec(
     pdf_theme="Corporate Light",
     chart_metrics=("throughput", "cycletime", "defectrate", "utilisation",
                    "utilization", "downtime", "inventoryturns"),
+    kpis=(
+        K("throughput", "Total Throughput", "sum",
+          ("throughput", "unitsproduced", "output", "volume")),
+        K("defect_rate", "Defect Rate", "mean",
+          ("defectrate", "scraprate", "rejectrate", "errorrate"), unit="%",
+          benchmark="defect_rate", higher_is_better=False),
+        K("otd", "On-Time Delivery", "rate",
+          ("ontimedelivery", "ontime", "sla"), unit="%",
+          benchmark="on_time_delivery", higher_is_better=True),
+        K("cycle_time", "Average Cycle Time", "mean",
+          ("cycletime", "leadtime", "processtime", "turnaround")),
+        K("utilisation", "Capacity Utilisation", "mean",
+          ("utilization", "utilisation", "oee"), unit="%",
+          benchmark="capacity_utilisation"),
+        K("downtime", "Total Downtime", "sum", ("downtime", "stoppage"),
+          higher_is_better=False),
+    ),
 ))
 
 register(DomainSpec(
@@ -392,6 +504,24 @@ register(DomainSpec(
     pdf_theme="HR Blue",
     chart_metrics=("costpercase", "lengthofstay", "readmission",
                    "bedoccupancy", "satisfaction"),
+    kpis=(
+        K("cases", "Cases", "count"),
+        K("readmission", "Readmission Rate", "rate",
+          ("readmission", "readmitted"), unit="%",
+          benchmark="readmission_rate_30d", higher_is_better=False),
+        K("los", "Average Length of Stay", "mean",
+          ("lengthofstay", "los", "staydays"),
+          benchmark="average_length_of_stay"),
+        K("occupancy", "Bed Occupancy", "mean",
+          ("bedoccupancy", "occupancy"), unit="%",
+          benchmark="bed_occupancy",
+          note="Above roughly 85% is associated with rising delays, so "
+               "higher is not better."),
+        K("cost_per_case", "Average Cost per Case", "mean",
+          ("costpercase", "casecost", "treatmentcost")),
+        K("departments", "Departments", "nunique",
+          ("department", "specialty", "ward")),
+    ),
 ))
 
 def attach_deep_page(domain_key: str, page_fn: Callable) -> None:

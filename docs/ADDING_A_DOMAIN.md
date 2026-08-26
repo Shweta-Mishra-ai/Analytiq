@@ -48,6 +48,30 @@ comes back empty.
 `segment_gap`, `concentration`, `variability`, `fmt`, and
 `benchmark_note`.
 
+Anything the engine presents as a finding should pass through
+`app/engines/rigour.py` first. A comparison needs both significance and a
+usable effect size (`assess_finding`), and a model has to beat the
+obvious guess before its drivers mean anything (`assess_classifier`,
+`assess_regressor`). A domain engine that reports a difference the gate
+would reject is reporting noise.
+
+### KPI specs
+
+```python
+kpis=(
+    K("attrition", "Attrition Rate", "rate",
+      ("attrition", "left", "exited"), unit="%",
+      benchmark="attrition_rate", higher_is_better=False),
+    K("median_pay", "Median Salary", "median", ("salary", "income")),
+)
+```
+
+`kind` is one of `count`, `sum`, `mean`, `median`, `rate`, `ratio`,
+`nunique`. Choose it for the metric, not for convenience: a total of a
+1-5 rating means nothing, and a total of an identifier means less. That
+is what the panel used to do — "Σ EmployeeNumber" on an HR extract. A KPI
+whose columns are not present is omitted rather than shown empty.
+
 Two rules the tests enforce:
 
 - **Stay in your domain's vocabulary.** A marketing report must not say
@@ -99,6 +123,8 @@ prints confident numbers about the wrong thing.
 | Executive prompt | `ai/prompt_builder.py` → `EXECUTIVE_PROMPTS` | |
 | Insight prompt | `ai/prompt_builder.py` → `INSIGHT_PROMPTS` | |
 | PDF theme | `pdf_builder.py` → `THEMES` | Reuse an existing theme unless the domain needs its own |
+| KPI specs | `DomainSpec.kpis` | The five or six numbers a reader of this data looks for first |
+| Chart metrics | `DomainSpec.chart_metrics` | Column fragments this domain would rather chart |
 
 Prompts fall back to `GENERAL_*`, never to another domain's — the old
 `.get(domain, HR_EXECUTIVE_PROMPT)` default put "employees" and
@@ -142,6 +168,5 @@ patient.
 - [ ] Fixture added to `test_expansion_domains.py`
 - [ ] Fixture added to `test_end_to_end_matrix.py`
 - [ ] Optional: a PDF deep page, attached with `attach_deep_page`
-- [ ] Optional: `chart_metrics` on the spec, so charts lead with the
-      metrics this domain cares about
+- [ ] `kpis` and `chart_metrics` on the spec
 - [ ] Full suite green
