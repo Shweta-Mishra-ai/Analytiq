@@ -367,6 +367,52 @@ def _chart_slides(prs, theme, chart_data: Sequence[Tuple]):
     return made
 
 
+def _outlook_slide(prs, theme, fc):
+    """Where the measure is heading, or why no projection is shown.
+
+    Both are worth a slide. "This is a level with noise around it" stops a
+    room arguing about a trend that is not there.
+    """
+    slide = _blank(prs)
+    _fill(slide, theme.light)
+    measure = str(fc.column).replace("_", " ")
+    top = _slide_title(slide, theme, "Outlook", measure)
+
+    if not fc.usable:
+        _card(slide, MARGIN, top, CONTENT_W, Inches(2.2), theme)
+        _text(slide, MARGIN + Inches(0.35), top + Inches(0.3),
+              CONTENT_W - Inches(0.7), Inches(1.6),
+              [("No forecast shown", 20, True, theme.ink, FONT_HEAD),
+               (fc.verdict[:340], 13, False, theme.ink, FONT_BODY)],
+              spacing=Pt(8))
+        return slide
+
+    points = list(fc.points)[:4]
+    gap = Inches(0.28)
+    width = int((CONTENT_W - gap * (len(points) - 1)) / max(len(points), 1))
+    for i, p in enumerate(points):
+        left = MARGIN + i * (width + gap)
+        _card(slide, left, top, width, Inches(1.9), theme)
+        pad = Inches(0.25)
+        _text(slide, left + pad, top + Inches(0.25), width - 2 * pad,
+              Inches(0.3), [(p.period, 10, True, theme.muted, FONT_BODY)])
+        _text(slide, left + pad, top + Inches(0.62), width - 2 * pad,
+              Inches(0.6),
+              [("{:,.0f}".format(p.value), 30, True, theme.accent,
+                FONT_HEAD)])
+        _text(slide, left + pad, top + Inches(1.3), width - 2 * pad,
+              Inches(0.4),
+              [("{:,.0f} – {:,.0f}".format(p.lower, p.upper), 10, False,
+                theme.muted, FONT_BODY)])
+
+    _text(slide, MARGIN, top + Inches(2.3), CONTENT_W, Inches(1.6),
+          [(fc.verdict[:320], 14, False, theme.ink, FONT_BODY),
+           ("The interval widens with distance because uncertainty "
+            "compounds. Plan against the range, not the line.",
+            12, True, theme.accent, FONT_BODY)], spacing=Pt(8))
+    return slide
+
+
 def _actions_slide(prs, theme, actions: Sequence[str]):
     slide = _blank(prs)
     _fill(slide, theme.light)
@@ -418,6 +464,7 @@ def build_deck(
     recommendations: Sequence[str] = (),
     chart_data: Sequence[Tuple] = (),
     predictive=None,
+    forecast=None,
 ) -> bytes:
     """The same analysis as the PDF, as a deck.
 
@@ -449,6 +496,9 @@ def build_deck(
     bands = list(getattr(predictive, "decision_bands", None) or [])
     if bands:
         _decision_slide(prs, theme, bands, getattr(predictive, "target", ""))
+
+    if forecast is not None:
+        _outlook_slide(prs, theme, forecast)
 
     if chart_data:
         _chart_slides(prs, theme, chart_data)

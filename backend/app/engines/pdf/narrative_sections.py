@@ -573,3 +573,81 @@ def _exec_dashboard(story, s, T, df, profile, top_insights,
 #  Model-based: what the data predicts, not only what it records.
 # ══════════════════════════════════════════════════════════
 
+
+
+# ══════════════════════════════════════════════════════════
+#  OUTLOOK
+# ══════════════════════════════════════════════════════════
+
+def _forecast_section(story, s, T, fc, CW):
+    """What the series is projected to do, or why it is not projected.
+
+    Both outcomes are reported. "This measure is a level with noise around
+    it, and the planning figure is the current level" is a useful answer —
+    more useful than a projection that no test supported.
+    """
+    if fc is None:
+        return
+
+    measure = str(fc.column).replace("_", " ")
+    _sec(story, s, T, "Outlook",
+         "Projection for {} — and what it was tested against".format(measure))
+    story.append(Spacer(1, 3 * mm))
+
+    if not fc.usable:
+        _narrative_box(story, s, T,
+                       "<b>No forecast is shown.</b> " + fc.verdict)
+        story.append(Spacer(1, 2 * mm))
+        story.append(Paragraph(
+            "A projection is only worth printing when it beats the naive "
+            "alternative — carrying the last value forward — on periods the "
+            "method never saw. Most business series are a level with noise "
+            "around them, and for those the current level is the honest "
+            "planning number.", s["body"]))
+        return
+
+    _kpi_row(story, s, T, [
+        {"label": "METHOD", "value": fc.method.split()[0],
+         "sub": fc.method, "color": T["accent"]},
+        {"label": "HORIZON", "value": "{} {}".format(fc.horizon, fc.freq),
+         "sub": "from {:,} periods".format(fc.n_periods),
+         "color": T["accent"]},
+        {"label": "BEATS NAIVE BY", "value": "{:.0f}%".format(fc.skill * 100),
+         "sub": "on held-out periods", "color": T["positive"]},
+        {"label": "TYPICAL ERROR", "value": "{:,.1f}".format(fc.model_error),
+         "sub": "vs {:,.1f} naive".format(fc.naive_error),
+         "color": T["text_muted"]},
+    ], CW)
+    story.append(Spacer(1, 3 * mm))
+
+    _exhibit(story, s, T,
+             "Projected {} with 95% interval".format(measure))
+    _gtable(story, T, ["Period", "Projected", "Low", "High", "Width"],
+            [[p.period, "{:,.1f}".format(p.value), "{:,.1f}".format(p.lower),
+              "{:,.1f}".format(p.upper),
+              "±{:,.1f}".format((p.upper - p.lower) / 2)]
+             for p in fc.points],
+            [CW * 0.22, CW * 0.2, CW * 0.19, CW * 0.19, CW * 0.2])
+    _exhibit_source(story, s, T,
+                    "Computed from the submitted dataset; interval from "
+                    "held-out forecast error.")
+
+    _narrative_box(story, s, T, fc.verdict)
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph(
+        "The interval widens with distance because uncertainty compounds: "
+        "a projection four periods out carries the error of every step "
+        "before it. Plan against the range, not the line.", s["note"]))
+
+    if fc.candidates:
+        story.append(Spacer(1, 3 * mm))
+        story.append(Paragraph("Methods Considered", s["h3"]))
+        _exhibit(story, s, T, "Forecast methods and their held-out error")
+        _gtable(story, T, ["Method", "Average error on held-out periods"],
+                [[n + ("  (selected)" if n == fc.method else ""),
+                  "{:,.2f}".format(e)] for n, e in fc.candidates],
+                [CW * 0.6, CW * 0.4])
+        _exhibit_source(story, s, T,
+                        "Each method fitted without the final {} periods, "
+                        "then scored on them.".format(
+                            max(2, min(4, fc.n_periods // 4))))

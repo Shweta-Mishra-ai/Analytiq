@@ -43,6 +43,9 @@ class PdfRequest(BaseModel):
     # a room rather than for a desk — in consulting it is usually the
     # thing that actually gets presented.
     format: str = "pdf"
+    # Periods to project. Capped in the engine; a longer horizon widens
+    # the interval rather than adding confidence.
+    forecast_horizon: int = 3
 
 
 def _df_or_404(owner: str, ds_id: str):
@@ -207,7 +210,16 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
                        exc_info=True)
         skipped.append("predictive")
 
-    # 9. charts + AI narratives
+    # 9. outlook
+    forecast = None
+    try:
+        from app.engines.forecast_engine import run_forecast
+        forecast = run_forecast(df, horizon=int(req.forecast_horizon))
+    except Exception:
+        logger.warning("forecast failed — section omitted", exc_info=True)
+        skipped.append("forecast")
+
+    # 10. charts + AI narratives
     chart_data = []
     theme_name = req.theme_name
     try:
@@ -255,7 +267,7 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
             domain=domain_name,
             predictive=predictive, top_cluster=top_cluster,
             driver_chart=driver_chart, risk_heatmap=risk_heatmap,
-            avg_salary_k=float(req.avg_salary_k),
+            avg_salary_k=float(req.avg_salary_k), forecast=forecast,
         )
     except Exception as e:
         logger.exception("PDF build failed")
@@ -270,7 +282,8 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
                 kpis=[c.as_dict() for c in compute_kpis(df, domain_name)],
                 executive_summary=exec_summary, findings=findings,
                 top_insights=top_insights, recommendations=actions,
-                chart_data=chart_data, predictive=predictive)
+                chart_data=chart_data, predictive=predictive,
+                forecast=forecast)
         except Exception as e:
             logger.exception("deck build failed")
             raise HTTPException(500, f"Deck build failed: {e}")

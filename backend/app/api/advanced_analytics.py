@@ -346,6 +346,42 @@ def drivers(ds_id: str, target: Optional[str] = None,
     return to_jsonable(result)
 
 
+@router.get("/{ds_id}/forecast/fields")
+def forecast_fields(ds_id: str, owner: str = Depends(current_owner)):
+    """(date, measure) pairs in this dataset worth projecting."""
+    df = _df_or_404(owner, ds_id)
+    from app.engines.forecast_engine import find_forecastable
+    pairs = find_forecastable(df)
+    return {"pairs": [{"date_col": d, "value_col": v} for d, v in pairs]}
+
+
+@router.get("/{ds_id}/forecast")
+def forecast(ds_id: str, date_col: Optional[str] = None,
+             value_col: Optional[str] = None, horizon: int = 3,
+             owner: str = Depends(current_owner)):
+    """Project a measure forward, with an interval and the comparison
+    against a naive baseline that justifies the method.
+
+    Returns a result whose `usable` is false, rather than an error, when
+    nothing beats carrying the last value forward — that is a finding
+    about the series, not a failure of the request.
+    """
+    df = _df_or_404(owner, ds_id)
+    from app.engines.forecast_engine import run_forecast
+
+    horizon = max(1, min(int(horizon), 12))
+    key = "forecast_{}_{}_{}".format(date_col or "auto", value_col or "auto",
+                                     horizon)
+    result = _cached(owner, ds_id, key,
+                     lambda: run_forecast(df, date_col, value_col, horizon))
+    if result is None:
+        raise HTTPException(
+            422,
+            "No date column and measure to project. A forecast needs a "
+            "date-like column and at least one numeric measure.")
+    return to_jsonable(result)
+
+
 # ══════════════════════════════════════════════════════════
 #  Dataset comparison (period over period)
 # ══════════════════════════════════════════════════════════

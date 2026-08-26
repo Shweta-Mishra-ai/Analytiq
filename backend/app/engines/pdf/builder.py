@@ -36,7 +36,7 @@ from app.engines.pdf.primitives import (
 from app.engines.pdf.narrative_sections import (
     _exec_summary, _top_insights, _dq_note, _readiness_block,
     _benchmark_section, _attrition_page, _domain_label,
-    _has_reference_ranges, _exec_dashboard,
+    _has_reference_ranges, _exec_dashboard, _forecast_section,
 )
 from app.engines.pdf.predictive_sections import _predictive_section
 from app.engines.pdf.data_sections import (
@@ -89,6 +89,7 @@ def build_pdf(
     attrition=None,
     domain: str = "general",
     predictive=None,
+    forecast=None,
     top_cluster=None,
     driver_chart: bytes = None,
     risk_heatmap: bytes = None,
@@ -194,6 +195,8 @@ def build_pdf(
         _add_toc("Attrition Deep Dive")
     if _has_predictive_section(predictive):
         _add_toc("Predictive Risk Analysis")
+    if forecast is not None:
+        _add_toc("Outlook")
     if has_deep_page(domain):
         _add_toc("{} Analysis".format(_domain_label(domain).title()))
     _add_toc("Dataset Overview & Descriptive Statistics")
@@ -247,6 +250,10 @@ def build_pdf(
                             top_cluster=top_cluster,
                             driver_chart=driver_chart,
                             risk_heatmap=risk_heatmap)
+        story.append(PageBreak())
+
+    if forecast is not None:
+        _forecast_section(story, s, T, forecast, CW)
         story.append(PageBreak())
 
     if has_deep_page(domain):
