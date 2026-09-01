@@ -125,6 +125,9 @@ class AttritionAnalysis:
     flight_risk_pct:  float
     cost_estimate:    str
     interpretation:   str
+    # Head count per department, so a rate is never read
+    # without its denominator.
+    dept_sizes:       Dict = field(default_factory=dict)
 
 
 @dataclass

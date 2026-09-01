@@ -419,13 +419,31 @@ def _attrition_page(story, s, T, attrition, CW):
     # Dept breakdown
     dept_atr = getattr(attrition, "dept_attrition", {})
     if dept_atr:
+        sizes = getattr(attrition, "dept_sizes", {}) or {}
         story.append(Paragraph("Attrition by Department", s["h3"]))
         sorted_d = sorted(dept_atr.items(), key=lambda x: x[1], reverse=True)
-        rows = [[str(dept), "{:.1f}%".format(rate),
-                 "CRITICAL" if rate > 25 else "HIGH" if rate > 18 else "OK"]
-                for dept, rate in sorted_d]
-        _gtable(story, T, ["Department","Rate","Status"],
-                rows, [CW*0.50, CW*0.25, CW*0.25], severity_col=2)
+        rows = []
+        thin = False
+        for dept, rate in sorted_d:
+            n = sizes.get(str(dept))
+            # A rate over a small head count moves several points if one
+            # person leaves, so it is marked rather than graded against
+            # the same threshold as a department twenty times its size.
+            small = bool(n is not None and n < 50)
+            thin = thin or small
+            status = ("Directional" if small else
+                      "CRITICAL" if rate > 25 else
+                      "HIGH" if rate > 18 else "OK")
+            rows.append([_PL(dept),
+                         "{:,}".format(n) if n is not None else "—",
+                         "{:.1f}%".format(rate), status])
+        _gtable(story, T, ["Department", "People", "Rate", "Status"],
+                rows, [CW*0.40, CW*0.16, CW*0.18, CW*0.26], severity_col=3)
+        if thin:
+            story.append(Paragraph(
+                "Departments under 50 people are marked directional: at "
+                "that size a single leaver moves the rate by more than the "
+                "difference being graded.", s["note"]))
 
 
 # ══════════════════════════════════════════════════════════

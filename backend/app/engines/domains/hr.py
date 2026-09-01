@@ -261,11 +261,15 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
     sal_col  = next((c for c in df.columns
                      if "salary" in c.lower() and is_text_dtype(df[c])), None)
 
-    dept_attrition = {}
+    dept_attrition, dept_sizes = {}, {}
     if dept_col:
         for d in df[dept_col].dropna().unique():
-            m = df[dept_col]==d
-            dept_attrition[str(d)] = round(left_mask[m].mean()*100,1)
+            m = df[dept_col] == d
+            dept_attrition[str(d)] = round(left_mask[m].mean() * 100, 1)
+            # The denominator travels with the rate. 15.5% of 142 people
+            # and 20.7% of 701 are not the same kind of number, and the
+            # table graded them against one threshold as though they were.
+            dept_sizes[str(d)] = int(m.sum())
 
     salary_attrition = {}
     if sal_col:
@@ -282,12 +286,13 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
         rate=rate, n_left=n_left, n_total=n_total,
         severity=severity, top_drivers=top_drivers[:8],
         dept_attrition=dept_attrition,
+        dept_sizes=dept_sizes,
         salary_attrition=salary_attrition,
         n_flight_risk=n_flight, flight_risk_pct=flight_pct,
         cost_estimate=cost_str,
         interpretation="{:.1f}% attrition ({:,} employees). {} severity. Top driver: {}.".format(
             rate, n_left, severity.upper(),
-            top_drivers[0]["factor"] if top_drivers else "unknown"),
+            _L(top_drivers[0]["factor"]) if top_drivers else "unknown"),
     )
 
 

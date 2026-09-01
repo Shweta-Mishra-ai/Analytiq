@@ -517,3 +517,21 @@ class TestForecastGate:
         number to say that it had nothing to show."""
         from app.engines.forecast_engine import find_forecastable
         assert find_forecastable(attrition_df) == []
+
+
+def test_a_department_rate_travels_with_its_head_count(attrition_df):
+    """15.5% of 142 people and 20.7% of 701 are not the same kind of
+    number, and the table graded them against one threshold as though
+    they were."""
+    from app.engines.domains.hr import _run_attrition
+    result = _run_attrition(attrition_df)
+    assert result.dept_sizes, "no head counts recorded"
+    assert set(result.dept_sizes) == set(result.dept_attrition)
+    assert sum(result.dept_sizes.values()) <= len(attrition_df)
+
+
+def test_the_summary_line_names_the_driver_in_words(attrition_df):
+    from app.engines.domains.hr import _run_attrition
+    text = _run_attrition(attrition_df).interpretation
+    assert "OverTime" not in text, text
+    assert "Overtime" in text, text
