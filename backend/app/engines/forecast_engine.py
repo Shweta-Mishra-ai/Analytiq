@@ -327,6 +327,51 @@ def _fmt(v: float) -> str:
 #  ENTRY POINT
 # ══════════════════════════════════════════════════════════
 
+_DATE_WORDS = {"date", "dates", "month", "months", "period", "periods",
+               "day", "days", "time", "times", "week", "weeks", "year",
+               "quarter", "timestamp", "datetime", "dt", "ds"}
+
+
+def _looks_like_a_date_column(series, name) -> bool:
+    """True only for a column that is genuinely a time axis.
+
+    Two things went wrong at once. The name test was a substring match,
+    so "time" matched TrainingTimesLastYear; and pandas parses the small
+    integers in that column as nanosecond timestamps, every one valid, so
+    the 80%-parseable check passed. A count of training days became the
+    time axis of a forecast, and the report offered an Outlook section
+    projecting a work-life-balance rating over "1 daily periods".
+    """
+    import re as _re
+    words = {w for w in _re.split(r"[^a-z0-9]+", str(name).lower()) if w}
+    # Split camelCase too, so "OrderDate" is caught and "TrainingTimes"
+    # is not (its words are training/times — "times" is a date word, so
+    # the value test below has to carry the decision).
+    words |= {w.lower() for w in _re.findall(r"[A-Z]?[a-z]+", str(name))}
+    if not (words & _DATE_WORDS):
+        return False
+    try:
+        raw = series.dropna()
+        if raw.empty:
+            return False
+        # A whole-number column with a handful of distinct small values is
+        # a count or a rating, whatever it is called.
+        if pd.api.types.is_numeric_dtype(raw):
+            as_float = raw.astype(float)
+            if (as_float % 1 == 0).all() and as_float.abs().max() < 10_000:
+                return False
+        parsed = pd.to_datetime(raw, errors="coerce")
+        if parsed.notna().mean() <= 0.8:
+            return False
+        # Real dates spread over time; nanosecond-epoch junk collapses
+        # into a single instant.
+        span = parsed.max() - parsed.min()
+        return bool(span >= pd.Timedelta(days=1))
+    except Exception:
+        logger.debug("date sniff failed for %r", name, exc_info=True)
+        return False
+
+
 def find_forecastable(df: pd.DataFrame) -> List[Tuple[str, str]]:
     """(date column, measure) pairs worth projecting.
 
@@ -337,13 +382,8 @@ def find_forecastable(df: pd.DataFrame) -> List[Tuple[str, str]]:
     dates = df.select_dtypes(include="datetime").columns.tolist()
     if not dates:
         for c in df.columns:
-            if any(k in str(c).lower() for k in ("date", "month", "period",
-                                                 "day", "time", "week")):
-                try:
-                    if pd.to_datetime(df[c], errors="coerce").notna().mean() > 0.8:
-                        dates.append(c)
-                except Exception:
-                    logger.debug("date sniff failed for %r", c, exc_info=True)
+            if _looks_like_a_date_column(df[c], c):
+                dates.append(c)
     if not dates:
         return []
     try:

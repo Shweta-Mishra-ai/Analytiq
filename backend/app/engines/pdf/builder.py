@@ -263,7 +263,8 @@ def build_pdf(
         # indented beneath it. Listed flat, each chart sat in the contents
         # as a peer of the executive summary.
         _add_toc("Exhibits")
-        for t, _, _ in chart_data:
+        for entry in chart_data:
+            t = entry[0]
             # Matches the section heading, which is the chart's own title
             # — a contents line that reads differently from the page it
             # points at makes the reader check they are in the right place.
@@ -346,8 +347,13 @@ def build_pdf(
         if chart_data:
             _sec(story, s, T, "Exhibits",
                  "Each chart with the reading it supports")
-            for i, (title, img_bytes, narrative) in enumerate(chart_data, 1):
-                _chart_page(story, s, T, img_bytes, title, narrative, i, CW)
+            for i, entry in enumerate(chart_data, 1):
+                title, img_bytes, narrative = entry[0], entry[1], entry[2]
+                # The spec rides along when the caller has it, so the page
+                # can print the figures the chart was drawn from.
+                spec = entry[3] if len(entry) > 3 else None
+                _chart_page(story, s, T, img_bytes, title, narrative, i, CW,
+                            df=df, spec=spec)
                 story.append(PageBreak())
 
         _recommendations(story, s, T, recommendations, CW,

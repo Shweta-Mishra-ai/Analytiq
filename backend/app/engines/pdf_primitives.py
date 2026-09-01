@@ -29,7 +29,14 @@ def truncate_label(text: str, width: int) -> str:
         return text
     if width <= 1:
         return text[:width]
-    return text[:width - 1].rstrip() + "\u2026"
+    # Cut between words where that leaves most of the budget used:
+    # "Research & Dev…" reads as a shortened name, "Research & De…"
+    # reads as a rendering fault.
+    cut = text[:width - 1].rstrip()
+    space = cut.rfind(" ")
+    if space >= int(width * 0.55):
+        cut = cut[:space].rstrip(" ,;:-&")
+    return cut + "\u2026"
 
 
 def is_id_col(col: str, series: pd.Series) -> bool:

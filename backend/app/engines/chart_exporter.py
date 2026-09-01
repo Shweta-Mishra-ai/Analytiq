@@ -37,6 +37,8 @@ import numpy as np
 from typing import List, NamedTuple, Optional, Tuple
 import logging
 logger = logging.getLogger(__name__)
+
+from app.engines import present as _present
 from app.engines.pdf_primitives import truncate_label
 from app.engines.domains.base import is_id_column
 from app.services.dtypes import MONTH_END
@@ -100,6 +102,49 @@ _SCORE_KEYWORDS = {"satisfaction", "rating", "score", "evaluation", "performance
 _SUM_KEYWORDS = {"revenue", "sales", "amount", "spend", "cost", "price", "quantity",
                   "units", "transactions", "orders", "volume", "headcount", "count",
                   "profit", "expense", "expenditure", "budget", "qty"}
+
+
+def _tick_budget(n_ticks: int, base: int = 14) -> int:
+    """How many characters a tick label can take, given how many there are.
+
+    A fixed budget cut "Research & Development" to "Research & De..." on a
+    chart with three bars and an inch of room under each. Fewer bars, more
+    room.
+    """
+    if n_ticks <= 3:
+        return max(base, 26)
+    if n_ticks <= 5:
+        return max(base, 20)
+    if n_ticks <= 8:
+        return max(base, 16)
+    return base
+
+
+def _axis_label(y_col: str, agg_func: str) -> str:
+    """Name the axis after what was actually computed."""
+    prefix = "Average " if agg_func == "mean" else "Total "
+    return prefix + _pretty(y_col)
+
+
+def _reference_line(df, y_col: str, agg, agg_func: str):
+    """The comparison line on a grouped bar chart, and what to call it.
+
+    Taking the mean of the group means gives an average of averages: on
+    an income chart with 627, 701 and 142 people in the three groups it
+    read 8,311 where the actual average income was 8,583 — and the table
+    of the same figures on the same page said 8,583. Averaging a mean
+    across groups weights a group of 142 the same as one of 701.
+    """
+    try:
+        if agg_func == "mean":
+            return float(df[y_col].mean()), "Overall average"
+        # For a summed metric the group totals have no overall mean to
+        # compare against; the average group total is the honest line,
+        # named as such.
+        return float(agg[y_col].mean()), "Average per group"
+    except Exception:
+        logger.debug("reference line failed for %r", y_col, exc_info=True)
+        return float(agg[y_col].mean()), "Average"
 
 
 def _agg_for_metric(y_col: str):
@@ -185,20 +230,26 @@ def _gap_headline(agg_sorted, x_col, y_col, fmt) -> str:
     """Chart headline that states the finding, not the axes.
     'Sales leads at 0.63 — HR trails at 0.55' beats 'Score by Department'."""
     try:
-        top_name, top_v = truncate_label(str(agg_sorted.iloc[0, 0]), 16), float(agg_sorted.iloc[0][y_col])
-        bot_name, bot_v = truncate_label(str(agg_sorted.iloc[-1, 0]), 16), float(agg_sorted.iloc[-1][y_col])
+        # 22 rather than 16, and cut on a word boundary: at 16 the
+        # headline read "'Research & Deve...' highest at 8,872".
+        top_name = _present.truncate(_present.value(agg_sorted.iloc[0, 0]), 22)
+        top_v = float(agg_sorted.iloc[0][y_col])
+        bot_name = _present.truncate(_present.value(agg_sorted.iloc[-1, 0]), 22)
+        bot_v = float(agg_sorted.iloc[-1][y_col])
         # Relative spread vs the top (bounded) — avoids 'inf× gap' when the
         # lowest group is ~0.
         rel_spread = abs(top_v - bot_v) / max(abs(top_v), 1e-9)
         if rel_spread < 0.03:
-            return "Consistent across {}: {} – {}".format(
-                x_col.replace("_", " "), fmt.format(bot_v), fmt.format(top_v))
+            return "Consistent across {}: {} to {}".format(
+                _present.label(x_col), fmt.format(bot_v), fmt.format(top_v))
         gap = ""
         if bot_v != 0 and abs(top_v / bot_v) >= 1.15:
             gap = " ({:.1f}× gap)".format(abs(top_v / bot_v))
         elif bot_v == 0:
             gap = " (lowest ≈ 0)"
-        return "'{}' highest at {} — '{}' lowest at {}{}".format(
+        # Unquoted: these are the client's own segment names, not string
+        # literals from a program.
+        return "{} highest at {} — {} lowest at {}{}".format(
             top_name, fmt.format(top_v), bot_name, fmt.format(bot_v), gap)
     except Exception:
         logger.warning("chart headline computation failed", exc_info=True)
@@ -230,7 +281,10 @@ def make_bar_chart(
 
     agg_func, is_score = _agg_for_metric(y_col)
     fmt      = "{:.3f}" if is_score else "{:,.0f}"
-    y_label  = ("Avg " if is_score else "Total ") + _pretty(y_col)
+    # The axis is named after the aggregation actually performed. It was
+    # named from is_score, which is a different question, so a chart of
+    # mean monthly income carried an axis reading "Total Monthly Income".
+    y_label  = _axis_label(y_col, agg_func)
 
     agg = (df.groupby(x_col)[y_col]
              .agg(agg_func)
@@ -238,7 +292,7 @@ def make_bar_chart(
              .sort_values(y_col, ascending=False)
              .head(top_n))
 
-    org_avg = float(agg[y_col].mean())
+    org_avg, avg_label = _reference_line(df, y_col, agg, agg_func)
     bar_colors = [colors[0] if v >= org_avg else "#64748B"  # slate-500 — below avg
                   for v in agg[y_col]]
 
@@ -264,12 +318,13 @@ def make_bar_chart(
 
     ax.axhline(org_avg, color=(colors[1] if len(colors) > 1 else "#888888"),
                linestyle="--", linewidth=1.2, alpha=0.7,
-               label="Avg: {}".format(fmt.format(org_avg)))
+               label="{}: {}".format(avg_label, fmt.format(org_avg)))
     ax.legend(fontsize=8, framealpha=0)
 
     ax.set_xticks(range(len(agg)))
     ax.set_xticklabels(
-        [truncate_label(str(v), 14) for v in agg[x_col]],
+        [truncate_label(str(v), _tick_budget(len(agg), 14))
+         for v in agg[x_col]],
         rotation=35, ha="right", fontsize=8.5
     )
     ax.set_ylabel(y_label, fontsize=9, color=style["axes.labelcolor"])
@@ -346,7 +401,8 @@ def make_line_chart(
         agg = data.groupby(x_col)[y_col].mean().reset_index().sort_values(y_col, ascending=False).head(15)
         x_vals = range(len(agg))
         y_vals = agg[y_col].values
-        labels = [truncate_label(str(v), 12) for v in agg[x_col]]
+        labels = [truncate_label(str(v), _tick_budget(len(agg), 12))
+                  for v in agg[x_col]]
 
     ax.plot(
         x_vals, y_vals,
@@ -461,7 +517,7 @@ def make_ranked_bar_chart(
              .sort_values(y_col, ascending=True)
              .head(15))
 
-    org_avg = float(agg[y_col].mean())
+    org_avg, avg_label = _reference_line(df, y_col, agg, agg_func)
     bar_colors = [colors[0] if v >= org_avg else "#64748B"
                   for v in agg[y_col]]
 
@@ -483,12 +539,14 @@ def make_ranked_bar_chart(
 
     ax.axvline(org_avg, color=(colors[3] if len(colors) > 3 else colors[1]),
                linestyle="--", linewidth=1.2, alpha=0.7,
-               label="Avg: {}".format(fmt.format(org_avg)))
+               label="{}: {}".format(avg_label, fmt.format(org_avg)))
     ax.legend(fontsize=8, framealpha=0)
 
     ax.set_yticks(range(len(agg)))
-    ax.set_yticklabels([truncate_label(str(v), 16) for v in agg[x_col]], fontsize=9)
-    ax.set_xlabel(("Avg " if is_score else "Total ") + _pretty(y_col),
+    ax.set_yticklabels(
+        [truncate_label(str(v), _tick_budget(len(agg), 16))
+         for v in agg[x_col]], fontsize=9)
+    ax.set_xlabel(_axis_label(y_col, agg_func),
                   fontsize=9, color=style["axes.labelcolor"])
     headline = _gap_headline(agg.sort_values(y_col, ascending=False), x_col, y_col, fmt)
     desc = title or "{} Ranking by {}".format(

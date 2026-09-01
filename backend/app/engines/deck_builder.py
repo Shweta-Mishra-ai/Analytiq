@@ -329,7 +329,10 @@ def _chart_slides(prs, theme, chart_data: Sequence[Tuple]):
     """One chart per slide, with its takeaway beside it rather than under
     it — a caption below a full-width image gets read last or not at all."""
     made = []
-    for title, img_bytes, narrative in list(chart_data)[:6]:
+    for entry in list(chart_data)[:6]:
+        # Entries may carry a ChartSpec after the narrative;
+        # the deck does not need it, but must not choke on it.
+        title, img_bytes, narrative = entry[0], entry[1], entry[2]
         if not img_bytes:
             continue
         slide = _blank(prs)

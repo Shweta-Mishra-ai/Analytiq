@@ -438,3 +438,82 @@ class TestActionPlan:
         story = self._plan([], [])
         text = " ".join(getattr(f, "text", "") for f in story)
         assert "found nothing it could recommend" in text
+
+
+# ── charts agree with the page they sit on ───────────────
+
+class TestChartArithmetic:
+    def test_the_reference_line_is_the_real_overall_average(self):
+        """Averaging the group means weights a group of 142 the same as
+        one of 701. The chart drew its line at 8,311 while the table of
+        the same figures on the same page said 8,583."""
+        from app.engines.chart_exporter import _reference_line
+
+        df = pd.DataFrame({
+            "dept": ["A"] * 700 + ["B"] * 100,
+            "income": [9000.0] * 700 + [1000.0] * 100,
+        })
+        agg = df.groupby("dept")["income"].mean().reset_index()
+        value, label = _reference_line(df, "income", agg, "mean")
+        assert round(value) == round(df["income"].mean())
+        assert value != agg["income"].mean(), "still an average of averages"
+        assert "Overall" in label
+
+    def test_a_summed_metric_names_its_line_honestly(self):
+        from app.engines.chart_exporter import _reference_line
+        df = pd.DataFrame({"region": ["A", "A", "B"], "units": [1.0, 2.0, 5.0]})
+        agg = df.groupby("region")["units"].sum().reset_index()
+        _value, label = _reference_line(df, "units", agg, "sum")
+        assert label == "Average per group"
+
+    def test_the_axis_is_named_after_the_aggregation(self):
+        """A chart of mean income carried an axis reading "Total Monthly
+        Income" because the label came from a different rule than the
+        aggregation did."""
+        from app.engines.chart_exporter import _agg_for_metric, _axis_label
+        func, _ = _agg_for_metric("MonthlyIncome")
+        assert _axis_label("MonthlyIncome", func).startswith(
+            "Average" if func == "mean" else "Total")
+
+    def test_tick_labels_get_more_room_when_there_are_fewer_bars(self):
+        from app.engines.chart_exporter import _tick_budget
+        assert _tick_budget(3) > _tick_budget(12)
+
+    def test_a_shortened_label_cuts_between_words(self):
+        from app.engines.pdf_primitives import truncate_label
+        assert truncate_label("Research & Development", 26) == \
+            "Research & Development"
+        short = truncate_label("Research & Development", 16)
+        assert short.endswith("…") and "Research & De…" != short
+
+
+# ── forecasting only what is a time series ───────────────
+
+class TestForecastGate:
+    def test_a_count_named_times_is_not_a_time_axis(self):
+        """"time" is a substring of TrainingTimesLastYear, and pandas
+        parses its small integers as nanosecond timestamps — every one
+        valid. A count of training days became the time axis of a
+        forecast, and the report offered an Outlook projecting a
+        work-life-balance rating over "1 daily periods"."""
+        from app.engines.forecast_engine import _looks_like_a_date_column
+        assert not _looks_like_a_date_column(
+            pd.Series([0, 1, 2, 3, 4, 5, 6] * 20), "TrainingTimesLastYear")
+        assert not _looks_like_a_date_column(
+            pd.Series([3, 4, 5] * 20), "lead_time_days")
+        assert not _looks_like_a_date_column(
+            pd.Series([1.5, 2.5] * 20), "YearsAtCompany")
+
+    def test_a_real_date_column_still_qualifies(self):
+        from app.engines.forecast_engine import _looks_like_a_date_column
+        dates = pd.date_range("2024-01-01", periods=60)
+        assert _looks_like_a_date_column(pd.Series(dates), "OrderDate")
+        assert _looks_like_a_date_column(
+            pd.Series(dates.astype(str)), "order_date")
+
+    def test_a_dataset_with_no_time_dimension_offers_no_outlook(self,
+                                                                attrition_df):
+        """The section claimed a page, a contents entry and a section
+        number to say that it had nothing to show."""
+        from app.engines.forecast_engine import find_forecastable
+        assert find_forecastable(attrition_df) == []

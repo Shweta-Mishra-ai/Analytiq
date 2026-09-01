@@ -26,7 +26,8 @@ from reportlab.pdfgen import canvas as CV
 
 logger = logging.getLogger(__name__)
 
-from app.engines.present import truncate as _fit
+from app.engines.present import (label as _PL, num as _PN,
+                                 truncate as _fit, value as _PV)
 
 from app.engines.pdf.theme import (
     _c, W, H, CW_DEFAULT, FONT_BODY, FONT_BOLD, FONT_ITALIC,
@@ -387,7 +388,7 @@ def _bi_section(story, s, T, bi_report, CW):
 # ══════════════════════════════════════════════════════════
 
 def _chart_page(story, s, T, img_bytes, title, narrative, num, CW,
-                source: str = ""):
+                source: str = "", df=None, spec=None):
     _sec(story, s, T, title)
     _exhibit(story, s, T, title)
     if img_bytes:
@@ -402,6 +403,69 @@ def _chart_page(story, s, T, img_bytes, title, narrative, num, CW,
     if narrative:
         story.append(Paragraph("Analysis", s["h3"]))
         _narrative_box(story, s, T, narrative)
+    if df is not None and spec is not None:
+        _chart_figures(story, s, T, df, spec, CW)
+
+
+def _chart_figures(story, s, T, df, spec, CW) -> None:
+    """The numbers the chart was drawn from.
+
+    A bar reaching a little past another bar is a claim the reader has to
+    take on trust; the figures beside it are what let them check it, and
+    what they will paste into their own deck. It also gives each group's
+    row count, which the chart cannot show — a bar built on eleven
+    records looks exactly like one built on four hundred.
+    """
+    try:
+        if spec.kind != "bar" or not spec.metric or not spec.dimension:
+            return
+        if spec.metric not in df.columns or spec.dimension not in df.columns:
+            return
+        grouped = df.groupby(spec.dimension, observed=True)[spec.metric]
+        table = grouped.agg(["mean", "median", "count"]).dropna()
+        if table.empty or len(table) > 15:
+            return
+        table = table.sort_values("mean", ascending=False)
+        overall = float(df[spec.metric].mean())
+
+        rows = [[Paragraph("<b>{}</b>".format(_clean(_PL(spec.dimension))),
+                           s["sm"])]
+                + [Paragraph("<b>{}</b>".format(h), s["sm"])
+                   for h in ("Mean", "Median", "Records", "vs overall")]]
+        for name, row in table.iterrows():
+            delta = row["mean"] - overall
+            rows.append([
+                Paragraph(_clean(_fit(_PV(name), 34)), s["sm"]),
+                Paragraph(_PN(row["mean"]), s["sm"]),
+                Paragraph(_PN(row["median"]), s["sm"]),
+                Paragraph("{:,}".format(int(row["count"])), s["sm"]),
+                Paragraph("{}{}".format("+" if delta >= 0 else "−",
+                                        _PN(abs(delta))), s["sm"]),
+            ])
+        widths = [CW * x for x in (0.36, 0.16, 0.16, 0.16, 0.16)]
+        figures = Table(rows, colWidths=widths, repeatRows=1)
+        figures.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0), _c(T["header_bg"])),
+            ("TEXTCOLOR",     (0, 0), (-1, 0), white),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [white, _c(T["bg_light"])]),
+            ("ALIGN",         (1, 0), (-1, -1), "RIGHT"),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING",    (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+            ("GRID",          (0, 0), (-1, -1), 0.3, _c(T["border"])),
+        ]))
+        story.append(Spacer(1, 3*mm))
+        story.append(Paragraph("The figures behind this exhibit", s["h3"]))
+        story.append(figures)
+        story.append(Paragraph(
+            "Overall mean {}. A group's mean is only as steady as its "
+            "record count — read the small ones as directional."
+            .format(_PN(overall)), s["note"]))
+    except Exception:
+        logger.warning("could not tabulate the figures behind %r",
+                       getattr(spec, "metric", "?"), exc_info=True)
 
 
 # ══════════════════════════════════════════════════════════

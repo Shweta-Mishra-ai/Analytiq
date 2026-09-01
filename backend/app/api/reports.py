@@ -255,7 +255,7 @@ def _generate_pdf(ds_id: str, req: PdfRequest, owner: str):
                     df, title, config.groq_api_key, domain_name, spec=spec)
             except Exception:
                 narrative = "Chart generated from dataset analysis."
-            chart_data.append((title, img_bytes, narrative))
+            chart_data.append((title, img_bytes, narrative, spec))
     except Exception as e:
         logger.warning("chart export failed — report has no figures: %s", e,
                        exc_info=True)
