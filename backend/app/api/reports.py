@@ -246,13 +246,13 @@ def _generate_pdf(ds_id: str, req: PdfRequest, owner: str):
     theme_name = req.theme_name
     try:
         charts = generate_all_charts(df, theme_name, max_charts=req.max_charts)
-        for title, img_bytes in charts:
+        for title, img_bytes, spec in charts:
             if not img_bytes:
                 continue
             try:
                 from app.ai.report_narrator import generate_chart_narrative
                 narrative = generate_chart_narrative(
-                    df, title, config.groq_api_key, domain_name)
+                    df, title, config.groq_api_key, domain_name, spec=spec)
             except Exception:
                 narrative = "Chart generated from dataset analysis."
             chart_data.append((title, img_bytes, narrative))

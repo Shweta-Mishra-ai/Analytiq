@@ -272,7 +272,7 @@ def test_the_client_report_states_fitness_for_analysis(clean_df):
                 "confidential": True, "theme_name": "", "logo_path": None},
         profile=profile_dataset(df), cleaning_summary=None,
         stats_report=None, bi_report=None, ml_report=None,
-        chart_data=[(t, b, "") for t, b in generate_all_charts(df, max_charts=1)],
+        chart_data=[(t, b, "") for t, b, _s in generate_all_charts(df, max_charts=1)],
         executive_summary=story.executive_summary, findings=story.key_findings,
         risks=story.business_risks, opportunities=story.opportunities,
         recommendations=story.recommended_actions, top_insights=[],

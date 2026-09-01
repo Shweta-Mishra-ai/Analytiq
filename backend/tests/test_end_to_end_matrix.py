@@ -228,7 +228,7 @@ def test_full_report_builds_for_every_domain(domain):
     df = BUILDERS[domain]()
     story = generate_story(df)
     charts = [(t, b, "Chart narrative.")
-              for t, b in generate_all_charts(df, "Corporate Light", 3) if b]
+              for t, b, _spec in generate_all_charts(df, "Corporate Light", 3) if b]
     pdf = build_pdf(
         df=df, config=dict(CONFIG), profile=profile_dataset(df),
         stats_report=stats_analyze(df), bi_report=run_bi(df),

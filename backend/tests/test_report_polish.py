@@ -276,3 +276,94 @@ class TestDocument:
         text = "\n".join(self._pages(self._pdf(attrition_df)))
         if "Exhibit" in text:
             assert "Exhibit 1" in text
+
+
+# ── a caption describes its own chart ────────────────────
+
+class TestChartNarratives:
+    """The narrator used to recover a chart's columns by matching the
+    chart title against column names. Titles are prettified, so "JobRole"
+    is not found in "Job Role", the lookup fell through to the first
+    categorical column, and a chart of seven job roles was captioned with
+    a confident paragraph about three departments."""
+
+    @staticmethod
+    def _charts(df):
+        from app.engines.chart_exporter import generate_all_charts
+        return generate_all_charts(df, "Corporate Light", max_charts=5)
+
+    def test_every_chart_says_which_columns_it_used(self, attrition_df):
+        for title, _img, spec in self._charts(attrition_df):
+            assert spec.kind in ("bar", "hist", "trend", "correlation"), title
+            if spec.kind == "bar":
+                assert spec.metric in attrition_df.columns
+                assert spec.dimension in attrition_df.columns
+
+    def test_a_caption_names_its_own_dimension(self, attrition_df):
+        from app.ai.report_narrator import generate_chart_narrative
+        from app.engines.present import label
+
+        for title, _img, spec in self._charts(attrition_df):
+            if spec.kind != "bar":
+                continue
+            text = generate_chart_narrative(attrition_df, title, "", "hr",
+                                            spec=spec)
+            assert label(spec.dimension) in text, \
+                "{!r} is captioned: {}".format(title, text)
+
+    def test_a_caption_counts_the_groups_its_chart_shows(self, attrition_df):
+        from app.ai.report_narrator import generate_chart_narrative
+
+        for title, _img, spec in self._charts(attrition_df):
+            if spec.kind != "bar":
+                continue
+            n = attrition_df[spec.dimension].nunique()
+            text = generate_chart_narrative(attrition_df, title, "", "hr",
+                                            spec=spec)
+            assert "{} ".format(n) in text, \
+                "{} has {} groups but reads: {}".format(title, n, text)
+
+    def test_captions_carry_no_raw_floats(self, attrition_df):
+        import re
+        from app.ai.report_narrator import generate_chart_narrative
+
+        for title, _img, spec in self._charts(attrition_df):
+            text = generate_chart_narrative(attrition_df, title, "", "hr",
+                                            spec=spec)
+            # "8986.134" next to a chart axis reading "8,986".
+            assert not re.search(r"\d{4,}\.\d", text), text
+            assert "e+" not in text
+
+    def test_a_narrow_spread_is_not_called_urgent(self):
+        """Every gap used to be "requiring attention", however small."""
+        from app.ai.report_narrator import _fb_bar
+        narrow = _fb_bar({"ok": True, "metric_label": "Revenue",
+                          "dimension_label": "Region", "n_groups": 4,
+                          "top": "North", "top_val": 103.0,
+                          "worst": "South", "worst_val": 100.0,
+                          "gap_pct": 3.0, "above_avg": 2, "org_avg": 101.0})
+        assert "narrow" in narrow
+        assert "requiring attention" not in narrow
+
+    def test_a_wide_spread_still_gets_a_recommendation(self):
+        wide = _fb_bar_wide()
+        assert "large enough to act on" in wide
+
+
+def _fb_bar_wide() -> str:
+    from app.ai.report_narrator import _fb_bar
+    return _fb_bar({"ok": True, "metric_label": "Revenue",
+                    "dimension_label": "Region", "n_groups": 4,
+                    "top": "North", "top_val": 200.0, "worst": "South",
+                    "worst_val": 100.0, "gap_pct": 50.0,
+                    "above_avg": 1, "org_avg": 150.0})
+
+
+def test_grammar_agrees_with_the_numbers():
+    """"a 18% spread" and "1 of 3 groups sit" are the kind of slip that
+    makes a paragraph read as generated."""
+    assert present.article("18%") == "an"
+    assert present.article("22%") == "a"
+    assert present.article("8,024") == "an"
+    assert present.plural(1, "sits", "sit") == "sits"
+    assert present.plural(3, "sits", "sit") == "sit"

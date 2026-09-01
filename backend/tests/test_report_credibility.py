@@ -44,7 +44,7 @@ def test_charts_never_plot_an_identifier_column(finance_df):
     distribution of invoice_id, and a pie chart of summed invoice IDs —
     three of five charts on an identifier. Any analyst rejects that."""
     from app.engines.chart_exporter import generate_all_charts
-    titles = [t for t, _ in generate_all_charts(finance_df, max_charts=5)]
+    titles = [t for t, _, _s in generate_all_charts(finance_df, max_charts=5)]
     assert titles, "no charts produced at all"
     for t in titles:
         assert "invoice_id" not in t.lower(), f"identifier charted: {t}"
@@ -109,7 +109,7 @@ def _main_pdf_text(df, client="Acme Corp", title="Q3 Review") -> str:
 
     domain, _ = detect_domain(df)
     story = generate_story(df)
-    charts = [(t, b, "") for t, b in generate_all_charts(df, max_charts=3)]
+    charts = [(t, b, "") for t, b, _s in generate_all_charts(df, max_charts=3)]
     pdf = build_pdf(
         df=df,
         config={"title": title, "subtitle": "", "client_name": client,

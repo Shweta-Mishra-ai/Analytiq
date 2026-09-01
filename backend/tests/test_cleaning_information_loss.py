@@ -149,7 +149,7 @@ def test_indicators_are_excluded_from_charts():
     df = pd.DataFrame({"revenue": x, "region": rng.choice(["N", "S"], n)})
     cleaned, report = auto_clean(df)
     assert report.missingness_indicators, "fixture produced no indicator"
-    for title, _ in generate_all_charts(cleaned, max_charts=6):
+    for title, _, _spec in generate_all_charts(cleaned, max_charts=6):
         assert "Was Missing" not in title
 
 

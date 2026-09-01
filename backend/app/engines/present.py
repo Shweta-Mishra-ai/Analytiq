@@ -226,3 +226,27 @@ def sentence(text: Any) -> str:
     if s[-1] not in ".!?:":
         s += "."
     return s
+
+
+def article(text: str) -> str:
+    """"a" or "an" for what follows, judged by sound rather than spelling.
+
+    "a 18% spread" and "a 8,024 median" are the kind of slip that makes a
+    paragraph read as generated. The number 18 is spoken "eighteen", 8 is
+    "eight" — both take "an" despite starting with a consonant letter.
+    """
+    word = str(text).strip().lstrip("$£€").lstrip()
+    if not word:
+        return "a"
+    if word[0].isdigit():
+        # 8, 11 and 18 are spoken with a leading vowel; 1 is "one".
+        if word.startswith("8") or word.startswith("11") or \
+                word.startswith("18"):
+            return "an"
+        return "a"
+    return "an" if word[0].lower() in "aeiou" else "a"
+
+
+def plural(count, singular: str, many: str = "") -> str:
+    """Agree a verb or noun with its count: "1 group sits", "3 groups sit"."""
+    return singular if abs(float(count)) == 1 else (many or singular + "s")

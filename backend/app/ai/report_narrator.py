@@ -23,6 +23,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+from app.engines import present as _present
+
 # ── Hallucination phrases ─────────────────────────────────
 FAKE_PHRASES = [
     "customer satisfaction and sales revenue",
@@ -236,27 +238,57 @@ def _corr_stats(df: pd.DataFrame) -> list:
 def _fb_bar(s: dict) -> str:
     if not s.get("ok"):
         return f"Analysis of {s.get('metric_label','metric')} by group reveals performance patterns."
+    gap = float(s["gap_pct"])
+    # Not every spread is a problem. A 6% difference between the best and
+    # worst of seven groups is what seven groups look like; calling it
+    # "requiring attention" spends the reader's attention on nothing.
+    gap_txt = "{:.0f}%".format(gap)
+    if gap >= 25:
+        weight = ("{} {} spread — wide enough to be worth explaining"
+                  .format(_present.article(gap_txt), gap_txt))
+        closing = (
+            " The gap is large enough to act on: find what {} does "
+            "differently, and test it in {}.".format(
+                _present.value(s["top"]), _present.value(s["worst"])))
+    elif gap >= 10:
+        weight = "{} {} spread".format(_present.article(gap_txt),
+                                       gap_txt)
+        closing = (
+            " Worth checking whether the gap survives once group size and "
+            "mix are accounted for.")
+    else:
+        weight = "{} {} spread, which is narrow".format(
+            _present.article(gap_txt), gap_txt)
+        closing = (" No group stands out; the differences here are the "
+                   "ordinary variation between groups this size.")
     return (
-        f"{s['metric_label']} across {s['n_groups']} {s['dimension_label']} groups: "
-        f"'{s['top']}' leads at {s['top_val']} while '{s['worst']}' trails "
-        f"at {s['worst_val']} — a {s['gap_pct']:.0f}% gap requiring attention. "
-        f"{s['above_avg']} of {s['n_groups']} groups exceed the organisation "
-        f"average of {s['org_avg']}. "
-        f"Strategic Action: Conduct root-cause review in '{s['worst']}' and "
-        f"replicate '{s['top']}' practices to close the {s['gap_pct']:.0f}% gap."
+        "{} across {} {} groups: {} is highest at {}, {} lowest at {} — {}. "
+        "{} of {} groups {} above the overall average of {}.{}".format(
+            s["metric_label"], s["n_groups"], s["dimension_label"],
+            _present.value(s["top"]), _present.num(s["top_val"]),
+            _present.value(s["worst"]), _present.num(s["worst_val"]),
+            weight, s["above_avg"], s["n_groups"],
+            _present.plural(s["above_avg"], "sits", "sit"),
+            _present.num(s["org_avg"]), closing)
     )
 
 
 def _fb_hist(s: dict) -> str:
     if not s.get("ok"):
         return f"Distribution of {s.get('metric_label','metric')} reveals key patterns."
+    shape = (
+        "The distribution is skewed, so the {} ({}) is the fair summary "
+        "rather than the mean.".format(s["use_stat"],
+                                       _present.num(s["use_val"]))
+        if s["shape"] != "symmetric" else
+        "The distribution is symmetric, so the mean is a reliable summary.")
     return (
-        f"{s['metric_label']} typical value is {s['use_val']} "
-        f"(range: {s['min']}–{s['max']}). "
-        f"{'Skewed distribution — use ' + s['use_stat'] + ' (' + str(s['use_val']) + ') for accurate reporting.' if s['shape'] != 'symmetric' else 'Symmetric distribution — mean is a reliable central measure.'} "
-        f"Employees below {s['q1']} (bottom 25%) represent the highest-risk group. "
-        f"Strategic Action: Focus retention interventions on employees below "
-        f"{s['q1']} to address the most at-risk segment first."
+        "{} centres on {}, ranging from {} to {}. {} A quarter of records "
+        "sit below {}, which is the group to look at first when the low "
+        "end is the one that matters.".format(
+            s["metric_label"], _present.num(s["use_val"]),
+            _present.num(s["min"]), _present.num(s["max"]), shape,
+            _present.num(s["q1"]))
     )
 
 
@@ -517,11 +549,56 @@ def _llm_call(prompt: str, groq_api_key: str = "",
 #  MAIN PUBLIC FUNCTIONS
 # ══════════════════════════════════════════════════════════
 
+def _narrative_for_spec(df: pd.DataFrame, spec, groq_api_key: str,
+                        domain: str) -> str:
+    """Narrative for a chart whose columns are known, or "" to fall back."""
+    try:
+        metric, dimension = spec.metric, spec.dimension
+        if spec.kind == "correlation":
+            return _fb_corr(_corr_stats(df), df)
+
+        if spec.kind == "hist" and metric in df.columns:
+            stats = _hist_stats(df, metric)
+            raw = _llm_call(_build_chart_prompt("hist", stats, domain),
+                            groq_api_key, "chart_analysis", 280)
+            if raw:
+                cleaned = _clean_output(raw)
+                if not _is_hallucinated(cleaned, df) and len(cleaned) > 50:
+                    return cleaned
+            return _fb_hist(stats)
+
+        if spec.kind == "trend" and metric in df.columns:
+            stats = _trend_stats(df, metric)
+            raw = _llm_call(_build_chart_prompt("trend", stats, domain),
+                            groq_api_key, "chart_analysis", 280)
+            if raw:
+                cleaned = _clean_output(raw)
+                if not _is_hallucinated(cleaned, df) and len(cleaned) > 50:
+                    return cleaned
+            return _fb_trend(stats)
+
+        if spec.kind == "bar" and metric in df.columns and \
+                dimension in df.columns:
+            stats = _bar_stats(df, dimension, metric)
+            raw = _llm_call(_build_chart_prompt("bar", stats, domain),
+                            groq_api_key, "chart_analysis", 280)
+            if raw:
+                cleaned = _clean_output(raw)
+                if not _is_hallucinated(cleaned, df) and len(cleaned) > 50:
+                    return cleaned
+            return _fb_bar(stats)
+    except Exception:
+        logger.warning("spec-driven narrative failed for %r", spec,
+                       exc_info=True)
+    return ""
+
+
 def generate_chart_narrative(
     df:           pd.DataFrame,
     chart_title:  str,
     groq_api_key: str = "",
     domain:       str = "general",
+    spec=None,
 ) -> str:
     """
     Generate chart narrative — GUARANTEED non-empty output.
@@ -532,6 +609,15 @@ def generate_chart_narrative(
         title = chart_title.lower()
         num   = df.select_dtypes(include="number").columns.tolist()
         cat   = text_columns(df)
+
+        # When the caller says which columns the chart was drawn from,
+        # believe it. Recovering them from the title is what captioned a
+        # chart of seven job roles with a paragraph about three
+        # departments: "JobRole" is not a substring of "job role".
+        if spec is not None and spec.kind:
+            resolved = _narrative_for_spec(df, spec, groq_api_key, domain)
+            if resolved:
+                return resolved
 
         # ── Correlation ───────────────────────────────────
         if "correlation" in title or "heatmap" in title:

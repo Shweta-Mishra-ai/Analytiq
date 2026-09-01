@@ -46,7 +46,7 @@ def test_pretty_makes_human_labels(raw, expected):
 
 
 def test_chart_titles_contain_no_raw_snake_case(sales_df):
-    for title, _ in generate_all_charts(sales_df, max_charts=6):
+    for title, _, _spec in generate_all_charts(sales_df, max_charts=6):
         assert "_" not in title, f"raw column name in chart title: {title!r}"
 
 
@@ -93,7 +93,7 @@ def test_rank_measures_puts_business_metrics_first(sales_df):
 
 
 def test_identifier_columns_never_become_chart_metrics(sales_df):
-    for title, _ in generate_all_charts(sales_df, max_charts=6):
+    for title, _, _spec in generate_all_charts(sales_df, max_charts=6):
         assert "Order Id" not in title
 
 
@@ -129,9 +129,12 @@ def test_best_pair_finds_the_dimension_that_actually_varies(sales_df):
 def test_charts_render_to_real_png_bytes(sales_df):
     charts = generate_all_charts(sales_df, max_charts=6)
     assert charts
-    for title, data in charts:
+    for title, data, spec in charts:
         assert data[:8] == b"\x89PNG\r\n\x1a\n", f"{title} is not a PNG"
         assert len(data) > 5000, f"{title} rendered suspiciously small"
+        # The spec is what stops a chart being captioned with another
+        # chart's narrative, so every chart must carry one.
+        assert spec.kind, f"{title} has no chart spec"
 
 
 def test_correlation_heatmap_survives_a_read_only_frame():

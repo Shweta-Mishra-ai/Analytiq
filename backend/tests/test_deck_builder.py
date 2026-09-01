@@ -52,7 +52,7 @@ def inputs():
         "top_insights": story.top_insights,
         "recommendations": story.recommended_actions,
         "chart_data": [(t, b, "What this chart shows, in one paragraph.")
-                       for t, b in generate_all_charts(df, "HR Blue", 3) if b],
+                       for t, b, _spec in generate_all_charts(df, "HR Blue", 3) if b],
         "predictive": compute_drivers(df, find_binary_target(df)),
     }
 

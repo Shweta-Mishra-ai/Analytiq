@@ -566,7 +566,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         story.append(HRFlowable(width="100%", thickness=1.5, color=accent,
                                  spaceAfter=6))
 
-        for idx, (chart_title, img_bytes) in enumerate(_charts, 1):
+        for idx, (chart_title, img_bytes, _spec) in enumerate(_charts, 1):
             if not img_bytes:
                 continue
             try:

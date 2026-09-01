@@ -34,7 +34,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import List, NamedTuple, Optional, Tuple
 import logging
 logger = logging.getLogger(__name__)
 from app.engines.pdf_primitives import truncate_label
@@ -948,11 +948,26 @@ def _best_metric_by_category(df, num_cols, cat_cols, exclude_pairs=None,
     return best
 
 
+class ChartSpec(NamedTuple):
+    """What a chart was actually drawn from.
+
+    The narrator used to recover this by parsing the chart's title back
+    into column names. Titles are prettified — ``JobRole`` becomes "Job
+    Role" — so the lookup missed, fell through to the first categorical
+    column, and captioned a chart of seven job roles with a confident
+    paragraph about three departments. Carrying the columns forward makes
+    that impossible rather than unlikely.
+    """
+    kind: str                       # bar | hist | trend | correlation
+    metric: Optional[str]           # the measured column, if any
+    dimension: Optional[str]        # what it is broken down by, if any
+
+
 def generate_all_charts(
     df: pd.DataFrame,
     theme_name: str = "Corporate Light",
     max_charts: int = 5,
-) -> List[Tuple[str, bytes]]:
+) -> List[Tuple[str, bytes, "ChartSpec"]]:
     """Auto-generate best charts for this dataset.
 
     FIX: previously always used num_cols[0] for every chart and a numeric-bin
@@ -980,7 +995,10 @@ def generate_all_charts(
         best_cat, chart1_metric, _ = pair1
         title = "{} by {}".format(_pretty(chart1_metric), _pretty(best_cat))
         try:
-            charts.append((title, make_bar_chart(df, best_cat, chart1_metric, title, theme_name)))
+            charts.append((title,
+                           make_bar_chart(df, best_cat, chart1_metric,
+                                          title, theme_name),
+                           ChartSpec("bar", chart1_metric, best_cat)))
         except Exception:
             logger.warning("chart 1 failed", exc_info=True)
     else:
@@ -1001,7 +1019,10 @@ def generate_all_charts(
         if best_cat and best_metric:
             title = "{} by {}".format(_pretty(best_metric), _pretty(best_cat))
             try:
-                charts.append((title, make_bar_chart(df, best_cat, best_metric, title, theme_name)))
+                charts.append((title,
+                               make_bar_chart(df, best_cat, best_metric,
+                                              title, theme_name),
+                               ChartSpec("bar", best_metric, best_cat)))
             except Exception:
                 logger.warning("chart 1 fallback failed", exc_info=True)
         # If no categorical dimension qualifies, Chart 1 is simply skipped —
@@ -1013,9 +1034,10 @@ def generate_all_charts(
     if date_cols and best_metric:
         title = "{} Over Time".format(_pretty(best_metric))
         try:
-            charts.append((title, make_line_chart(
-                df, date_cols[0], best_metric, title, theme_name
-            )))
+            charts.append((title,
+                           make_line_chart(df, date_cols[0], best_metric,
+                                           title, theme_name),
+                           ChartSpec("trend", best_metric, date_cols[0])))
         except Exception:
             logger.warning("chart 2 (trend) failed", exc_info=True)
     else:
@@ -1027,14 +1049,20 @@ def generate_all_charts(
             c2, m2, _ = pair2
             title = "{} by {}".format(_pretty(m2), _pretty(c2))
             try:
-                charts.append((title, make_bar_chart(df, c2, m2, title, theme_name)))
+                charts.append((title,
+                               make_bar_chart(df, c2, m2, title,
+                                              theme_name),
+                               ChartSpec("bar", m2, c2)))
             except Exception:
                 logger.warning("chart 2 (pair) failed", exc_info=True)
         elif len(num_cols) >= 2:
             second_metric = next((c for c in num_cols if c != best_metric), num_cols[0])
             title = "Distribution: {}".format(_pretty(second_metric))
             try:
-                charts.append((title, make_histogram(df, second_metric, title, theme_name)))
+                charts.append((title,
+                               make_histogram(df, second_metric, title,
+                                              theme_name),
+                               ChartSpec("hist", second_metric, None)))
             except Exception:
                 logger.warning("chart 2 (hist) failed", exc_info=True)
 
@@ -1042,18 +1070,19 @@ def generate_all_charts(
     if best_metric:
         title = "Distribution: {}".format(_pretty(best_metric))
         try:
-            charts.append((title, make_histogram(
-                df, best_metric, title, theme_name
-            )))
+            charts.append((title,
+                           make_histogram(df, best_metric, title, theme_name),
+                           ChartSpec("hist", best_metric, None)))
         except Exception:
             logger.warning("%s unexpected failure", exc_info=True)
 
     # 4. Correlation heatmap
     if len(num_cols) >= 3:
         try:
-            charts.append(("Correlation Matrix", make_correlation_heatmap(
-                df, "Correlation Matrix", theme_name
-            )))
+            charts.append(("Correlation Matrix",
+                           make_correlation_heatmap(df, "Correlation Matrix",
+                                                    theme_name),
+                           ChartSpec("correlation", None, None)))
         except Exception:
             logger.warning("%s unexpected failure", exc_info=True)
 
@@ -1066,18 +1095,20 @@ def generate_all_charts(
         rank_cat = _pick_high_spread_dimension(df, alt_metric, exclude=set()) or best_cat
         title = "{} Ranking by {}".format(_pretty(alt_metric), _pretty(rank_cat))
         try:
-            charts.append((title, make_ranked_bar_chart(
-                df, rank_cat, alt_metric, title, theme_name
-            )))
+            charts.append((title,
+                           make_ranked_bar_chart(df, rank_cat, alt_metric,
+                                                 title, theme_name),
+                           ChartSpec("bar", alt_metric, rank_cat)))
         except Exception:
             logger.warning("ranked chart 5 failed", exc_info=True)
     elif best_cat and best_metric:
         # Only one numeric metric exists — a ranked view of it is still useful
         title = "{} Ranking by {}".format(_pretty(best_metric), _pretty(best_cat))
         try:
-            charts.append((title, make_ranked_bar_chart(
-                df, best_cat, best_metric, title, theme_name
-            )))
+            charts.append((title,
+                           make_ranked_bar_chart(df, best_cat, best_metric,
+                                                 title, theme_name),
+                           ChartSpec("bar", best_metric, best_cat)))
         except Exception:
             logger.warning("ranked chart 5 fallback failed", exc_info=True)
 
