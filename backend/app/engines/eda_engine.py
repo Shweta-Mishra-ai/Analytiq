@@ -22,6 +22,12 @@ from app.services.dtypes import MONTH_END, text_columns
 
 logger = logging.getLogger(__name__)
 
+from app.engines.domains.base import is_id_column
+from app.engines.present import label as _L
+from app.engines.statistics import (assess_normality, clamp_p,
+                                    correlation_with_ci, effect_label,
+                                    format_p, is_worth_reporting)
+
 
 # ══════════════════════════════════════════════════════════
 #  DATA CLASSES
@@ -62,6 +68,9 @@ class UnivariateResult:
     anderson_stat:   Optional[float] = None
     anderson_critical: Optional[float] = None
     is_normal:       Optional[bool]  = None
+    # Whether the verdict came from the column's shape or from a
+    # test — only the first means anything at a useful sample size.
+    normality_basis: Optional[str]   = None
     normality_verdict: Optional[str] = None
     # Outliers — multiple methods
     outliers_iqr:    int = 0
@@ -144,6 +153,8 @@ class EDAReport:
     correlations:    List[BivariateResult]       = field(default_factory=list)
     group_comparisons: List[GroupComparisonResult] = field(default_factory=list)
     multicollinearity: List[MulticollinearityResult] = field(default_factory=list)
+    # Named rather than dropped in silence.
+    identifier_cols: List[str] = field(default_factory=list)
     time_series:     List[TimeSeriesResult]      = field(default_factory=list)
     key_findings:    List[str]                   = field(default_factory=list)
     warnings:        List[str]                   = field(default_factory=list)
@@ -299,27 +310,29 @@ def analyze_univariate(series: pd.Series) -> UnivariateResult:
     except Exception:
         logger.debug("analyze_univariate: suppressed exception", exc_info=True)
 
-    # Consensus normality — majority of tests
-    normal_votes = 0
-    total_votes  = 0
-    if result.shapiro_p is not None:
-        total_votes += 1
-        if result.shapiro_p > 0.05:
-            normal_votes += 1
-    if result.dagostino_p is not None:
-        total_votes += 1
-        if result.dagostino_p > 0.05:
-            normal_votes += 1
-    if result.anderson_stat is not None and result.anderson_critical is not None:
-        total_votes += 1
-        if result.anderson_stat < result.anderson_critical:
-            normal_votes += 1
-
-    result.is_normal = (normal_votes / max(total_votes, 1)) >= 0.5
-    result.normality_verdict = (
-        "NORMAL (p>0.05 majority)" if result.is_normal
-        else "NON-NORMAL (p<0.05 majority)"
-    )
+    # Normality decided on shape, not on a vote between three
+    # significance tests. All three answer the same over-powered
+    # question at scale — at n=1,470 each of them rejects a column with
+    # a skew of 0.48, so a majority of three is a majority of three wrong
+    # answers. The test statistics stay in the output for a reader who
+    # wants them; they no longer decide anything on a large sample.
+    verdict = assess_normality(s)
+    if verdict is None:
+        result.is_normal = None
+        result.normality_verdict = "Not assessed"
+    else:
+        result.is_normal = verdict.normal_enough
+        result.normality_basis = verdict.basis
+        result.normality_verdict = (
+            "Normal enough for parametric tests (skew {:.2f}, excess "
+            "kurtosis {:.2f})".format(verdict.skew, verdict.excess_kurtosis)
+            if verdict.normal_enough else
+            "Too skewed or heavy-tailed for parametric tests (skew {:.2f}, "
+            "excess kurtosis {:.2f})".format(verdict.skew,
+                                             verdict.excess_kurtosis))
+    # p-values are floored rather than rounded to a literal zero.
+    result.shapiro_p   = clamp_p(result.shapiro_p)
+    result.dagostino_p = clamp_p(result.dagostino_p)
 
     # Outliers — 3 methods
     if result.iqr and result.iqr > 0:
@@ -732,11 +745,30 @@ def _generate_key_findings(report: "EDAReport") -> List[str]:
     ]
     if strong_corr:
         top = strong_corr[0]
+        # Whether a correlation actually causes a multicollinearity
+        # problem is what VIF answers, and VIF has already run. The
+        # report used to hedge "may indicate multicollinearity" directly
+        # above a table stating there was none.
+        flagged = [m for m in report.multicollinearity
+                   if m.verdict not in ("OK", "")]
+        if flagged:
+            verdict = ("This does inflate the variance of {}: VIF {:.1f}. "
+                       "Drop one of the pair, or combine them, before "
+                       "fitting a model that assumes independent "
+                       "predictors.".format(_L(flagged[0].feature),
+                                            flagged[0].vif))
+        else:
+            verdict = ("It does not amount to a multicollinearity problem: "
+                       "every variance inflation factor is below the "
+                       "conventional threshold, the highest being "
+                       "{:.1f}.".format(max((m.vif for m in
+                                             report.multicollinearity),
+                                            default=0.0)))
         findings.append(
-            "Strong significant correlation: '{}' and '{}' "
-            "(r={:.2f}, p={:.4f}). May indicate multicollinearity.".format(
-                top.col_a, top.col_b, top.statistic, top.p_value)
-        )
+            "{} and {} move together ({}, r={:.2f}, n={:,}). {}".format(
+                _L(top.col_a), _L(top.col_b),
+                format_p(top.p_value), top.statistic,
+                report.n_rows, verdict))
 
     # Group differences. Significance alone is not enough: on a large
     # sample almost every comparison is significant, and a difference too
@@ -808,7 +840,13 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
     if len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
 
-    num_cols  = df.select_dtypes(include="number").columns.tolist()
+    # Identifiers are not measures. EmployeeNumber was being profiled,
+    # correlated, VIF-tested and compared across departments — a full
+    # statistical treatment of a row number, printed beside the findings
+    # about salary.
+    all_numeric = df.select_dtypes(include="number").columns.tolist()
+    num_cols = [c for c in all_numeric if not is_id_column(c, df[c])]
+    id_cols  = [c for c in all_numeric if c not in num_cols]
     cat_cols  = text_columns(df)
     dt_cols   = df.select_dtypes(include="datetime").columns.tolist()
 
@@ -817,9 +855,11 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
         numeric_cols=num_cols, categorical_cols=cat_cols,
         datetime_cols=dt_cols,
     )
+    report.identifier_cols = id_cols
 
-    # 1. Univariate — all columns
-    for col in df.columns[:30]:
+    # 1. Univariate — every column that is a measure
+    analysable = [c for c in df.columns if c not in id_cols]
+    for col in analysable[:30]:
         try:
             report.univariate[col] = analyze_univariate(df[col])
         except Exception:

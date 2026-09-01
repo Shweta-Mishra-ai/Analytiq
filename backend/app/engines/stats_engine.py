@@ -7,6 +7,12 @@ from scipy import stats as scipy_stats
 
 logger = logging.getLogger(__name__)
 
+from app.engines.domains.base import is_id_column
+from app.engines.present import label as _L
+from app.engines.statistics import (assess_normality, clamp_p,
+                                    correlation_with_ci, format_p,
+                                    correlation_strength)
+
 
 from app.services.dtypes import text_columns
 
@@ -35,7 +41,11 @@ class ColumnStats:
     is_normal: Optional[bool] = None
     normality_test: Optional[str] = None   # "Shapiro-Wilk" or "D'Agostino"
     normality_pvalue: Optional[float] = None
-    normality_label: Optional[str] = None  # "Normal", "Non-Normal"
+    normality_label: Optional[str] = None
+    # Whether the verdict came from the column's shape or from the test —
+    # at any useful sample size only the first of those means anything.
+    normality_basis: Optional[str] = None
+    normality_note: Optional[str] = None
     # Outliers
     outlier_count_iqr: int = 0
     outlier_count_zscore: int = 0
@@ -62,6 +72,12 @@ class CorrelationInsight:
     strength: str      # "strong", "moderate", "weak"
     direction: str     # "positive", "negative"
     label: str         # human-readable
+    # The interval and the sample it rests on, so a correlation is never
+    # read as firmer than its evidence.
+    ci_low: Optional[float] = None
+    ci_high: Optional[float] = None
+    n: Optional[int] = None
+    method: str = "pearson"
 
 
 @dataclass
@@ -80,6 +96,9 @@ class DatasetStats:
     has_non_normal_cols: bool = False
     has_strong_correlations: bool = False
     recommended_analysis: List[str] = field(default_factory=list)
+    # Named rather than dropped in silence, so a reader can see
+    # which columns were held out of the analysis and why.
+    identifier_cols: List[str] = field(default_factory=list)
 
 
 def analyze(df: pd.DataFrame) -> DatasetStats:
@@ -87,7 +106,13 @@ def analyze(df: pd.DataFrame) -> DatasetStats:
     Full statistical analysis of a DataFrame.
     Runs proper stats — not just describe().
     """
-    num_cols  = df.select_dtypes(include="number").columns.tolist()
+    # Identifiers are not measures. EmployeeNumber was being given a
+    # mean of 735.5, a skewness, a normality verdict and a place in the
+    # correlation matrix — four statements about a row number, printed
+    # with the same authority as the ones about salary.
+    all_numeric = df.select_dtypes(include="number").columns.tolist()
+    num_cols = [c for c in all_numeric if not is_id_column(c, df[c])]
+    id_cols  = [c for c in all_numeric if c not in num_cols]
     cat_cols  = text_columns(df)
     dt_cols   = df.select_dtypes(include="datetime").columns.tolist()
 
@@ -97,6 +122,10 @@ def analyze(df: pd.DataFrame) -> DatasetStats:
         categorical_cols=cat_cols,
         datetime_cols=dt_cols,
     )
+    ds.identifier_cols = id_cols
+    if id_cols:
+        logger.info("excluded %d identifier column(s) from analysis: %s",
+                    len(id_cols), ", ".join(id_cols))
 
     # ── Per-column stats ───────────────────────────────────
     for col in num_cols:
@@ -183,25 +212,25 @@ def _numeric_stats(s: pd.Series, name: str) -> ColumnStats:
     else:
         cs.kurtosis_label = "mesokurtic (normal-like tails)"
 
-    # ── Normality test ────────────────────────────────────
-    if n <= 5000:
-        try:
-            stat, pval = scipy_stats.shapiro(clean.sample(min(n, 5000), random_state=42))
-            cs.normality_test   = "Shapiro-Wilk"
-            cs.normality_pvalue = round(float(pval), 6)
-            cs.is_normal        = pval > 0.05
-        except Exception:
-            cs.is_normal = None
+    # ── Normality ─────────────────────────────────────────
+    # Decided on shape, not on a p-value. Shapiro-Wilk at n=1,470
+    # rejected every column in a perfectly ordinary HR file, including
+    # one with a skew of 0.48, and the report then recommended
+    # non-parametric tests throughout on that basis.
+    verdict = assess_normality(clean)
+    if verdict is None:
+        cs.is_normal = None
+        cs.normality_label = "Not assessed"
     else:
-        try:
-            stat, pval = scipy_stats.normaltest(clean)
-            cs.normality_test   = "D'Agostino-Pearson"
-            cs.normality_pvalue = round(float(pval), 6)
-            cs.is_normal        = pval > 0.05
-        except Exception:
-            cs.is_normal = None
-
-    cs.normality_label = "Normal" if cs.is_normal else "Non-Normal"
+        cs.normality_test   = verdict.test_name
+        cs.normality_pvalue = verdict.p_value
+        cs.is_normal        = verdict.normal_enough
+        cs.normality_basis  = verdict.basis
+        cs.normality_note   = verdict.note
+        cs.normality_label  = ("Normal enough for parametric tests"
+                               if verdict.normal_enough
+                               else "Too skewed or heavy-tailed for "
+                                    "parametric tests")
 
     # ── Outliers — IQR (1.5x) ─────────────────────────────
     if cs.iqr and cs.iqr > 0:
@@ -268,34 +297,43 @@ def _correlation_analysis(
             x = s_a[common].values
             y = s_b[common].values
 
-            try:
-                pearson_r, p_val = scipy_stats.pearsonr(x, y)
-                spearman_r, _    = scipy_stats.spearmanr(x, y)
-            except Exception:
-                logger.debug("_correlation_analysis: suppressed exception", exc_info=True)
+            # Pearson or Spearman decided by the shape of both columns
+            # rather than assumed. A rank correlation on two well-behaved
+            # columns throws away information; a Pearson on a skewed pair
+            # reports a relationship the data does not have.
+            va, vb = assess_normality(x), assess_normality(y)
+            parametric = bool(va and vb and va.normal_enough
+                              and vb.normal_enough)
+            method = "pearson" if parametric else "spearman"
+            est = correlation_with_ci(x, y, method=method)
+            if est is None:
                 continue
+            other = correlation_with_ci(
+                x, y, method="spearman" if parametric else "pearson")
 
-            abs_r = abs(pearson_r)
-            strength  = ("strong" if abs_r >= 0.7
-                         else "moderate" if abs_r >= 0.4
-                         else "weak")
-            direction = "positive" if pearson_r > 0 else "negative"
-            significant = p_val < 0.05
-
-            label = "{} {} correlation between '{}' and '{}' (r={:.2f}, p={:.4f})".format(
-                strength.title(), direction, a, b,
-                round(pearson_r, 2), round(p_val, 4)
-            )
+            direction = "positive" if est.r > 0 else "negative"
+            # The interval, and the n it rests on. r=0.66 on 40 rows and
+            # r=0.66 on 1,470 were printed identically.
+            label = ("{} {} relationship between {} and {}: r={:.2f}, "
+                     "95% CI {:.2f} to {:.2f}, n={:,} ({}, {})").format(
+                est.strength.title(), direction, _L(a), _L(b), est.r,
+                est.ci_low, est.ci_high, est.n,
+                "Pearson" if parametric else "Spearman",
+                format_p(est.p_value))
 
             insights.append(CorrelationInsight(
                 col_a=a, col_b=b,
-                pearson_r=round(float(pearson_r), 4),
-                spearman_r=round(float(spearman_r), 4),
-                p_value=round(float(p_val), 6),
-                is_significant=significant,
-                strength=strength,
+                pearson_r=(est.r if parametric
+                           else (other.r if other else est.r)),
+                spearman_r=((other.r if other else est.r) if parametric
+                            else est.r),
+                p_value=est.p_value,
+                is_significant=est.significant,
+                strength=est.strength,
                 direction=direction,
                 label=label,
+                ci_low=est.ci_low, ci_high=est.ci_high, n=est.n,
+                method=method,
             ))
 
     # re-decide significance on BH-adjusted p across all tested pairs
@@ -325,11 +363,17 @@ def _generate_insights(
                 "'{}' is {} (skew={:.2f}) — median ({:.2f}) is a better central measure than mean ({:.2f}).".format(
                     col, cs.skew_label, cs.skewness, cs.median, cs.mean)
             )
-        if cs.is_normal is False and cs.normality_pvalue is not None:
+        if cs.is_normal is False:
+            # Says why, and says it in the terms the decision was made in.
+            # The old line quoted a p-value of 0.0000 — which is not a
+            # p-value — and attributed the verdict to a test that had no
+            # part in it.
             insights.append(
-                "'{}' does not follow a normal distribution ({}, p={:.4f}) — use non-parametric tests.".format(
-                    col, cs.normality_test, cs.normality_pvalue)
-            )
+                "{} is too skewed or heavy-tailed for parametric tests "
+                "(skew {:.2f}, excess kurtosis {:.2f}), so rank-based "
+                "methods are used for it: Mann-Whitney or Kruskal-Wallis "
+                "rather than a t-test or ANOVA.".format(
+                    _L(col), cs.skewness or 0.0, cs.kurtosis or 0.0))
 
     # Correlation insights
     for c in ds.top_correlations[:3]:

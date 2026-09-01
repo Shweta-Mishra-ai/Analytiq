@@ -159,15 +159,23 @@ def test_insight_engine_returns_insights(hr_df):
         assert ins.get("body"), f"insight missing body: {ins}"
 
 
-def test_stats_engine_analyzes_all_numeric_columns(hr_df):
+def test_stats_engine_analyzes_every_numeric_measure(hr_df):
     """A numeric column that quietly falls out of the stats report is a
-    silent failure: the section renders, just missing that column."""
+    silent failure: the section renders, just missing that column.
+
+    Identifiers are the one exception, and they are named rather than
+    dropped in silence — employee_id had been getting a mean, a skewness
+    and a normality verdict of its own.
+    """
     from app.engines.stats_engine import analyze
     stats = analyze(hr_df)
     numeric_cols = {c for c in hr_df.columns
                     if str(hr_df[c].dtype).startswith(("int", "float"))}
-    missed = numeric_cols - set(stats.column_stats)
+    accounted = set(stats.column_stats) | set(stats.identifier_cols)
+    missed = numeric_cols - accounted
     assert not missed, f"stats engine silently skipped numeric columns: {missed}"
+    assert "employee_id" in stats.identifier_cols, stats.identifier_cols
+    assert "employee_id" not in stats.column_stats
 
 
 @pytest.mark.parametrize("engine_import,fn_name", [

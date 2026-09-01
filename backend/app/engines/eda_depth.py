@@ -34,6 +34,9 @@ from app.engines.domains.base import is_id_column
 
 logger = logging.getLogger(__name__)
 
+from app.engines.present import (label as _L, num as _N,
+                                 value as _V)
+
 # A group smaller than this cannot carry a finding on its own.
 MIN_GROUP_N = 15
 # Two subgroup effects must differ by at least this much of the larger of
@@ -213,15 +216,17 @@ def find_interactions(df: pd.DataFrame, max_results: int = 3
                             reverses=bool(reverses), ratio=round(ratio, 2),
                             effect_sd=round(abs(hi) / metric_sd, 2),
                             description=(
-                                "The effect of '{}' on '{}' is not the same "
-                                "across '{}': it is {:.2f} for {} and {:.2f} "
-                                "for {}{}. Reporting a single overall effect "
-                                "here would average these together and "
-                                "describe neither."
+                                "The effect of {} on {} is not the same "
+                                "across {}: it is {} for {} and {} for "
+                                "{}{}. A single overall figure would "
+                                "average these together and describe "
+                                "neither group."
                             ).format(
-                                factor, metric, moderator, effects[best], best,
-                                effects[least], least,
-                                " — the direction reverses" if reverses else "")))
+                                _L(factor), _L(metric), _L(moderator),
+                                _N(effects[best]), _V(best),
+                                _N(effects[least]), _V(least),
+                                " — and the direction reverses"
+                                if reverses else "")))
                     except Exception:
                         logger.debug("interaction check failed for %s/%s/%s",
                                      metric, factor, moderator, exc_info=True)
