@@ -260,16 +260,66 @@ def _styles(T: dict) -> dict:
 #  RUNNING HEADER / FOOTER  (PageCanvas)
 # ══════════════════════════════════════════════════════════
 
+def _fit_text(text, limit: int) -> str:
+    """Shorten on a word boundary, with a mark, never mid-word."""
+    from app.engines.present import truncate
+    return truncate(text or "", limit)
+
+
+def _draw_fitted(cv, x: float, y: float, text: str, max_width: float,
+                 font: str, size: float, min_size: float = 5.5) -> None:
+    """Draw `text` at `x, y`, shrinking the font until it fits `max_width`.
+
+    Only if it still will not fit at the smallest readable size does it
+    get shortened — and then on a word boundary. Names on a cover page
+    are worth a point of type size.
+    """
+    s = str(text or "")
+    while size > min_size and cv.stringWidth(s, font, size) > max_width:
+        size -= 0.25
+    if cv.stringWidth(s, font, size) > max_width:
+        # Binary-search the longest word-boundary form that fits.
+        lo, hi = 4, len(s)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if cv.stringWidth(_fit_text(s, mid), font, size) <= max_width:
+                lo = mid
+            else:
+                hi = mid - 1
+        s = _fit_text(s, lo)
+    cv.setFont(font, size)
+    cv.drawString(x, y, s)
+
+
+def _draw_fitted_centred(cv, cx: float, y: float, text: str,
+                         max_width: float, font: str, size: float,
+                         min_size: float = 6.0) -> None:
+    """Centred equivalent of _draw_fitted."""
+    s = str(text or "")
+    while size > min_size and cv.stringWidth(s, font, size) > max_width:
+        size -= 0.25
+    cv.setFont(font, size)
+    cv.drawCentredString(cx, y, s)
+
+
 class _ReportCanvas(CV.Canvas):
     """Draws premium header + footer on every content page."""
 
-    def __init__(self, fn, T, report_title="", client_name="", report_date="", **kw):
+    def __init__(self, fn, T, report_title="", client_name="",
+                 report_date="", confidential=False, agency_name="Analytiq",
+                 **kw):
         super().__init__(fn, **kw)
         self._sp          = []
         self.T            = T
-        self.report_title = report_title[:60]
+        # Truncated on a word boundary with a mark, not sliced: a title
+        # cut mid-word reads as a bug on every page of the document.
+        self.report_title = _fit_text(report_title, 60)
         self.client_name  = client_name
         self.report_date  = report_date
+        # Stamping CONFIDENTIAL on a report nobody marked confidential
+        # devalues the marking on the ones that are.
+        self.confidential = bool(confidential)
+        self.agency_name  = agency_name or "Analytiq"
 
     def showPage(self):
         self._sp.append(dict(self.__dict__))
@@ -299,8 +349,9 @@ class _ReportCanvas(CV.Canvas):
         self.setFillColor(HexColor("#FFFFFF"))
         self.setFont(FONT_BODY, 7)
         self.drawRightString(W - 18*mm, H - 14*mm, self.report_date)
-        self.drawRightString(W - 18*mm, H - 20*mm,
-                             "CONFIDENTIAL — " + self.client_name)
+        right = ("CONFIDENTIAL — " + self.client_name
+                 if self.confidential else self.client_name)
+        self.drawRightString(W - 18*mm, H - 20*mm, _fit_text(right, 48))
         # ── Footer ────────────────────────────────────────
         self.setFillColor(_c(T["header_bg"]))
         self.rect(0, 0, W, 12*mm, fill=1, stroke=0)
@@ -314,10 +365,11 @@ class _ReportCanvas(CV.Canvas):
         # 15 times over. Sources belong in the appendix, keyed to the
         # detected domain; the footer carries the client and confidentiality
         # marking, which is what a footer is for.
-        self.drawString(18*mm, 4.5*mm,
-            "{} · Confidential · Prepared for {}".format(
-                getattr(self, "agency_name", "Analytiq"),
-                self.client_name))
+        parts = [self.agency_name]
+        if self.confidential:
+            parts.append("Confidential")
+        parts.append("Prepared for {}".format(self.client_name))
+        self.drawString(18*mm, 4.5*mm, _fit_text(" · ".join(parts), 90))
         self.drawRightString(W - 18*mm, 4.5*mm,
             "Page {} of {}".format(self._pageNumber, tot))
 
@@ -396,7 +448,7 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     if line: lines.append(line)
 
     cv.setFillColor(HexColor("#FFFFFF"))
-    y_title = H / 2 + 36*mm
+    y_title = H / 2 + 20*mm
     for ln in lines:
         cv.setFont(FONT_SERIF_BOLD, 30 if len(ln) <= 20 else 24)
         cv.drawString(20*mm, y_title, ln)
@@ -404,55 +456,74 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
 
     cv.setFillColor(HexColor(T["accent2"]))
     cv.setFont(FONT_BODY, 10)
-    cv.drawString(20*mm, H / 2 + 12*mm,
+    cv.drawString(20*mm, H / 2 - 8*mm,
                   config.get("subtitle", "Powered by Analytiq"))
     cv.setFillColor(_c(T["cover_accent"]))
-    cv.rect(20*mm, H / 2 + 6*mm, W - 37*mm, 1.5*mm, fill=1, stroke=0)
+    cv.rect(20*mm, H / 2 - 14*mm, W - 37*mm, 1.5*mm, fill=1, stroke=0)
 
     # KPI strip (up to 4)
     kpis = kpis_preview[:4]
     bw   = (W - 37*mm) / max(len(kpis), 1)
+    # The strip sat at the vertical midpoint and the meta bar at the foot,
+    # leaving a third of the cover as an empty navy band. Dropped to just
+    # above the meta bar it gives the page three bands — identity, title,
+    # figures — instead of two and a hole.
+    strip_y = 46*mm
     for i, kpi in enumerate(kpis):
         x = 20*mm + i * bw
         cv.setFillColor(HexColor("#1A3A5C"))
-        cv.roundRect(x + 1.5, H / 2 - 14*mm, bw - 3, 18*mm, 3, fill=1, stroke=0)
+        cv.roundRect(x + 1.5, strip_y - 6*mm, bw - 3, 22*mm, 3,
+                     fill=1, stroke=0)
         cv.setFillColor(HexColor(kpi.get("color", T["accent2"])))
-        cv.setFont(FONT_BOLD, 16)
-        cv.drawCentredString(x + bw / 2, H / 2 - 2*mm,
-                             str(kpi.get("value", ""))[:9])
+        # Shrink rather than slice: "100 / 100" is nine characters and
+        # any longer value was losing its tail mid-number.
+        _draw_fitted_centred(cv, x + bw / 2, strip_y + 9*mm,
+                             str(kpi.get("value", "")), bw - 8*mm,
+                             FONT_BOLD, 16, min_size=9)
         cv.setFillColor(HexColor("#FFFFFF"))
         cv.setFont(FONT_BOLD, 7)
-        cv.drawCentredString(x + bw / 2, H / 2 - 8*mm,
-                             str(kpi.get("label", ""))[:18])
+        cv.drawCentredString(x + bw / 2, strip_y + 3.5*mm,
+                             _fit_text(kpi.get("label", ""), 18))
         cv.setFillColor(HexColor(T["accent2"]))
         cv.setFont(FONT_BODY, 6.5)
-        cv.drawCentredString(x + bw / 2, H / 2 - 13*mm,
-                             str(kpi.get("sub", ""))[:20])
+        cv.drawCentredString(x + bw / 2, strip_y - 1.5*mm,
+                             _fit_text(kpi.get("sub", ""), 20))
 
     # Bottom meta
     cv.setFillColor(HexColor("#0D1F3C"))
     cv.rect(0, 0, W - 17*mm, 30*mm, fill=1, stroke=0)
     cv.setFillColor(_c(T["cover_accent"]))
     cv.rect(0, 30*mm, W - 17*mm, 1.2*mm, fill=1, stroke=0)
-    meta = [("PREPARED FOR", client_name),
-            ("DATE", report_date),
-            ("CLASSIFICATION", "CONFIDENTIAL")]
-    mw = (W - 37*mm) / 3
+    meta = [("PREPARED FOR", client_name), ("DATE", report_date)]
+    prepared_by = str(config.get("prepared_by", "")).strip()
+    if config.get("confidential"):
+        meta.append(("CLASSIFICATION", "CONFIDENTIAL"))
+    elif prepared_by:
+        # A dash under "CLASSIFICATION" is a field admitting it has
+        # nothing to say. The name of whoever is accountable for the
+        # analysis is worth more space on a cover than that.
+        meta.append(("PREPARED BY", prepared_by))
+    mw = (W - 37*mm) / max(len(meta), 1)
     for i, (k, v) in enumerate(meta):
         x = 20*mm + i * mw
         cv.setFillColor(HexColor(T["accent2"]))
         cv.setFont(FONT_BODY, 6.5); cv.drawString(x, 21*mm, k)
         cv.setFillColor(HexColor("#FFFFFF"))
-        cv.setFont(FONT_BOLD, 8); cv.drawString(x, 13*mm, v[:22])
+        # Shrink to fit rather than slice. "Northwind Manufacturing"
+        # became "Northwind Manufacturin" on the cover of a client
+        # deliverable — the client's own name, misspelled, in the first
+        # thing they read.
+        _draw_fitted(cv, x, 13*mm, str(v), mw - 6*mm, FONT_BOLD, 8)
 
     # The cover previously carried "Powered by Groq Llama 3.3 70B". Naming
     # the model on the front page of a client deliverable invites the
     # reader to discount everything behind it, and says nothing about
     # whether the analysis is sound. Confidentiality marking belongs here
     # instead.
-    cv.setFillColor(HexColor(T["accent2"]))
-    cv.setFont(FONT_BODY, 6.5)
-    cv.drawRightString(W - 21*mm, 5*mm, "Confidential")
+    if config.get("confidential"):
+        cv.setFillColor(HexColor(T["accent2"]))
+        cv.setFont(FONT_BODY, 6.5)
+        cv.drawRightString(W - 21*mm, 5*mm, "Confidential")
     cv.save()
     buf.seek(0)
     return buf.read()

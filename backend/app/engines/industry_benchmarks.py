@@ -38,6 +38,21 @@ class BenchmarkRange(NamedTuple):
 # ══════════════════════════════════════════════════════════
 #  HR & PEOPLE ANALYTICS
 # ══════════════════════════════════════════════════════════
+# One published figure, quoted one way. Two different ranges were in
+# circulation — 50-200% from the general replacement-cost literature and
+# 50-150% from the time-to-productivity literature — and the report
+# printed both, for the same quantity, on the same page. A reader who
+# notices that stops trusting every other number in the document.
+REPLACEMENT_COST_LOW  = 50
+REPLACEMENT_COST_HIGH = 200
+REPLACEMENT_COST_RANGE = "50-200% of annual salary"
+REPLACEMENT_COST_SOURCE = (
+    "SHRM and Gallup place the cost of replacing an employee at "
+    "50-200% of their annual salary, the upper end for senior and "
+    "specialist roles. Substitute your own figure where you have one."
+)
+
+
 HR_BENCHMARKS = {
     "attrition_rate": BenchmarkRange(10, 15, "%",
         "Annual voluntary attrition — varies widely by sector (retail/hospitality "

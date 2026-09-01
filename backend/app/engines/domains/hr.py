@@ -13,7 +13,10 @@ from scipy import stats as scipy_stats
 
 from app.engines.domains.base import (Insight, AttritionAnalysis, build_insight,
                                col_stats, correlations, infer_scale_bounds)
-from app.services.dtypes import is_text_dtype
+from app.engines.industry_benchmarks import REPLACEMENT_COST_RANGE
+from app.engines import present as _P
+from app.engines.present import label as _L, num as _N, value as _V
+from app.services.dtypes import categorical_columns, is_text_dtype
 from app.services.stat_guards import apply_fdr, chi2_association
 
 logger = logging.getLogger(__name__)
@@ -21,6 +24,25 @@ logger = logging.getLogger(__name__)
 # Back-compat alias — scale inference now lives in base.py (shared with the
 # ecommerce rating engine so both handle 1-5 / 1-10 / 0-100 scales identically).
 _infer_scale_bounds = infer_scale_bounds
+
+
+def _effect_label(value: float) -> str:
+    """Plain words for an effect size on a 0-1 scale.
+
+    Cliff's delta and Cramer's V both land in 0-1 and both answer "how far
+    apart are these two groups", so one vocabulary serves both. The
+    thresholds are the conventional ones; the point of printing a word
+    beside the number is that a reader who knows neither statistic can
+    still tell a real separation from a merely significant one.
+    """
+    v = abs(float(value))
+    if v >= 0.474:
+        return "large"
+    if v >= 0.33:
+        return "moderate"
+    if v >= 0.147:
+        return "small"
+    return "negligible"
 
 
 def _find_left_mask(df: pd.DataFrame):
@@ -117,28 +139,47 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
             lv = df.loc[left_mask, col].dropna()
             sv = df.loc[~left_mask, col].dropna()
             if len(lv) < 5 or len(sv) < 5: continue
-            _, p = scipy_stats.mannwhitneyu(lv, sv, alternative="two-sided")
+            u, p = scipy_stats.mannwhitneyu(lv, sv, alternative="two-sided")
             if p < 0.05:
                 diff_pct = abs(lv.mean()-sv.mean())/abs(sv.mean())*100 if sv.mean()!=0 else 0
+                # Cliff's delta, read straight off the Mann-Whitney U that
+                # produced the p-value. Ranking on the relative difference
+                # of means instead put a 1.1-year tenure gap and a
+                # 0.4-point satisfaction gap at the same "16% impact",
+                # because a percentage of a mean says nothing about how
+                # far apart two distributions actually are.
+                delta = abs(2 * float(u) / (len(lv) * len(sv)) - 1)
                 top_drivers.append({
                     "factor":    col,
                     "type":      "numeric",
                     "impact":    round(diff_pct,1),
+                    "effect":    round(delta, 3),
+                    "effect_label": _effect_label(delta),
                     "direction": "lower" if lv.mean()<sv.mean() else "higher",
                     "left_mean": round(float(lv.mean()),3),
                     "stay_mean": round(float(sv.mean()),3),
+                    "n_left":    int(len(lv)),
+                    "n_stay":    int(len(sv)),
                     "p_value":   round(float(p),4),
-                    "detail":    "Leavers avg {:.2f} vs stayers {:.2f} ({:.0f}% diff)".format(
-                        lv.mean(), sv.mean(), diff_pct),
+                    "detail":    "Leavers average {} against {} for stayers "
+                                 "({} separation)".format(
+                                     _N(lv.mean()), _N(sv.mean()),
+                                     _effect_label(delta)),
                 })
         except Exception:
-            logger.warning("%s unexpected failure", exc_info=True)
+            logger.warning("numeric driver check failed for %s", col,
+                           exc_info=True)
             continue
 
     # Categorical drivers
-    cat_cols = [c for c in df.select_dtypes(include=["object", "string"]).columns
+    # categorical_columns, not select_dtypes: cleaning turns a Yes/No
+    # column into a bool, and bool is excluded from BOTH the numeric and
+    # the object/string selectors. Overtime — the strongest driver in a
+    # typical attrition dataset — was falling through that gap and never
+    # reaching the report.
+    cat_cols = [c for c in categorical_columns(df)
                 if c != attr_col and df[c].nunique() <= 20]
-    for col in cat_cols[:6]:
+    for col in cat_cols[:8]:
         try:
             ct = pd.crosstab(df[col], left_mask)
             if ct.shape[1] < 2: continue
@@ -151,18 +192,35 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
                 continue
             p = assoc["p"]
             if p < 0.05 and assoc["cramers_v"] >= 0.1:
-                rates = {str(k): round(left_mask[df[col]==k].mean()*100,1)
-                         for k in df[col].dropna().unique()}
+                levels = df[col].dropna().unique()
+                rates, sizes = {}, {}
+                for k in levels:
+                    m = df[col] == k
+                    n = int(m.sum())
+                    # A level with a handful of rows produces a wild rate
+                    # and would win "worst segment" on noise alone.
+                    if n < 20:
+                        continue
+                    rates[_V(k)] = round(float(left_mask[m].mean()) * 100, 1)
+                    sizes[_V(k)] = n
+                if len(rates) < 2:
+                    continue
                 worst = max(rates, key=rates.get)
                 best  = min(rates, key=rates.get)
+                v = float(assoc["cramers_v"])
                 top_drivers.append({
                     "factor":     col, "type": "categorical",
                     "impact":     round(rates[worst]-rates[best],1),
+                    "effect":     round(v, 3),
+                    "effect_label": _effect_label(v),
                     "worst_cat":  worst, "worst_rate": rates[worst],
                     "best_cat":   best,  "best_rate":  rates[best],
+                    "n_worst":    sizes[worst], "n_best": sizes[best],
                     "p_value":    round(float(p),4),
-                    "detail":     "'{}' = {:.0f}% vs '{}' = {:.0f}%".format(
-                        worst, rates[worst], best, rates[best]),
+                    "detail":     "{} at {:.0f}% (n={:,}) against {} at "
+                                  "{:.0f}% (n={:,})".format(
+                                      worst, rates[worst], sizes[worst],
+                                      best, rates[best], sizes[best]),
                 })
         except Exception:
             logger.warning("%s unexpected failure", exc_info=True)
@@ -180,7 +238,22 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
                         "correction — reporting none", len(top_drivers))
         top_drivers = survivors
 
-    top_drivers.sort(key=lambda x: x["impact"], reverse=True)
+    # Significant and negligible are not the same thing. With n=1,470 a
+    # one-year difference in average age clears p<0.05 comfortably and
+    # separates almost nobody; printing it in a drivers table invites the
+    # reader to act on it. Anything below a small effect is dropped.
+    weak = [d for d in top_drivers if d.get("effect", 0) < 0.147]
+    if weak:
+        logger.info("attrition: dropped %d statistically significant but "
+                    "negligible driver(s): %s", len(weak),
+                    ", ".join(d["factor"] for d in weak))
+    top_drivers = [d for d in top_drivers if d.get("effect", 0) >= 0.147]
+
+    # Sorted on effect size, so a numeric and a categorical driver can be
+    # compared at all: "impact" means percentage points for one and a
+    # relative difference of means for the other, and ranking the two
+    # against each other on that was meaningless.
+    top_drivers.sort(key=lambda x: x.get("effect", 0), reverse=True)
 
     # Segment breakdown
     dept_col = next((c for c in df.columns
@@ -202,7 +275,8 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
 
     # Flight risk — single shared definition, see compute_flight_risk().
     n_flight, flight_pct, _sat_col = compute_flight_risk(df, left_mask=left_mask)
-    cost_str   = "Replacing {:,} employees estimated at 50-150% of annual salary each".format(n_left)
+    cost_str   = ("Replacing {:,} employees at the published {} puts the "
+                  "exposure in that band.".format(n_left, REPLACEMENT_COST_RANGE))
 
     return AttritionAnalysis(
         rate=rate, n_left=n_left, n_total=n_total,
@@ -293,23 +367,50 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
     if attrition:
         rate = attrition.rate
         if attrition.severity in ("critical","high"):
+            top = attrition.top_drivers[0] if attrition.top_drivers else None
+            driver_txt = (
+                "The factor that separates leavers from stayers most "
+                "strongly is {} ({}).".format(_L(top["factor"]), top["detail"])
+                if top else
+                "No single factor separates leavers from stayers; the "
+                "pattern is spread across several.")
+            # The action has to be doable. "Exit interviews with all 292
+            # leavers this week" was the first line here, addressed to
+            # people who have already gone.
+            if top:
+                first_action = (
+                    "1. Take the {} finding to the managers it belongs to "
+                    "and ask what is behind it — the data shows the "
+                    "association, not the reason".format(_L(top["factor"])))
+            else:
+                first_action = ("1. Run a structured engagement survey; "
+                                "the recorded fields do not explain the rate")
             insights.append(build_insight(
                 title="Attrition at {:.1f}% — above the planning band".format(rate),
-                problem="{:,} out of {:,} employees left — {:.1f}% rate".format(
-                    attrition.n_left, attrition.n_total, rate),
-                cause="Rate is {:.1f}pp above the 10–15% planning band used in this "
-                      "analysis (healthy rates vary by industry — verify against your "
-                      "sector data). ".format(rate - 12.5) +
-                      ("Primary driver: '{}'".format(attrition.top_drivers[0]["factor"])
-                       if attrition.top_drivers else "Multiple factors"),
-                evidence="Planning band: 10–15% (indicative). Current: {:.1f}%. "
-                         "{:,} remaining employees at flight risk ({:.0f}%).".format(
-                    rate, attrition.n_flight_risk, attrition.flight_risk_pct),
-                action="1. Exit interviews with all {:,} leavers this week  "
-                       "2. Salary benchmarking vs market  "
-                       "3. Engagement survey for remaining staff  "
-                       "4. Identify and retain top performers".format(attrition.n_left),
-                impact=attrition.cost_estimate + ". Knowledge loss accelerates with each exit.",
+                problem="{:,} of {:,} employees left over the period covered, "
+                        "a {:.1f}% rate.".format(
+                            attrition.n_left, attrition.n_total, rate),
+                cause="The rate is {:.1f}pp above the 10-15% planning band "
+                      "used here (healthy rates vary by industry — verify "
+                      "against your own sector data). {}".format(
+                          rate - 12.5, driver_txt),
+                evidence="Planning band 10-15% (indicative). Current rate "
+                         "{:.1f}%. {:,} of the remaining employees carry the "
+                         "same risk profile ({:.0f}% of those still "
+                         "here).".format(rate, attrition.n_flight_risk,
+                                         attrition.flight_risk_pct),
+                action=first_action + "  "
+                       "2. Benchmark pay for the affected group against "
+                       "market  "
+                       "3. Interview a sample of the {:,} still here who "
+                       "share the leavers' profile — they can still be "
+                       "asked  "
+                       "4. Re-measure the rate next cycle against the "
+                       "{:.1f}% baseline in this report".format(
+                           attrition.n_flight_risk, rate),
+                impact=attrition.cost_estimate +
+                       " Each exit also takes the knowledge that went with "
+                       "it, which the replacement cost does not capture.",
                 severity="critical", category="attrition"
             ))
             risks.append("CRITICAL: {:.1f}% attrition — {:,} employees left. {}".format(
@@ -394,9 +495,13 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
 
         if pct < 55:
             insights.append(build_insight(
-                title="Satisfaction averages {:.0f}% of scale — {:,} employees in the bottom band".format(pct, low_n),
-                problem="{:.0f}% satisfaction (scale-normalised). {:,} employees ({:.0f}%) sit in the bottom band of the scale".format(
-                    pct, low_n, low_pct),
+                title="Satisfaction averages {:.1f} out of {:.0f} — {:,} "
+                      "employees sit in the bottom band".format(
+                          mean_s, max_s, low_n),
+                problem="Mean satisfaction is {:.1f} on the {:.0f}-{:.0f} "
+                        "scale in use here, {:.0f}% of the way up it. {:,} "
+                        "employees ({:.0f}%) score in the bottom band."
+                        .format(mean_s, min_s, max_s, pct, low_n, low_pct),
                 # The dataset records the score, not why it is low. Naming
                 # culture, workload, recognition or pay as the cause would be
                 # asserting something this data cannot show — the exact kind
@@ -419,11 +524,21 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
                        "its measured exit rate above quantifies the exposure for this dataset.",
                 severity="critical", category="satisfaction"
             ))
-            risks.append("Satisfaction {:.0f}% — {:,} employees critically disengaged".format(pct, low_n))
+            # "Critically disengaged" is a claim about people; the data
+            # supports a claim about a score. Say the one it supports.
+            risks.append(
+                "Satisfaction averages {:.1f} of {:.0f}; {:,} employees "
+                "({:.0f}%) score in the bottom band of the scale."
+                .format(mean_s, max_s, low_n, low_pct))
         elif pct < 70:
             insights.append(build_insight(
-                title="Satisfaction Below Target: {:.0f}% (Target: 70%+)".format(pct),
-                problem="{:.0f}% satisfaction with {:,} employees ({:.0f}%) in the bottom-box range".format(pct, low_n, low_pct),
+                title="Satisfaction averages {:.1f} of {:.0f}, below the "
+                      "planning target".format(mean_s, max_s),
+                problem="Mean satisfaction is {:.1f} on the {:.0f}-{:.0f} "
+                        "scale ({:.0f}% of range, against a 70% planning "
+                        "target), with {:,} employees ({:.0f}%) in the "
+                        "bottom band.".format(mean_s, min_s, max_s, pct,
+                                              low_n, low_pct),
                 cause="Specific fixable issues rather than systemic breakdown",
                 evidence=("Mean={:.2f} on a {:.0f}-{:.0f} scale ({:.0f}% of range). "
                           "{:,} employees ({:.0f}%) score below {:.2f} (bottom 40% of the scale). "
@@ -528,19 +643,42 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
 
     # Always valid — applies to any HR dataset
     actions.append(
-        "Quarterly satisfaction pulse surveys — track trend monthly not annually"
+        "Run a satisfaction pulse quarterly rather than annually, so the "
+        "trend is visible before the exits are"
     )
 
     # Only if attrition column exists
     _atr_present = any(k in _hr_cols for k in ["left", "attrition", "churned", "resigned"])
     if _atr_present:
-        actions.append(
-            "Identify flight-risk profile: low satisfaction + high tenure + "
-            "no recent promotion — target this segment for retention conversations first"
-        )
+        # Built from the drivers this dataset actually produced. The line
+        # here used to be fixed text naming low satisfaction, high tenure
+        # and time since promotion — a profile that contradicted the
+        # analysis above it and cited a promotion column most datasets,
+        # including this one, do not have.
+        drivers = list(getattr(attrition, "top_drivers", []) or [])
+        if drivers:
+            named = _P.join_and([_L(d["factor"]) for d in drivers[:3]])
+            lead = drivers[0]
+            if lead.get("type") == "categorical":
+                where = "{} = {}".format(_L(lead["factor"]),
+                                         lead.get("worst_cat", ""))
+            else:
+                where = "{} on the {} side".format(
+                    _L(lead["factor"]), lead.get("direction", "lower"))
+            actions.append(
+                "Build the retention watchlist on the factors this data "
+                "actually separates leavers by — {} — and start with {}, "
+                "which shows the widest gap".format(named, where))
+        else:
+            actions.append(
+                "No recorded field separates leavers from stayers here. "
+                "Before building a watchlist, capture the factors thought "
+                "to drive exits — the ones on file do not explain them")
 
     # Only if salary column exists
-    _sal_present = any(k in _hr_cols for k in ["salary", "salary_band", "compensation"])
+    _sal_present = any(k in c for c in _hr_cols
+                       for k in ("salary", "compensation", "income", "pay",
+                                 "wage", "ctc", "remuneration"))
     if _sal_present:
         actions.append(
             "Benchmark salaries against market within 30 days, then test whether "

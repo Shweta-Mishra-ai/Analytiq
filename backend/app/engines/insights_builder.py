@@ -238,7 +238,7 @@ def build_top_insights(
                         impact   = f"Reducing low-salary attrition from {low_r:.0f}% to "
                                    f"{min(low_r, 15):.0f}% retains ~"
                                    f"{int((low_r-15)/100 * (df[sal_col]=='low').sum()):,} employees. "
-                                   "Gallup: 50–200% of annual salary per replacement.",
+                                   "SHRM/Gallup: 50-200% of annual salary per replacement.",
                         category = "compensation",
                     ))
         except Exception:

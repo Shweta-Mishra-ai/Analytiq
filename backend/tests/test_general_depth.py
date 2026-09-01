@@ -214,7 +214,7 @@ def test_a_trivial_segment_gap_is_not_called_underperformance():
     stats = {c: col_stats(df[c]) for c in df.columns
              if pd.api.types.is_numeric_dtype(df[c])}
     out = _insights_general(df, stats, [])
-    assert not any("underperforms" in r for r in out["risks"]), out["risks"]
+    assert not any("sits below" in r for r in out["risks"]), out["risks"]
 
 
 def test_a_substantial_segment_gap_is_still_reported():
@@ -230,5 +230,10 @@ def test_a_substantial_segment_gap_is_still_reported():
     stats = {c: col_stats(df[c]) for c in df.columns
              if pd.api.types.is_numeric_dtype(df[c])}
     out = _insights_general(df, stats, [])
-    assert any("underperforms" in r for r in out["risks"]), \
+    # The gap is reported as one segment sitting below another, naming
+    # both — not as a quoted column identifier.
+    assert any("sits below" in r for r in out["risks"]), \
         "a two-fold gap was suppressed"
+    gap_risk = next(r for r in out["risks"] if "sits below" in r)
+    assert "Alpha" in gap_risk and "Beta" in gap_risk, gap_risk
+    assert "'" not in gap_risk, "column names are quoted like identifiers"

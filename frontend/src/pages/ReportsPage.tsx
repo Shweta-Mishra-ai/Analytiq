@@ -59,6 +59,10 @@ export default function ReportsPage() {
   const [includeBi, setIncludeBi] = useState(true)
   const [includeMl, setIncludeMl] = useState(false)
   const [confidential, setConfidential] = useState(false)
+  // Costing the avoidable events needs a number only the client has.
+  // Left blank the report states the headcount and asserts no money,
+  // rather than quoting a default back at them as their own figure.
+  const [replacementCostK, setReplacementCostK] = useState('')
   const [agencyName, setAgencyName] = useState('Analytiq')
   const [health, setHealth] = useState<HealthSummary | null>(null)
   const [busy, setBusy] = useState('')
@@ -91,6 +95,7 @@ export default function ReportsPage() {
           include_stats: includeStats,
           include_bi: includeBi,
           include_ml: includeMl,
+          avg_salary_k: Number(replacementCostK) || 0,
           format: kind,
         })
         downloadBlob(
@@ -159,6 +164,22 @@ export default function ReportsPage() {
                 Appears in the basis of preparation as the person accountable
                 for the analysis. Left blank, the report carries no
                 attribution.
+              </p>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-mute">
+                Replacement cost per person, in thousands (optional)
+              </label>
+              <input
+                value={replacementCostK}
+                onChange={(e) => setReplacementCostK(e.target.value)}
+                inputMode="decimal"
+                placeholder="e.g. 65"
+                className={input}
+              />
+              <p className="mt-1 text-[11px] text-mute">
+                Used to put a range against the avoidable events. Left
+                blank, the report gives the headcount and no money figure.
               </p>
             </div>
             <div className="flex flex-wrap gap-4 pt-1 text-sm text-mute">

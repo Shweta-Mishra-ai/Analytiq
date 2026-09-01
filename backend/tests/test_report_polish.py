@@ -1,0 +1,278 @@
+"""
+tests/test_report_polish.py — the defects that make a report look like a
+debug dump rather than a deliverable.
+
+Every case here was found by generating a report from a realistic HR
+dataset and reading all 25 pages. None of them raised an error; each one
+simply reached a client looking wrong.
+"""
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from app.engines import present
+from app.engines.domains.general import (_is_obvious_segment_pair,
+                                         _is_rating_scale)
+from app.engines.domains.hr import _run_attrition
+from app.engines.predictive import (compute_drivers, find_binary_target,
+                                    find_top_cluster)
+
+
+@pytest.fixture()
+def attrition_df() -> pd.DataFrame:
+    """HR data with one planted driver: overtime, recorded as Yes/No and
+    converted to a boolean the way cleaning converts it."""
+    rng = np.random.default_rng(11)
+    n = 1400
+    overtime = rng.choice([True, False], n, p=[0.28, 0.72])
+    tenure = rng.gamma(2.2, 3.0, n).round(1)
+    satisfaction = rng.integers(1, 5, n)
+    logit = (-0.9 + 1.35 * overtime + 0.9 * (tenure < 2)
+             - 0.42 * satisfaction)
+    return pd.DataFrame({
+        "EmployeeNumber": range(n),
+        "Department": rng.choice(["Sales", "Research", "HR"], n),
+        "JobRole": rng.choice(["Executive", "Scientist", "Technician",
+                               "Manager"], n),
+        "MonthlyIncome": rng.normal(6500, 1500, n).round(0),
+        "YearsAtCompany": tenure,
+        "OverTime": overtime,
+        "JobSatisfaction": satisfaction,
+        # 85% share one value — a column that cannot narrow anything.
+        "PerformanceRating": rng.choice([3, 4], n, p=[0.85, 0.15]),
+        "Attrition": rng.random(n) < 1 / (1 + np.exp(-logit)),
+    })
+
+
+# ── numbers and names a person can read ──────────────────
+
+class TestPresentation:
+    def test_a_measure_never_reaches_the_page_in_scientific_notation(self):
+        # Median salaries were printing as "7.26e+03" in the findings.
+        for value in (7260.0, 8024.30, 1_470_000, 0.00043, 12):
+            assert "e+" not in present.num(value)
+            assert "e-" not in present.num(value)
+
+    def test_money_is_not_quoted_to_the_cent(self):
+        assert present.num(8024.30) == "8,024"
+
+    def test_column_names_become_words(self):
+        assert present.label("MonthlyIncome") == "Monthly Income"
+        assert present.label("years_at_company") == "Years at Company"
+        assert present.label("OverTime") == "Overtime"
+
+    def test_acronyms_survive_the_title_caser(self):
+        assert present.label("mrr_usd") == "MRR USD"
+        assert present.label("B2B_revenue") == "B2B Revenue"
+
+    def test_a_cleaned_boolean_reads_as_the_value_the_client_typed(self):
+        # Cleaning turns Yes/No into True/False. The report told people
+        # their risk pocket was "OverTime = True".
+        assert present.value(np.True_) == "Yes"
+        assert present.value(np.False_) == "No"
+        assert present.value("true") == "Yes"
+
+    def test_quoting_is_stripped_from_values(self):
+        assert present.value("'Sales'") == "Sales"
+
+    def test_truncation_never_cuts_a_word_in_half(self):
+        # "Northwind Manufacturing" became "Northwind Manufacturin" on the
+        # cover of a client deliverable.
+        out = present.truncate("Northwind Manufacturing", 22)
+        assert out.endswith("…")
+        assert "Manufacturin…" not in out
+
+    def test_short_enough_text_is_left_alone(self):
+        assert present.truncate("Sales", 22) == "Sales"
+
+
+# ── findings that are actually findings ──────────────────
+
+class TestFindingQuality:
+    def test_a_rating_scale_has_levels_not_outliers(self):
+        # IQR called the top 15% of a 3/4 performance rating a data
+        # quality issue and advised capping or removing them.
+        assert _is_rating_scale(pd.Series([3, 4] * 200))
+        assert _is_rating_scale(pd.Series([1, 2, 3, 4] * 100))
+
+    def test_a_measurement_still_gets_outlier_checks(self):
+        assert not _is_rating_scale(pd.Series([6000.5, 7000.2] * 100))
+        assert not _is_rating_scale(pd.Series(range(22, 60)))
+
+    def test_pay_differing_by_job_role_is_not_a_finding(self):
+        # The role IS the pay band. This was a HIGH severity headline.
+        assert _is_obvious_segment_pair("JobRole", "MonthlyIncome")
+        assert _is_obvious_segment_pair("JobLevel", "Salary")
+
+    def test_pay_differing_by_department_still_is(self):
+        assert not _is_obvious_segment_pair("Department", "MonthlyIncome")
+        assert not _is_obvious_segment_pair("Region", "Revenue")
+
+
+# ── drivers ──────────────────────────────────────────────
+
+class TestDrivers:
+    def test_a_boolean_driver_is_not_invisible(self, attrition_df):
+        """select_dtypes("number") excludes bool and so does
+        ["object", "string"], so a cleaned Yes/No column fell through
+        both filters and never reached the drivers table — even when it
+        was the strongest driver in the data."""
+        result = _run_attrition(attrition_df)
+        factors = [d["factor"] for d in result.top_drivers]
+        assert "OverTime" in factors, factors
+
+    def test_the_planted_driver_ranks_first(self, attrition_df):
+        result = _run_attrition(attrition_df)
+        assert result.top_drivers[0]["factor"] == "OverTime"
+
+    def test_every_driver_carries_an_effect_size(self, attrition_df):
+        for d in _run_attrition(attrition_df).top_drivers:
+            assert 0 <= d["effect"] <= 1
+            assert d["effect_label"] in ("small", "moderate", "large")
+
+    def test_significant_but_negligible_is_not_reported(self, attrition_df):
+        """At n=1,400 almost anything clears p<0.05. A driver that
+        separates nobody is not a driver."""
+        for d in _run_attrition(attrition_df).top_drivers:
+            assert d["effect"] >= 0.147, d
+
+    def test_a_categorical_driver_reports_its_group_sizes(self, attrition_df):
+        cat = next(d for d in _run_attrition(attrition_df).top_drivers
+                   if d["type"] == "categorical")
+        assert cat["n_worst"] >= 20 and cat["n_best"] >= 20
+        assert "n=" in cat["detail"]
+
+    def test_driver_detail_speaks_the_clients_vocabulary(self, attrition_df):
+        cat = next(d for d in _run_attrition(attrition_df).top_drivers
+                   if d["type"] == "categorical")
+        assert "True" not in cat["detail"], cat["detail"]
+        assert "Yes" in cat["detail"] or "No" in cat["detail"]
+
+    def test_the_model_and_the_tests_name_the_same_driver(self, attrition_df):
+        """Importances used to be summed across a column's one-hot
+        dummies, so a four-level job role collected four contributions
+        against a binary flag's one. The report then headlined Job Role
+        while the statistical tests on the same page ranked Overtime
+        first — two answers to one question."""
+        target = find_binary_target(attrition_df)
+        model = compute_drivers(attrition_df, target)
+        assert model is not None
+        assert model.top_drivers[0][0] == "OverTime", model.top_drivers
+
+
+class TestRiskCluster:
+    def test_a_condition_that_narrows_nothing_is_dropped(self, attrition_df):
+        """"Overtime = Yes AND Performance Rating = 3" reads as a precise
+        two-factor pocket, but 85% of people are rated 3 — the second
+        condition only makes the first look more targeted than it is."""
+        cluster = find_top_cluster(attrition_df,
+                                   find_binary_target(attrition_df))
+        assert cluster is not None
+        assert "Performance Rating" not in cluster.description, \
+            cluster.description
+
+    def test_the_cluster_reads_in_the_clients_own_values(self, attrition_df):
+        cluster = find_top_cluster(attrition_df,
+                                   find_binary_target(attrition_df))
+        assert "= True" not in cluster.description
+        assert "_" not in cluster.description
+
+    def test_the_cluster_is_sharper_than_the_base_rate(self, attrition_df):
+        cluster = find_top_cluster(attrition_df,
+                                   find_binary_target(attrition_df))
+        assert cluster.rate > cluster.base_rate * 1.4
+
+
+# ── one figure, one source ───────────────────────────────
+
+def test_replacement_cost_is_quoted_one_way_everywhere():
+    """Two published ranges were in circulation — 50-200% and 50-150% —
+    and the same page carried both for the same quantity."""
+    import re
+    from pathlib import Path
+    from app.engines.industry_benchmarks import REPLACEMENT_COST_RANGE
+
+    assert "50-200" in REPLACEMENT_COST_RANGE
+    root = Path(__file__).resolve().parent.parent / "app" / "engines"
+    stale = []
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue        # comments may recount the history
+            if re.search(r"50[-–]150\s*%", line):
+                stale.append(f"{path.name}: {stripped}")
+    assert not stale, stale
+
+
+# ── the document itself ──────────────────────────────────
+
+class TestDocument:
+    """Built from a real report, because these defects only exist once
+    the flowables have been laid out on pages."""
+
+    @staticmethod
+    def _pdf(df, **over):
+        from app.engines.pdf_builder import build_pdf
+        config = {"title": "Workforce Review", "client_name": "Northwind "
+                  "Manufacturing Group", "theme_name": "corporate",
+                  "prepared_by": "S. Mishra"}
+        config.update(over.pop("config", {}))
+        return build_pdf(df=df, config=config, domain="hr", **over)
+
+    @staticmethod
+    def _pages(raw: bytes):
+        import io
+        import pypdf
+        return [p.extract_text() for p in pypdf.PdfReader(io.BytesIO(raw)).pages]
+
+    def test_no_section_heading_is_stranded_on_an_empty_page(self,
+                                                             attrition_df):
+        """The Findings section — the body of the report — rendered its
+        heading, a promise of what was coming, and nothing else; the
+        findings themselves started overleaf."""
+        pages = self._pages(self._pdf(attrition_df))
+        for i, text in enumerate(pages):
+            body = [ln for ln in text.splitlines()
+                    if ln.strip() and "Analytiq" not in ln
+                    and "Page " not in ln and "Northwind" not in ln]
+            assert len(body) > 3, \
+                "page {} carries only {}".format(i + 1, body)
+
+    def test_the_contents_locates_every_section(self, attrition_df):
+        """A contents page that numbers the sections 1..n tells the reader
+        the order of a document they are already holding."""
+        first = self._pages(self._pdf(attrition_df))[1]
+        assert "Contents" in first
+        # Section rows end in a page number; at least most must resolve.
+        numbers = [ln for ln in first.splitlines() if ln.strip().isdigit()]
+        assert len(numbers) >= 8, first
+
+    def test_confidential_is_not_claimed_unless_asked_for(self,
+                                                          attrition_df):
+        plain = "\n".join(self._pages(self._pdf(attrition_df)))
+        assert "CONFIDENTIAL" not in plain.upper(), \
+            "an unmarked report was stamped confidential"
+
+    def test_confidential_is_honoured_when_asked_for(self, attrition_df):
+        marked = "\n".join(self._pages(
+            self._pdf(attrition_df, config={"confidential": True})))
+        assert "CONFIDENTIAL" in marked.upper()
+
+    def test_no_client_facing_page_shows_scientific_notation(self,
+                                                             attrition_df):
+        import re
+        text = "\n".join(self._pages(self._pdf(attrition_df)))
+        hits = re.findall(r"\d\.\d+e[+-]\d+", text)
+        assert not hits, hits
+
+    def test_exhibit_numbering_starts_at_one(self, attrition_df):
+        """The contents needs two passes over the story to find its page
+        numbers. Exhibit numbers are handed out during that pass, so
+        without a reset the report opened at Exhibit 7."""
+        text = "\n".join(self._pages(self._pdf(attrition_df)))
+        if "Exhibit" in text:
+            assert "Exhibit 1" in text

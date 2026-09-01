@@ -20,6 +20,8 @@ from app.services.dtypes import is_categorical_like
 
 logger = logging.getLogger(__name__)
 
+from app.engines import present as _present
+
 _BINARY_TARGET_NAMES = ("attrition", "left", "churn", "churned", "exited",
                         "resigned", "terminated", "is_fraud", "default")
 
@@ -157,11 +159,43 @@ def find_top_cluster(df: pd.DataFrame, target_col: str) -> Optional[TopCluster]:
             return None
         (a, va, b, vb), n_events, n, rate, _ = best
 
-        def _clean(col, val):
-            col = col.replace("__band", "").replace("_", " ")
-            return f"{col} = {val}"
+        # A second condition has to earn its place. "Overtime = Yes AND
+        # Performance Rating = 3" reads as a precise two-factor pocket,
+        # but 85% of the workforce is rated 3 — the rating narrows
+        # nothing and the pocket is really just "Overtime = Yes" with a
+        # decoration that makes it look more targeted than it is.
+        mask_a = work[a] == va
+        mask_b = work[b] == vb
+        singles = []
+        for col, val, mask in ((a, va, mask_a), (b, vb, mask_b)):
+            count = int(mask.sum())
+            if count >= 15:
+                singles.append((col, val, count,
+                                float(work.loc[mask, "_evt"].mean())))
+        singles.sort(key=lambda t: t[3], reverse=True)
+        if singles:
+            s_col, s_val, s_n, s_rate = singles[0]
+            if rate / 100.0 <= s_rate * 1.10:
+                # The pair is no sharper than the better half of it, so
+                # report the half — it covers more people for the same
+                # hit rate, which is a better place to act.
+                a, va = s_col, s_val
+                b = vb = None
+                n = s_n
+                n_events = int(work.loc[work[s_col] == s_val, "_evt"].sum())
+                rate = s_rate * 100
 
-        desc = f"{_clean(a, va)} AND {_clean(b, vb)}"
+        def _clean(col, val):
+            # The client's own vocabulary. A cleaned Yes/No column is a
+            # bool by the time it reaches here, and the report was telling
+            # people their risk pocket was "OverTime = True" — a column
+            # spelling and a value that both appear nowhere in their file.
+            return "{} = {}".format(
+                _present.label(str(col).replace("__band", "")),
+                _present.value(val))
+
+        desc = (_clean(a, va) if b is None
+                else "{} AND {}".format(_clean(a, va), _clean(b, vb)))
         return TopCluster(
             description=desc, n=n, n_events=n_events, rate=rate,
             base_rate=base * 100,
@@ -470,6 +504,71 @@ def _importances_from(model, columns):
 
 
 
+def _grouped_permutation_importance(model, X, y, col_origin,
+                                    repeats: int = 5):
+    """How much the model's ranking degrades when a column is scrambled.
+
+    The previous ranking summed impurity importances across a column's
+    one-hot dummies. A seven-level job role therefore collected seven
+    contributions where a yes/no overtime flag collected one, and the
+    report named the wrong driver — it headlined Job Role while the
+    factor that actually separated leavers was Overtime, which the
+    statistical tests on the same page ranked first.
+
+    Permuting every dummy of a column together, and measuring the drop in
+    AUC, asks the question the reader thinks is being answered: what does
+    this model actually rely on? It is cardinality-neutral, because a
+    column is scrambled as a unit however many columns represent it.
+
+    Returns {source column: mean AUC drop}, or None if it cannot be
+    computed — the caller falls back.
+    """
+    try:
+        from sklearn.metrics import roc_auc_score
+    except Exception:
+        return None
+    if model is None or len(np.unique(y)) < 2:
+        return None
+    try:
+        base_proba = model.predict_proba(X)[:, 1]
+        base = float(roc_auc_score(y, base_proba))
+    except Exception:
+        logger.debug("permutation importance: baseline scoring failed",
+                     exc_info=True)
+        return None
+
+    groups: dict = {}
+    for dummy in X.columns:
+        groups.setdefault(col_origin.get(dummy, dummy), []).append(dummy)
+
+    rng = np.random.default_rng(42)
+    out: dict = {}
+    for source, members in groups.items():
+        drops = []
+        for _ in range(repeats):
+            shuffled = X.copy()
+            order = rng.permutation(len(shuffled))
+            # One permutation order for all of a column's dummies, so the
+            # scrambled rows stay internally consistent — a row cannot end
+            # up flagged as two job roles at once.
+            for member in members:
+                shuffled[member] = shuffled[member].to_numpy()[order]
+            try:
+                score = float(roc_auc_score(
+                    y, model.predict_proba(shuffled)[:, 1]))
+            except Exception:
+                logger.debug("permutation importance failed for %s", source,
+                             exc_info=True)
+                drops = []
+                break
+            drops.append(base - score)
+        if drops:
+            # A negative mean means scrambling helped, i.e. the column
+            # carries no signal. Floor at zero rather than rank it.
+            out[source] = max(0.0, float(np.mean(drops)))
+    return out or None
+
+
 def compute_drivers(df: pd.DataFrame, target_col: str,
                     max_rows: int = 20000) -> Optional[DriverResult]:
     """Fit a RandomForest to predict the target and return ranked drivers +
@@ -538,15 +637,23 @@ def compute_drivers(df: pd.DataFrame, target_col: str,
             logger.debug("accuracy at threshold failed", exc_info=True)
             acc = float("nan")
 
-        # Aggregate one-hot importances back to the original column.
-        imp = _importances_from(model, X.columns) if model is not None else None
-        if imp is None:
-            imp = pd.Series(0.0, index=X.columns)
-        agg: dict = {}
-        for feat_name, val in imp.items():
-            agg[col_origin.get(feat_name, feat_name)] = agg.get(col_origin.get(feat_name, feat_name), 0.0) + float(val)
+        # Rank the original columns, not the dummy columns.
+        agg = _grouped_permutation_importance(model, X, y, col_origin)
+        if agg is None:
+            # Fall back to the model's own importances, summed back to the
+            # source column. Cardinality-biased, but better than no
+            # drivers at all.
+            imp = (_importances_from(model, X.columns)
+                   if model is not None else None)
+            if imp is None:
+                imp = pd.Series(0.0, index=X.columns)
+            agg = {}
+            for feat_name, val in imp.items():
+                origin = col_origin.get(feat_name, feat_name)
+                agg[origin] = agg.get(origin, 0.0) + float(val)
         total = sum(agg.values()) or 1.0
-        ranked = sorted(((c, v / total * 100) for c, v in agg.items()),
+        ranked = sorted(((c, v / total * 100) for c, v in agg.items()
+                         if v > 0),
                         key=lambda kv: kv[1], reverse=True)[:8]
 
         # Highest-risk profile: the model's top quintile by predicted
@@ -566,12 +673,14 @@ def compute_drivers(df: pd.DataFrame, target_col: str,
                 for c in drivers2:
                     if c in num.columns:
                         med = float(hi_rows[c].median())
-                        val = f"{med:,.0f}" if abs(med) >= 100 else f"{med:.2f}"
-                        bits.append(f"{c} ≈ {val}")
+                        bits.append("{} around {}".format(
+                            _present.label(c), _present.num(med)))
                     elif c in cats:
-                        mode_val = hi_rows[c].astype(str).mode()
+                        mode_val = hi_rows[c].mode()
                         if len(mode_val):
-                            bits.append(f"{c} = '{mode_val.iloc[0]}'")
+                            bits.append("{} = {}".format(
+                                _present.label(c),
+                                _present.value(mode_val.iloc[0])))
                 profile = "; ".join(bits)
 
         # ── Turn the ranking into a decision ──────────────────

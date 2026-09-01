@@ -15,11 +15,45 @@ from app.engines.domains.general_depth import run_general_depth
 
 logger = logging.getLogger(__name__)
 
+# Everything a reader sees goes through present: column names as
+# words rather than identifiers, numbers as figures rather than
+# scientific notation.
+from app.engines.present import (label as _L, num as _N,
+                                 truncate as _T)
+
 # A segment gap has to clear one of these to be worth a client's attention:
 # either the groups differ by a quarter, or by a quarter of the column's own
 # spread. Below both, the difference is real and irrelevant.
 MIN_SEGMENT_RATIO = 1.25
 MIN_SEGMENT_EFFECT = 0.25
+
+
+def _is_rating_scale(series) -> bool:
+    """True for an ordinal rating rather than a measurement.
+
+    IQR flags anything past 1.5 IQR from the quartiles. On a 1-4
+    satisfaction score or a 3/4 performance rating that is not an
+    anomaly, it is the top of the scale — and the report was telling
+    clients that 16% of their performance ratings were a data quality
+    issue to "cap or remove". A rating has no outliers; it has levels.
+    """
+    if series is None:
+        return False
+    try:
+        values = series.dropna()
+        if values.empty:
+            return False
+        if values.nunique() > 11:
+            return False
+        as_float = values.astype(float)
+        if not (as_float % 1 == 0).all():
+            return False
+        # A small contiguous range near zero: the shape of a Likert or
+        # star rating, not of an age, a count or an amount.
+        return bool(as_float.min() >= 0 and as_float.max() <= 10)
+    except Exception:
+        logger.debug("rating-scale check failed", exc_info=True)
+        return False
 
 
 def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
@@ -41,27 +75,35 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         mean    = st.get("mean", 0)
         median  = st.get("median", 0)
 
-        if out_pct > 10:
+        if out_pct > 10 and not _is_rating_scale(df[col] if col in df else None):
             # A high-outlier column is a genuine data-quality RISK — count it.
             risks.append(
-                "'{}' has {:.0f}% outliers — verify before using it in any "
-                "decision; extremes distort averages and models.".format(col, out_pct))
+                "{} has {:.0f}% outliers — verify these before using the field "
+                "in any decision, because extremes distort both averages and "
+                "models.".format(_L(col), out_pct))
             insights.append(build_insight(
-                title="'{}': {:.0f}% Outliers — Data Quality Issue".format(col, out_pct),
-                problem="{:.0f}% of '{}' values are statistical outliers".format(out_pct, col),
-                cause="Data entry errors, measurement anomalies, or genuine extreme values",
-                evidence="IQR method: {:.0f}% outliers. Range: {:.2f} to {:.2f}".format(
-                    out_pct, st.get("min", 0), st.get("max", 0)),
-                action="1. Inspect outlier records  2. Determine error or genuine  "
-                       "3. Cap or remove confirmed errors  4. Document decisions",
-                impact="Outliers distort all statistical analyses and reduce ML accuracy",
+                title="{} carries {:.0f}% outliers".format(_L(col), out_pct),
+                problem="{:.0f}% of {} values sit outside the expected range"
+                        .format(out_pct, _L(col)),
+                cause="Data entry errors, measurement anomalies, or genuine "
+                      "extreme values — which of the three it is cannot be "
+                      "determined from the data alone",
+                evidence="IQR method: {:.0f}% outliers. Range {} to {}.".format(
+                    out_pct, _N(st.get("min", 0)), _N(st.get("max", 0))),
+                action="1. Inspect the outlying records  2. Determine whether "
+                       "each is an error or genuine  3. Correct confirmed "
+                       "errors at source  4. Record the decision so the next "
+                       "run is comparable",
+                impact="Until they are resolved, every average and model built "
+                       "on {} carries them.".format(_L(col)),
                 severity="warning", category="data_quality"
             ))
         if abs(skew) > 1.5:
             findings.append(
-                "'{}' is {}-skewed (mean {:.2f} vs median {:.2f}). "
-                "Report median for this column.".format(
-                    col, "right" if skew > 0 else "left", mean, median))
+                "{} is {}-skewed (mean {} against median {}), so the median is "
+                "the fair summary for this column.".format(
+                    _L(col), "right" if skew > 0 else "left",
+                    _N(mean), _N(median)))
 
     for corr in corrs[:3]:
         if corr.get("strength") in ("strong", "moderate"):
@@ -96,18 +138,20 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
             if p50 > 0 and p90 / p50 >= 2.0 and cv > 40:
                 uplift_pct = (p90 - p50) / p50 * 100
                 opps.append(
-                    f"'{col}': Top decile ({p90:.2g}) is {p90/p50:.1f}× the median "
-                    f"({p50:.2g}). Bringing the bottom quartile (currently {p10:.2g}) "
-                    f"to median would represent a {uplift_pct:.0f}% improvement. "
-                    f"Identify what high performers have in common."
+                    f"{_L(col)}: the top decile ({_N(p90)}) is "
+                    f"{p90/p50:.1f}x the median ({_N(p50)}). Bringing the "
+                    f"bottom quartile (currently {_N(p10)}) to the median "
+                    f"would be a {uplift_pct:.0f}% improvement. Identify what "
+                    f"the high performers have in common."
                 )
             # High concentration risk: >50% in one value for numeric col
             top_val_pct = float(s.value_counts(normalize=True).iloc[0]) * 100
             if top_val_pct > 60 and s.nunique() > 3:
                 risks.append(
-                    f"'{col}': {top_val_pct:.0f}% of records share the same value "
-                    f"({s.value_counts().index[0]:.3g}). "
-                    "Potential data collection bias or limited diversity."
+                    f"{_L(col)}: {top_val_pct:.0f}% of records share one value "
+                    f"({_N(s.value_counts().index[0])}). That points to a data "
+                    "collection default or limited genuine variation, and it "
+                    "flattens any average built on this field."
                 )
         except Exception:
             logger.warning("Opportunity check failed for %s", col, exc_info=True)
@@ -119,37 +163,41 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     if seg:
         # NOTE: neutral highest/lowest labels — whether high is good or bad
         # depends on the metric (revenue vs delay), which we cannot know here.
+        view = dict(seg, cat_l=_L(seg["cat"]), num_l=_L(seg["num"]),
+                    lo_f=_N(seg["lo"]), hi_f=_N(seg["hi"]))
         insights.append(build_insight(
-            title="'{cat}' Segments Differ Significantly on '{num}'".format(**seg),
-            problem=("Median '{num}' ranges from {lo:.3g} in '{lo_seg}' to {hi:.3g} "
-                     "in '{hi_seg}' — a {ratio:.1f}× spread across '{cat}' segments."
-                     .format(**seg)),
+            title="{hi_seg} and {lo_seg} differ on {num_l}".format(**view),
+            problem=("Median {num_l} runs from {lo_f} in {lo_seg} to {hi_f} in "
+                     "{hi_seg} — a {ratio:.1f}x spread across {cat_l}."
+                     .format(**view)),
             cause="A gap this size is statistically unlikely to be chance "
                   "(Kruskal-Wallis p<0.01, see evidence). That points to a "
                   "structural or operational difference between the segments — "
                   "a hypothesis to confirm, not yet a proven cause.",
             evidence=("Kruskal-Wallis H={h:.1f}, {ptxt}, {k} groups, n={n:,}. "
-                      "Highest: '{hi_seg}' (median {hi:.3g}) | Lowest: '{lo_seg}' "
-                      "(median {lo:.3g}).".format(**seg)),
-            action=("1. Determine which end of the '{num}' range is desirable, then "
-                    "profile what separates '{hi_seg}' from '{lo_seg}'  "
-                    "2. Check the gap persists after controlling for volume/size  "
+                      "Highest: {hi_seg} (median {hi_f}). Lowest: {lo_seg} "
+                      "(median {lo_f}).".format(**view)),
+            action=("1. Decide which end of the {num_l} range is the desirable "
+                    "one, then profile what separates {hi_seg} from {lo_seg}  "
+                    "2. Check the gap persists after controlling for volume "
+                    "and size  "
                     "3. Pilot the stronger segment's practices in the weaker one"
-                    .format(**seg)),
-            impact=("Moving the weaker segment to the overall median is the measured "
-                    "upper bound of the '{num}' opportunity in this dataset."
-                    .format(**seg)),
+                    .format(**view)),
+            impact=("Moving the weaker segment to the overall median is the "
+                    "measured upper bound of the {num_l} opportunity in this "
+                    "dataset.".format(**view)),
             severity="high", category="segmentation",
         ))
         # A significant segment gap is both a risk (the weak segment) and an
         # opportunity (the gap to close) — count both so the exec summary
         # doesn't read '0 risks, 0 opportunities' next to a real finding.
         risks.append(
-            "'{lo_seg}' underperforms on '{num}' ({lo:.3g} vs {hi:.3g} in "
-            "'{hi_seg}'), a statistically significant {ratio:.1f}× gap.".format(**seg))
+            "{lo_seg} sits below {hi_seg} on {num_l} ({lo_f} against {hi_f}), "
+            "a statistically significant {ratio:.1f}x gap.".format(**view))
         opps.append(
-            "Closing the '{cat}' gap on '{num}' — lifting '{lo_seg}' toward the "
-            "'{hi_seg}' level — is a quantified, testable improvement.".format(**seg))
+            "Closing the {cat_l} gap on {num_l} — lifting {lo_seg} toward the "
+            "{hi_seg} level — is a quantified, testable improvement."
+            .format(**view))
 
     # ── Concentration (Pareto) risk on categorical columns ───────────────
     for col in df.select_dtypes(include=["object", "string"]).columns[:6]:
@@ -157,10 +205,11 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
             vc = df[col].dropna().value_counts(normalize=True)
             if 3 <= len(vc) <= 500 and float(vc.iloc[0]) > 0.5:
                 findings.append(
-                    "Concentration: {:.0f}% of records fall in a single '{}' value "
-                    "('{}'). Aggregate metrics are dominated by this segment — "
-                    "report it separately.".format(
-                        float(vc.iloc[0]) * 100, col, str(vc.index[0])[:40]))
+                    "Concentration: {:.0f}% of records fall in a single {} "
+                    "value ({}). Every aggregate is dominated by this segment, "
+                    "so report it separately.".format(
+                        float(vc.iloc[0]) * 100, _L(col),
+                        _T(str(vc.index[0]), 40)))
         except Exception:
             logger.warning("concentration check failed for %s", col, exc_info=True)
 
@@ -188,6 +237,16 @@ def _is_obvious_segment_pair(cat: str, num: str) -> bool:
     seniority   = ("level", "grade", "band", "seniority", "rank", "role",
                    "title", "position", "designation", "job")
     if any(d in n for d in demographic) and any(s in c for s in seniority):
+        return True
+    # Pay by job role is definitional, not a finding: the role IS the pay
+    # band. The report was headlining "Research Scientist and HR Specialist
+    # differ on Monthly Income" as a HIGH severity result. Pay by
+    # department or location stays in — that one is a real question.
+    compensation = ("salary", "income", "pay", "wage", "compensation",
+                    "remuneration", "ctc", "stipend", "bonus", "rate")
+    role_like = ("role", "title", "position", "designation", "level",
+                 "grade", "band", "seniority", "rank", "job")
+    if any(m in n for m in compensation) and any(r in c for r in role_like):
         return True
     # Metric grouped by a column whose name contains it (near-tautology).
     stem = n.replace("_", "").replace(" ", "")[:6]

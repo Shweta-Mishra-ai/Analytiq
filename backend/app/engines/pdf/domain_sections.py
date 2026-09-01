@@ -26,6 +26,13 @@ from reportlab.pdfgen import canvas as CV
 
 logger = logging.getLogger(__name__)
 
+from app.engines.present import truncate as _fit
+
+# Shared with the contents, which locates a section by matching
+# this exact string. When the two drifted apart the appendix
+# simply lost its page number.
+APPENDIX_TITLE = "Appendix — Methodology, Sources & Glossary"
+
 from app.engines.pdf.theme import (
     _c, W, H, CW_DEFAULT, FONT_BODY, FONT_BOLD, FONT_ITALIC,
     FONT_SERIF, FONT_SERIF_BOLD,
@@ -58,7 +65,7 @@ def _prepared_by_line(config: dict) -> str:
 
 def _appendix(story, s, T, config, CW, domain: str = "general",
               used_terms=None):
-    _sec(story, s, T, "Appendix — Methodology, Sources & Glossary")
+    _sec(story, s, T, APPENDIX_TITLE)
 
     # This section is what a reviewing analyst reads to decide whether to
     # trust the rest. It states the tests actually applied and why each was
@@ -379,7 +386,7 @@ def _finance_page(story, s, T, df, config, CW, profile=None):
         try:
             cat_cost = df.groupby(cat_col)[val_col].sum().sort_values(ascending=False).head(10)
             total_c  = float(cat_cost.sum())
-            cat_rows = [[str(idx)[:32], f"{val:,.0f}", f"{val/total_c*100:.1f}%"]
+            cat_rows = [[_fit(idx, 32), f"{val:,.0f}", f"{val/total_c*100:.1f}%"]
                         for idx, val in cat_cost.items()]
             cat_header = ["Category / Segment", "Total Amount", "% of Total"]
             all_cat    = [cat_header] + cat_rows

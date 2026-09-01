@@ -32,9 +32,12 @@ from app.engines.pdf.theme import (
     FONT_SERIF, FONT_SERIF_BOLD,
 )
 from app.engines.pdf.primitives import (
-    _sec, _kpi_row, _narrative_box, _gtable, _insight_card, _clean,
-    _exhibit, _exhibit_source,
+    _sec, _sec_flowables, _kpi_row, _narrative_box, _gtable, _insight_card,
+    _clean, _exhibit, _exhibit_source,
 )
+from app.engines.industry_benchmarks import REPLACEMENT_COST_RANGE
+from app.engines.present import (label as _PL, num as _PN,
+                                 truncate as _PT, value as _PV)
 from app.engines.report_blueprints import blueprint_for
 from app.services.dtypes import is_text_dtype, text_columns
 
@@ -107,8 +110,13 @@ def _top_insights(story, s, T, insights, CW, domain: str = "general"):
         return
 
     grouped = group_insights(bp, list(insights))
-    _sec(story, s, T, "{} — Findings".format(bp.label),
-         "Each finding: Problem → Cause → Evidence → Action → Impact")
+    # The report heading travels with the first finding too, not only the
+    # group heading. Kept apart, the section title claimed a page of its
+    # own and the reader turned to a sheet carrying nothing but the words
+    # "Findings" — the section that is meant to be the report.
+    banner = _sec_flowables(s, T, "{} — Findings".format(bp.label),
+                            "Each finding: Problem → Cause → Evidence → "
+                            "Action → Impact")
 
     num = 0
     for section, items in grouped:
@@ -121,7 +129,8 @@ def _top_insights(story, s, T, insights, CW, domain: str = "general"):
                 Paragraph(section.purpose, s["sm"])]
         first: list = []
         _insight_card(first, s, T, items[0], CW, num=num + 1)
-        story.append(KeepTogether(head + first))
+        story.append(KeepTogether(banner + head + first))
+        banner = []
         num += 1
 
         for ins in items[1:6]:
@@ -373,7 +382,9 @@ def _attrition_page(story, s, T, attrition, CW):
          "color": T["warning"]},
         {"label": "COST RISK",
          "value": "HIGH" if attrition.n_left > 50 else "MED",
-         "sub": "50–200% salary/hire", "color": T["negative"]},
+         "sub": REPLACEMENT_COST_RANGE.replace("% of annual salary",
+                                               "% of salary"),
+         "color": T["negative"]},
     ], CW)
 
     _narrative_box(story, s, T,
@@ -384,12 +395,26 @@ def _attrition_page(story, s, T, attrition, CW):
     # Drivers
     drivers = getattr(attrition, "top_drivers", [])
     if drivers:
-        story.append(Paragraph("Attrition Drivers", s["h3"]))
-        rows = [[d.get("factor","")[:18], d.get("type","").title(),
-                 "{:.0f}%".format(d.get("impact",0)), d.get("detail","")[:65]]
+        story.append(Paragraph("What separates leavers from stayers", s["h3"]))
+        story.append(Paragraph(
+            "Ranked by how far apart the two groups actually sit, not by "
+            "how large the percentage difference looks. Every row below "
+            "survived a false-discovery correction across all factors "
+            "tested; factors that were statistically significant but "
+            "separated almost nobody are not shown.", s["sm"]))
+        rows = [[_PL(d.get("factor", "")),
+                 "{} ({})".format(_PN(d.get("effect", 0), decimals=2),
+                                  d.get("effect_label", "—")),
+                 _PT(d.get("detail", ""), 78)]
                 for d in drivers[:6]]
-        _gtable(story, T, ["Factor","Type","Impact","Finding"],
-                rows, [CW*x for x in [0.22,0.13,0.14,0.51]])
+        _gtable(story, T, ["Factor", "Separation", "What the data shows"],
+                rows, [CW*x for x in [0.24, 0.20, 0.56]])
+        story.append(Paragraph(
+            "Separation is Cliff's delta for a measured factor and "
+            "Cramér's V for a grouped one; both run 0 to 1 and both answer "
+            "the same question, so the rows can be compared with each "
+            "other. A driver is an association, not a proven cause.",
+            s["note"]))
 
     # Dept breakdown
     dept_atr = getattr(attrition, "dept_attrition", {})
@@ -464,19 +489,29 @@ def _exec_dashboard(story, s, T, df, profile, top_insights,
                                max(dr.high_risk_rate - dr.base_rate, 0) / 100.0))
                      if dr.high_risk_n else 0)
         money = ""
-        if avg_salary_k and avg_salary_k > 0 and avoidable > 0:
-            lo, hi = avoidable * avg_salary_k * 0.5, avoidable * avg_salary_k * 1.5
-            money = (" Estimated avoidable cost: <b>{:,.0f}K–{:,.0f}K</b> per "
-                     "cycle, at the {:,.0f}K unit cost entered at report "
-                     "setup.".format(lo, hi, avg_salary_k))
+        if avoidable > 0 and avg_salary_k and avg_salary_k > 0:
+            lo = avoidable * avg_salary_k * 0.5
+            hi = avoidable * avg_salary_k * 2.0
+            money = (" On the {:,.0f}K replacement cost supplied for this "
+                     "report and the published 50-200% band, avoiding those "
+                     "{:,} events is worth <b>{:,.0f}K-{:,.0f}K</b>."
+                     .format(avg_salary_k, avoidable, lo, hi))
+        elif avoidable > 0:
+            # No cost was supplied, so no cost is asserted. The headcount
+            # is what the analysis actually establishes; the reader can
+            # multiply by a figure they trust.
+            money = (" Closing the gap between this group and the base rate "
+                     "is worth <b>{:,} events</b> a cycle; multiply by your "
+                     "own replacement cost to value it."
+                     .format(avoidable))
         _narrative_box(
             story, s, T,
             "<b>Decision headline:</b> the sharpest pocket of risk is "
             "<b>{}</b> — {:,} records at a {:.0f}% rate ({:.1f}x base), "
-            "driving {:.0f}% of all events. The strongest predictive driver "
-            "overall is <b>{}</b>.{}".format(
+            "driving {:.0f}% of all events. The factor the model relies on "
+            "most is <b>{}</b>.{}".format(
                 tc.description, tc.n, tc.rate, lift, tc.share_of_events,
-                str(dr.top_drivers[0][0]).replace("_", " "), money))
+                _PL(dr.top_drivers[0][0]), money))
         story.append(Spacer(1, 3 * mm))
 
     if top_insights:
@@ -494,8 +529,8 @@ def _exec_dashboard(story, s, T, df, profile, top_insights,
             rows.append([
                 Paragraph('<font color="{}"><b>{}</b></font>'.format(
                     sev_color.get(sev, T["info"]), sev.upper()), s["sm"]),
-                Paragraph(str(getattr(ins, "title", ""))[:110], s["sm"]),
-                Paragraph(first_action[:130], s["sm"]),
+                Paragraph(_PT(getattr(ins, "title", ""), 110), s["sm"]),
+                Paragraph(_PT(first_action, 130), s["sm"]),
             ])
         tbl = Table(rows, colWidths=[CW * 0.14, CW * 0.46, CW * 0.40])
         tbl.setStyle(TableStyle([

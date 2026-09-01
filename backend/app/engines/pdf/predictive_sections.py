@@ -346,18 +346,21 @@ def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
                               max(dr.high_risk_rate - dr.base_rate, 0) / 100.0))
         story.append(Paragraph("Scenario and Expected Value", s["h3"]))
         if avg_salary_k and avg_salary_k > 0 and avoidable > 0:
-            lo, hi = avoidable * avg_salary_k * 0.5, avoidable * avg_salary_k * 1.5
+            lo = avoidable * avg_salary_k * 0.5
+            hi = avoidable * avg_salary_k * 2.0
             roi_line = (
-                " Costed at the {:,.0f}K unit cost entered at report setup and a "
-                "50–150% replacement range, the avoidable share is roughly "
-                "<b>{:,.0f}K–{:,.0f}K</b> per cycle. That unit cost is an "
-                "assumption supplied with the report, not a measured figure — "
-                "substitute your own for a board-ready number.".format(
+                " Costed at the {:,.0f}K replacement cost supplied for this "
+                "report and the published 50-200% band, the avoidable share "
+                "is roughly <b>{:,.0f}K-{:,.0f}K</b> per cycle. That unit "
+                "cost is an assumption you supplied, not a figure measured "
+                "from this data — substitute your own for a board-ready "
+                "number.".format(
                     avg_salary_k, lo, hi))
         else:
             roi_line = (
-                " Enter a unit cost at report setup to translate the avoidable "
-                "events into a monetary range.")
+                " No replacement cost was supplied with this report, so no "
+                "monetary figure is asserted here. Enter one at report setup "
+                "to translate the avoidable events into a range.")
         _narrative_box(
             story, s, T,
             "<b>If nothing changes:</b> at the segment's current rate, about "

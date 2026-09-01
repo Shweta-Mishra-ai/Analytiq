@@ -33,7 +33,11 @@ class PdfRequest(BaseModel):
     include_stats: bool = True
     include_bi: bool = True
     include_ml: bool = False
-    avg_salary_k: float = 8.0       # for HR impact estimates
+    # 0 means "not supplied". It used to default to 8.0, and every report
+    # then stated a cost "at the 8K unit cost entered at report setup" —
+    # naming a figure the client had never entered and could not have
+    # recognised.
+    avg_salary_k: float = 0.0
     max_charts: int = 5
     # Who prepared the report — the freelancer, consultancy or in-house
     # analyst delivering it. It appears in the basis of preparation and

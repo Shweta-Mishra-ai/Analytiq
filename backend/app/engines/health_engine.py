@@ -25,6 +25,8 @@ import numpy as np
 import pandas as pd
 from app.services.dtypes import is_text_dtype
 
+from app.engines.industry_benchmarks import REPLACEMENT_COST_RANGE
+
 logger = logging.getLogger(__name__)
 
 
@@ -156,7 +158,8 @@ def build_insights(df: pd.DataFrame, niche: str) -> list:
                 insights.append(_ins(
                     "ATTRITION RISK" if sev == "critical" else "ATTRITION" if sev == "warning" else "HEALTHY RETENTION",
                     "Attrition rate is {:.1f}% (planning threshold: <10%)".format(atr_rate),
-                    "Your dataset shows **{:.1f}% attrition**. {} Replacement cost is commonly modelled at **50–200% of annual salary** — substitute your actual figures to quantify the exposure.".format(atr_rate, note),
+                    "Your dataset shows **{:.1f}% attrition**. {} Replacement cost is commonly modelled at **{}** — substitute your actual figures to quantify the exposure."
+                    .format(atr_rate, note, REPLACEMENT_COST_RANGE),
                     action, sev
                 ))
 
@@ -222,7 +225,7 @@ def build_insights(df: pd.DataFrame, niche: str) -> list:
                         "New hires (0–2 yrs) attrition: {:.1f}%".format(new_hire_atr),
                         "Employees in their first 2 years show {:.1f}% attrition — a signal of poor onboarding, misaligned expectations, or poor manager support. "
                         "Veteran employees (6+ yrs) show {:.1f}% attrition by comparison. "
-                        "Replacing a new hire is commonly modelled at 50–150% of salary before full productivity.".format(new_hire_atr, vet_atr),
+                        "Replacing a new hire is modelled at {} on the same published basis.".format(REPLACEMENT_COST_RANGE),
                         "Implement a structured 90-day onboarding program. Assign mentors to all new hires. "
                         "Run a 30/60/90 check-in survey to catch at-risk employees early.",
                         "critical" if new_hire_atr > 35 else "warning"

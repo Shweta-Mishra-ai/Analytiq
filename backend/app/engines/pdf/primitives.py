@@ -41,13 +41,26 @@ from app.engines.pdf_primitives import is_id_col, truncate_label  # noqa: F401
 #  REUSABLE COMPONENT HELPERS
 # ══════════════════════════════════════════════════════════
 
-def _sec(story: list, s: dict, T: dict, title: str, sub: str = ""):
-    story.append(Spacer(1, 3*mm))
-    story.append(HRFlowable(width="100%", thickness=3,
-                             color=_c(T["accent"]), spaceAfter=3))
-    story.append(Paragraph(title, s["h2"]))
+def _sec_flowables(s: dict, T: dict, title: str, sub: str = "") -> list:
+    """The section header as a list, for callers that need to keep it with
+    the content beneath it."""
+    head = Paragraph(title, s["h2"])
+    # Tagged so the document can record which page it landed on. Without
+    # this the contents could only number the sections 1..n, which tells
+    # the reader the order of a document they are already holding and not
+    # the one thing a contents page exists to tell them.
+    head._toc_title = str(title)
+    out = [Spacer(1, 3*mm),
+           HRFlowable(width="100%", thickness=3,
+                      color=_c(T["accent"]), spaceAfter=3),
+           head]
     if sub:
-        story.append(Paragraph(sub, s["sm"]))
+        out.append(Paragraph(sub, s["sm"]))
+    return out
+
+
+def _sec(story: list, s: dict, T: dict, title: str, sub: str = ""):
+    story.extend(_sec_flowables(s, T, title, sub))
 
 
 def _kpi_row(story: list, s: dict, T: dict, kpis: list, CW: float):
@@ -272,15 +285,31 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
 #  TOC PAGE
 # ══════════════════════════════════════════════════════════
 
-def _toc(story, s, T, entries, CW):
-    _sec(story, s, T, "Table of Contents")
-    for num, title in entries:
+def _toc(story, s, T, entries, CW, pages=None):
+    """Contents with page numbers, and sub-entries indented under their
+    parent so a chart does not sit in the list as a peer of the executive
+    summary."""
+    pages = pages or {}
+    _sec(story, s, T, "Contents")
+    num_style = ParagraphStyle(
+        "tn", fontName=FONT_BOLD, fontSize=10,
+        textColor=_c(T["accent"]), alignment=TA_CENTER)
+    page_style = ParagraphStyle(
+        "tp", fontName=FONT_BODY, fontSize=9,
+        textColor=_c(T["text_muted"]), alignment=TA_RIGHT)
+    sub_style = ParagraphStyle(
+        "ts", parent=s["toc"], leftIndent=6*mm, fontSize=8.5,
+        textColor=_c(T["text_muted"]))
+
+    for entry in entries:
+        num, title = entry[0], entry[1]
+        level = entry[2] if len(entry) > 2 else 0
+        page = pages.get(str(title))
         row = Table([[
-            Paragraph(str(num), ParagraphStyle(
-                "tn", fontName=FONT_BOLD, fontSize=10,
-                textColor=_c(T["accent"]), alignment=TA_CENTER)),
-            Paragraph(title, s["toc"]),
-        ]], colWidths=[9*mm, CW - 9*mm])
+            Paragraph("" if level else str(num), num_style),
+            Paragraph(_clean(title), sub_style if level else s["toc"]),
+            Paragraph(str(page) if page else "", page_style),
+        ]], colWidths=[9*mm, CW - 23*mm, 14*mm])
         row.setStyle(TableStyle([
             ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
             ("LINEBELOW",   (0,0), (-1,-1), 0.3, _c(T["border"])),

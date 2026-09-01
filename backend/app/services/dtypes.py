@@ -61,6 +61,20 @@ def text_columns(df) -> list:
     return [c for c in df.columns if is_text_dtype(df[c])]
 
 
+def categorical_columns(df) -> list:
+    """Every column that groups into discrete buckets, in order.
+
+    Text, pandas categoricals **and booleans**. The boolean part is the
+    reason this exists: ``select_dtypes(include="number")`` excludes bool
+    and so does ``include=["object", "string"]``, so a Yes/No column that
+    cleaning has converted to True/False falls through both filters and
+    disappears from the analysis entirely. In an HR dataset that column
+    is Overtime — the single strongest driver of attrition — and the
+    report simply never mentioned it.
+    """
+    return [c for c in df.columns if is_categorical_like(df[c])]
+
+
 def month_end_rule() -> str:
     """The resample alias for month-end, valid on this pandas version.
 
