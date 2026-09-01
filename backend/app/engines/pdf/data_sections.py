@@ -26,6 +26,8 @@ from reportlab.pdfgen import canvas as CV
 
 logger = logging.getLogger(__name__)
 
+from app.engines.present import truncate as _fit
+
 from app.engines.pdf.theme import (
     _c, W, H, CW_DEFAULT, FONT_BODY, FONT_BOLD, FONT_ITALIC,
     FONT_SERIF, FONT_SERIF_BOLD,
@@ -406,9 +408,17 @@ def _chart_page(story, s, T, img_bytes, title, narrative, num, CW,
 #  RECOMMENDATIONS
 # ══════════════════════════════════════════════════════════
 
-def _recommendations(story, s, T, actions, CW):
+def _recommendations(story, s, T, actions, CW, insights=None):
+    """The action plan, as something a client can run a meeting from.
+
+    This page used to be a list of sentences: what to do, and nothing
+    else. An action with no evidence beside it is an opinion, and one
+    with nowhere to write an owner and a date is a suggestion nobody
+    picks up. Each row now carries the finding it answers, and leaves the
+    two columns only the client can fill.
+    """
     _sec(story, s, T, "Recommendations & Action Plan",
-         "Prioritised by urgency — act on CRITICAL items first")
+         "Each action, the finding behind it, and space to assign it")
 
     pri_map = {
         "CRITICAL":   (T["negative"],  T["critical_bg"]),
@@ -416,40 +426,99 @@ def _recommendations(story, s, T, actions, CW):
         "LONG TERM":  (T["info"],      T["info_bg"]),
     }
 
-    for action in actions[:9]:
-        action_str = str(action)
-        priority   = "LONG TERM"
-        for p in ("CRITICAL", "SHORT TERM"):
-            if p in action_str.upper():
-                priority = p
+    # Rows come from the findings themselves, so the action and the
+    # evidence beside it are the pair the engine actually produced. The
+    # first attempt matched them on shared words and cited an income
+    # finding next to an overtime action — the same guessing that
+    # captioned one chart with another chart's narrative.
+    ordered, seen = [], set()
+    rank = {"critical": 0, "high": 1, "warning": 2}
+    for ins in sorted(insights or [],
+                      key=lambda i: rank.get(
+                          str(getattr(i, "severity", "")).lower(), 3)):
+        step = str(getattr(ins, "action", "")).split("2.")[0]
+        step = step.lstrip("1.").strip()
+        if not step or step.lower() in seen:
+            continue
+        seen.add(step.lower())
+        severity = str(getattr(ins, "severity", "")).lower()
+        ordered.append((
+            "CRITICAL" if severity == "critical"
+            else "SHORT TERM" if severity in ("high", "warning")
+            else "LONG TERM",
+            step,
+            str(getattr(ins, "problem", "")) or str(getattr(ins, "title", "")),
+        ))
+
+    # Then the standalone recommendations, which answer no single finding
+    # and so cite none.
+    for action in (actions or []):
+        text = str(action)
+        priority = "LONG TERM"
+        for candidate in ("CRITICAL", "SHORT TERM"):
+            if candidate in text.upper():
+                priority = candidate
                 break
+        text = (text.replace("[CRITICAL] ", "")
+                    .replace("[SHORT TERM] ", "")
+                    .replace("[LONG TERM] ", "").strip())
+        if text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        ordered.append((priority, text, ""))
 
+    head = [Paragraph("<b>{}</b>".format(h), s["sm"])
+            for h in ("Priority", "Action", "Because", "Owner", "By when")]
+    rows = [head]
+    tones = []
+    for priority, text, because in ordered[:9]:
         col, bg = pri_map.get(priority, (T["accent"], T["bg_light"]))
-        text    = (action_str
-                   .replace("[CRITICAL] ", "")
-                   .replace("[SHORT TERM] ", "")
-                   .replace("[LONG TERM] ", "")
-                   .strip())
-
-        card = Table([[
+        tones.append((col, bg))
+        rows.append([
             Paragraph(priority, ParagraphStyle(
-                "pri", fontName=FONT_BOLD, fontSize=7,
+                "pri", fontName=FONT_BOLD, fontSize=6.5,
                 textColor=HexColor(col), alignment=TA_CENTER)),
-            Paragraph(text, s["body"]),
-        ]], colWidths=[CW*0.14, CW*0.86])
-        card.setStyle(TableStyle([
-            ("BACKGROUND",    (0,0), (-1,-1), HexColor(bg)),
-            ("LINEBEFORE",    (0,0), (0,-1),  3, HexColor(col)),
-            ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-            ("TOPPADDING",    (0,0), (-1,-1), 5),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 5),
-            ("LEFTPADDING",   (0,0), (-1,-1), 6),
-            ("RIGHTPADDING",  (0,0), (-1,-1), 6),
-        ]))
-        story.append(KeepTogether([card, Spacer(1, 2*mm)]))
+            Paragraph(_clean(text), s["sm"]),
+            Paragraph(_clean(_fit(because, 150)) if because
+                      else '<font color="{}">—</font>'.format(T["text_muted"]),
+                      s["sm"]),
+            Paragraph("", s["sm"]),
+            Paragraph("", s["sm"]),
+        ])
+
+    if len(rows) == 1:
+        story.append(Paragraph(
+            "No action met the evidence threshold for inclusion. That is a "
+            "result rather than an omission: the analysis ran and found "
+            "nothing it could recommend on this data alone.", s["body"]))
+        return
+
+    table = Table(rows, colWidths=[CW * x for x in
+                                   (0.11, 0.34, 0.33, 0.11, 0.11)],
+                  repeatRows=1)
+    style = [
+        ("BACKGROUND",    (0, 0), (-1, 0), _c(T["header_bg"])),
+        ("TEXTCOLOR",     (0, 0), (-1, 0), white),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING",    (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+        ("GRID",          (0, 0), (-1, -1), 0.3, _c(T["border"])),
+        # The two blank columns are meant to be written in, on paper or
+        # on screen, so they are tinted rather than left to read as an
+        # empty cell someone forgot to fill.
+        ("BACKGROUND",    (3, 1), (-1, -1), _c(T["bg_light"])),
+    ]
+    for i, (col, bg) in enumerate(tones, start=1):
+        style.append(("LINEBEFORE", (0, i), (0, i), 3, HexColor(col)))
+        style.append(("BACKGROUND", (0, i), (0, i), HexColor(bg)))
+    table.setStyle(TableStyle(style))
+    story.append(table)
 
     story.append(Spacer(1, 3*mm))
     story.append(Paragraph(
-        "All recommendations are based solely on the provided dataset. "
-        "Verify with domain experts before implementation.",
-        s["sm"]))
+        "Owner and date are left for you to assign — the analysis can say "
+        "what to do and why, not who should do it. Every recommendation "
+        "rests solely on the dataset provided; confirm with the people who "
+        "know the process before acting.", s["sm"]))

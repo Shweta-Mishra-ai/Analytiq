@@ -643,8 +643,8 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
 
     # Always valid — applies to any HR dataset
     actions.append(
-        "Run a satisfaction pulse quarterly rather than annually, so the "
-        "trend is visible before the exits are"
+        "Run the satisfaction pulse quarterly rather than annually, so a "
+        "decline shows up while there is still time to answer it"
     )
 
     # Only if attrition column exists

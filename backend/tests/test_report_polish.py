@@ -367,3 +367,74 @@ def test_grammar_agrees_with_the_numbers():
     assert present.article("8,024") == "an"
     assert present.plural(1, "sits", "sit") == "sits"
     assert present.plural(3, "sits", "sit") == "sit"
+
+
+# ── the action plan ──────────────────────────────────────
+
+class TestActionPlan:
+    """The page a client runs a meeting from. It used to be two canned
+    sentences — one of which described a flight-risk profile built on a
+    promotion column the dataset did not contain, contradicting the
+    analysis on the page before it."""
+
+    @staticmethod
+    def _plan(insights, actions):
+        from reportlab.lib.units import mm
+        from app.engines.pdf.data_sections import _recommendations
+        from app.engines.pdf.theme import THEMES, _styles
+        theme = THEMES["Corporate Light"]
+        story: list = []
+        _recommendations(story, _styles(theme), theme, actions, 170 * mm,
+                         insights=insights)
+        return story
+
+    @staticmethod
+    def _cells(story):
+        from reportlab.platypus import Table
+        for flowable in story:
+            if isinstance(flowable, Table):
+                return [[getattr(c, "text", "") for c in row]
+                        for row in flowable._cellvalues]
+        return []
+
+    def test_each_action_cites_the_finding_it_came_from(self):
+        """Matching an action to a finding on shared words cited an income
+        finding beside an overtime action."""
+        from app.engines.domains.base import build_insight
+        insights = [
+            build_insight(title="Attrition at 19.9%", problem="292 of 1,470 left",
+                          cause="", evidence="", severity="critical",
+                          category="attrition",
+                          action="1. Take the Overtime finding to managers  2. x",
+                          impact=""),
+            build_insight(title="Pay varies by department",
+                          problem="Median income runs from 7,469 to 8,737",
+                          cause="", evidence="", severity="high",
+                          category="segmentation",
+                          action="1. Decide which end is desirable  2. y",
+                          impact=""),
+        ]
+        rows = self._cells(self._plan(insights, []))[1:]
+        overtime = next(r for r in rows if "Overtime" in r[1])
+        assert "292 of 1,470" in overtime[2], overtime
+        pay = next(r for r in rows if "desirable" in r[1])
+        assert "7,469" in pay[2], pay
+
+    def test_an_action_with_no_finding_cites_nothing(self):
+        rows = self._cells(self._plan([], ["[CRITICAL] Do the thing"]))[1:]
+        assert rows, "a standalone action should still get a row"
+        assert rows[0][2].strip() in ("", "—") or "—" in rows[0][2]
+
+    def test_owner_and_date_are_left_for_the_client(self):
+        from app.engines.domains.base import build_insight
+        insights = [build_insight(title="T", problem="P", cause="",
+                                  evidence="", action="1. Do it", impact="",
+                                  severity="critical", category="attrition")]
+        header = self._cells(self._plan(insights, []))[0]
+        assert "Owner" in header[3] and "By when" in header[4]
+        assert self._cells(self._plan(insights, []))[1][3].strip() == ""
+
+    def test_nothing_to_recommend_says_so(self):
+        story = self._plan([], [])
+        text = " ".join(getattr(f, "text", "") for f in story)
+        assert "found nothing it could recommend" in text

@@ -350,7 +350,8 @@ def build_pdf(
                 _chart_page(story, s, T, img_bytes, title, narrative, i, CW)
                 story.append(PageBreak())
 
-        _recommendations(story, s, T, recommendations, CW)
+        _recommendations(story, s, T, recommendations, CW,
+                         insights=top_insights)
         story.append(PageBreak())
 
         _appendix(story, s, T, config, CW, domain=domain)
