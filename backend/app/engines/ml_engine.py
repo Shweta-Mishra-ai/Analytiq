@@ -33,6 +33,14 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Above this a category is dropped rather than one-hot
+# encoded: a hundred dummy columns on a few thousand rows
+# buys overfitting, not signal.
+MAX_ONEHOT_LEVELS = 30
+
+from app.engines import present as _P
+from app.engines.present import label as _L
+
 
 # ══════════════════════════════════════════════════════════
 #  DATA CLASSES
@@ -87,6 +95,10 @@ class MLReport:
     y_pred:             Optional[np.ndarray] = None
     preprocessor:       Any = field(default=None, repr=False)
     label_encoders:     Dict = field(default_factory=dict)
+    # {one-hot column: (source column, level)} so a feature can
+    # be named for a reader and a what-if can be given a category
+    # rather than a dummy.
+    encoding_map:       Dict = field(default_factory=dict)
     target_encoder:     Any = field(default=None, repr=False)
     warnings:           List[str] = field(default_factory=list)
     insights:           List[str] = field(default_factory=list)
@@ -95,6 +107,11 @@ class MLReport:
     # the class balance, and feature importances are withheld.
     verdict:            Any = None
     leakage:            List = field(default_factory=list)
+    # Columns that separate the outcome almost perfectly and could not be
+    # cleared as either a leak or a real driver. Kept in the model, named
+    # here, and priced by score_without_suspects.
+    suspect_features:   List = field(default_factory=list)
+    score_without_suspects: Any = None
 
 
 # ══════════════════════════════════════════════════════════
@@ -180,7 +197,7 @@ def prepare_features(
     - Encode categoricals
     - Handle missing values
     - Remove low-variance features
-    Returns (X, y, label_encoders).
+    Returns (X, y, label_encoders, encoding_map).
     """
     df = df.copy()
 
@@ -205,13 +222,29 @@ def prepare_features(
                 drop_cols.append(col)
         df = df.drop(columns=drop_cols)
 
-    # Encode categorical columns
-    label_encoders = {}
-    for col in text_columns(df):
-        le = LabelEncoder()
-        df[col] = df[col].fillna("Unknown")
-        df[col] = le.fit_transform(df[col].astype(str))
-        label_encoders[col] = le
+    # One-hot, not label encoding. LabelEncoder assigns Sales=0,
+    # Research=1, HR=2 — an ordering that exists nowhere in the data. A
+    # linear model then reads HR as "twice Research", and a tree splits
+    # on a threshold in a sequence that means nothing, so a category
+    # whose effect is not monotonic in that accidental order can only be
+    # captured by spending several splits on it.
+    label_encoders: Dict = {}
+    encoding_map: Dict = {}
+    cat_cols = [c for c in text_columns(df) if c in df.columns]
+    for col in cat_cols:
+        levels = df[col].fillna("Unknown").astype(str)
+        n_levels = int(levels.nunique())
+        if n_levels > MAX_ONEHOT_LEVELS:
+            # Too many levels to one-hot without swamping the feature
+            # space. Named rather than silently label-encoded into a
+            # false ordering.
+            df = df.drop(columns=[col])
+            label_encoders[col] = None
+            continue
+        dummies = pd.get_dummies(levels, prefix=str(col), prefix_sep="=")
+        for dummy in dummies.columns:
+            encoding_map[dummy] = (col, dummy.split("=", 1)[1])
+        df = df.drop(columns=[col]).join(dummies.astype(float))
 
     # Convert datetime to numeric (days since min)
     for col in df.select_dtypes(include="datetime").columns:
@@ -228,7 +261,7 @@ def prepare_features(
     df = df.loc[common_idx]
     y  = y.loc[common_idx]
 
-    return df, y, label_encoders
+    return df, y, label_encoders, encoding_map
 
 
 # ══════════════════════════════════════════════════════════
@@ -538,8 +571,23 @@ def predict_what_if(
         return {"error": "No trained model available."}
 
     try:
-        # Build input row
-        X_input = pd.DataFrame([input_values])[ml_report.feature_cols]
+        # A caller supplies categories the way a person says them —
+        # {"Department": "Sales"} — not the one-hot columns the model was
+        # fitted on. Expand them here so the UI never has to know the
+        # encoding.
+        values = dict(input_values)
+        mapping = getattr(ml_report, "encoding_map", {}) or {}
+        if mapping:
+            sources = {src for src, _level in mapping.values()}
+            for dummy, (src, level) in mapping.items():
+                if src in values:
+                    values[dummy] = 1.0 if str(values[src]) == level else 0.0
+            for src in sources:
+                values.pop(src, None)
+        missing = [c for c in ml_report.feature_cols if c not in values]
+        for c in missing:
+            values[c] = 0.0
+        X_input = pd.DataFrame([values])[ml_report.feature_cols]
         pipe    = ml_report.best_model.model
         pred    = pipe.predict(X_input)[0]
 
@@ -701,12 +749,16 @@ def run_ml_pipeline(
         class_balance = {str(k): round(float(v), 4) for k, v in vc.items()}
 
     # Prepare features
-    X, y, label_encoders = prepare_features(df, target_col, selected_features)
+    X, y, label_encoders, encoding_map = prepare_features(
+        df, target_col, selected_features)
 
     # ── Target-leakage guard ──────────────────────────────
     # A feature that is (nearly) a copy of the target produces a
     # spectacular but meaningless model. Detect and drop, with a warning.
     leakage_warnings = []
+    # Kept in the model, but the reader is shown what the model
+    # scores without them.
+    suspect_cols: list = []
     y_num = pd.to_numeric(pd.Series(y).reset_index(drop=True), errors="coerce")
     if y_num.notna().sum() >= 20:
         for col in list(X.columns):
@@ -737,8 +789,16 @@ def run_ml_pipeline(
         detected_leakage = detect_leakage(df, target_col)
         for finding in detected_leakage:
             leakage_warnings.append(finding.reason)
-            if finding.column in X.columns:
+            # Only a confirmed leak is removed. A column that merely
+            # separates the outcome very well is kept and flagged: on a
+            # dataset whose target was defined as x > 0, dropping every
+            # strong column dropped x, and the pipeline then reported
+            # "no usable feature columns found" — the model destroyed
+            # rather than protected.
+            if finding.drop and finding.column in X.columns:
                 X = X.drop(columns=[finding.column])
+            elif finding.column in X.columns:
+                suspect_cols.append(finding.column)
     except Exception:
         logger.warning("leakage detection failed", exc_info=True)
 
@@ -795,6 +855,7 @@ def run_ml_pipeline(
         y_pred=y_pred,
         preprocessor=None,
         label_encoders=label_encoders,
+        encoding_map=encoding_map,
         target_encoder=target_encoder,
         warnings=[task_reason] + leakage_warnings,
         leakage=detected_leakage,
@@ -830,6 +891,47 @@ def run_ml_pipeline(
         report.feature_importance = []
         report.shap_values = None
         report.shap_feature_names = None
+
+    # What the model is worth without the columns we could not clear.
+    # Keeping a suspiciously strong feature is only honest if the reader
+    # can see how much of the result rests on it.
+    if suspect_cols and best is not None:
+        report.suspect_features = list(suspect_cols)
+        try:
+            reduced = X.drop(columns=[c for c in suspect_cols
+                                      if c in X.columns])
+            if reduced.shape[1] >= 1:
+                strat = (y if task == "classification"
+                         and pd.Series(y).nunique() <= 20 else None)
+                r_tr, r_te, ry_tr, ry_te = train_test_split(
+                    reduced, y, test_size=0.2, random_state=42,
+                    stratify=strat)
+                pipe = _make_pipeline(_get_models(task)[0][1], task)
+                pipe.fit(r_tr, ry_tr)
+                pred = pipe.predict(r_te)
+                score = (r2_score(ry_te, pred) if task == "regression"
+                         else accuracy_score(ry_te, pred))
+                report.score_without_suspects = round(float(score), 4)
+                report.warnings.append(
+                    "Held out {}: the model scores {:.1%} without {} "
+                    "against {:.1%} with {}. If that field turns out to be "
+                    "recorded at the same time as the outcome, the lower "
+                    "figure is the one that will hold on new data.".format(
+                        _P.join_and([_L(c) for c in suspect_cols]),
+                        score,
+                        "them" if len(suspect_cols) > 1 else "it",
+                        best.test_score,
+                        "them" if len(suspect_cols) > 1 else "it"))
+            else:
+                report.warnings.append(
+                    "Every feature in this model is one that separates the "
+                    "outcome almost perfectly on its own. There is nothing "
+                    "left to compare against, so treat the score as "
+                    "unverified until you confirm when these fields are "
+                    "populated.")
+        except Exception:
+            logger.warning("could not score the model without its suspect "
+                           "features", exc_info=True)
 
     # Suspiciously perfect scores usually mean leakage we couldn't detect
     if best and best.test_score >= 0.995:

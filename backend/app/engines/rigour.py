@@ -36,6 +36,8 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+from app.engines.present import label as _L
+
 
 # A model must beat its baseline by at least this much of the headroom
 # that was available to it. Beating a 91% baseline by 0.3pp is noise.
@@ -246,6 +248,41 @@ class LeakageFinding:
     column: str
     separation: float
     reason: str
+    # "confirmed" — there is positive evidence the column is recorded at
+    # or after the outcome, so it is removed. "suspected" — it separates
+    # the outcome very well and nothing says why, which describes a leak
+    # and a genuinely strong predictor equally. Separation alone cannot
+    # tell those apart, and treating every strong column as a leak threw
+    # away the real signal: on a dataset whose target was defined as
+    # x > 0, x itself was dropped and the pipeline then reported "no
+    # usable feature columns found".
+    confidence: str = "suspected"
+    # What a caller should do with it.
+    drop: bool = False
+
+
+# Fields whose names say they are written at the moment the outcome
+# occurs, or afterwards. A name is weak evidence in general and strong
+# evidence here: nobody calls a predictor "settlement_amount".
+_POST_OUTCOME_TOKENS = {
+    "exit", "exited", "termination", "terminated", "resignation",
+    "resigned", "leaver", "offboard", "offboarding",
+    "churn", "churned", "cancel", "cancelled", "cancellation",
+    "closed", "closure", "resolved", "resolution", "settled",
+    "settlement", "payout", "refund", "refunded", "chargeback",
+    "outcome", "final", "post", "afterwards", "reason",
+}
+
+
+def _names_a_post_outcome_field(col) -> str:
+    """The token that marks a column as recorded at or after the outcome,
+    or "" when nothing in the name says so."""
+    import re as _re
+    name = _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(col)).lower()
+    for token in _re.split(r"[^a-z0-9]+", name):
+        if token in _POST_OUTCOME_TOKENS:
+            return token
+    return ""
 
 
 def detect_leakage(df: pd.DataFrame, target: str,
@@ -291,6 +328,7 @@ def detect_leakage(df: pd.DataFrame, target: str,
                 sep_miss = max(sep_miss, 1 - sep_miss)
                 if sep_miss >= LEAKAGE_AUC:
                     findings.append(LeakageFinding(
+                        confidence="confirmed", drop=True,
                         column=str(col), separation=round(sep_miss, 4),
                         reason=(
                             "'{}' is populated for almost exactly the rows "
@@ -322,17 +360,37 @@ def detect_leakage(df: pd.DataFrame, target: str,
                 sep = float(grouped["mean"].max() - grouped["mean"].min())
                 sep = 0.5 + sep / 2      # onto the same 0.5-1.0 scale
             if sep >= LEAKAGE_AUC:
-                findings.append(LeakageFinding(
-                    column=str(col), separation=round(sep, 4),
-                    reason=(
-                        "'{}' separates {} almost perfectly on its own "
-                        "({:.2f}). A single column this predictive is usually "
-                        "recorded at the same time as the outcome or after "
-                        "it, in which case a model using it will not work on "
-                        "new data, where the column is not yet known. "
-                        "Confirm when this field is populated before "
-                        "including it."
-                    ).format(col, target, sep)))
+                # A name that says the field is written when the outcome
+                # happens is positive evidence; separation on its own is
+                # not. Only the first justifies removing the column.
+                after_the_fact = _names_a_post_outcome_field(col)
+                if after_the_fact:
+                    findings.append(LeakageFinding(
+                        confidence="confirmed", drop=True,
+                        column=str(col), separation=round(sep, 4),
+                        reason=(
+                            "{} separates {} almost perfectly ({:.2f}), and "
+                            "its name says it is recorded when the outcome "
+                            "happens ({}). A model using it scores well in "
+                            "validation and cannot run on new data, where "
+                            "the field is not filled in yet, so it is "
+                            "excluded."
+                        ).format(_L(col), _L(target), sep, after_the_fact)))
+                else:
+                    findings.append(LeakageFinding(
+                        confidence="suspected", drop=False,
+                        column=str(col), separation=round(sep, 4),
+                        reason=(
+                            "{} separates {} almost perfectly on its own "
+                            "({:.2f}). That is what leakage looks like — a "
+                            "field recorded at or after the outcome — and "
+                            "also what a genuinely strong predictor looks "
+                            "like. Nothing in the data distinguishes them, "
+                            "so it is kept and the model is also reported "
+                            "without it. Check when this field is populated "
+                            "in your source system before relying on the "
+                            "result."
+                        ).format(_L(col), _L(target), sep)))
         except Exception:
             logger.debug("leakage check failed for %r", col, exc_info=True)
     return findings
