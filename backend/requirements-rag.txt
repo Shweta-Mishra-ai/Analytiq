@@ -1,0 +1,15 @@
+# Optional: real semantic retrieval for the knowledge base.
+#
+# Without these the RAG search still runs — BM25 finds exact terms, and a
+# hashed term vector covers the rest — but it matches on shared words
+# only. "holiday entitlement" does not find "paid days off", and
+# "attrition rate" does not find "turnover", because neither pair shares
+# a token. That is the difference between keyword search and retrieval.
+#
+#     pip install -r requirements-rag.txt
+#
+# Costs roughly 2GB installed (torch), and downloads ~90MB of model
+# weights from huggingface.co on first use, then caches them. An
+# air-gapped deployment should pre-populate HF_HOME rather than skip
+# this — search quality without it is materially worse.
+sentence-transformers>=3.0.0

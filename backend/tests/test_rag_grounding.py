@@ -261,3 +261,155 @@ def test_chunking_keeps_source_references():
 
 def test_chunking_drops_empty_passages():
     assert chunk_passages([{"text": "   ", "source": "a", "locator": "b"}]) == []
+
+
+# ══════════════════════════════════════════════════════════
+#  HYBRID RETRIEVAL
+#
+#  Retrieval used to be one cosine over a hashed bag of words: keyword
+#  matching dressed as semantic search, with no IDF, no length
+#  normalisation, and no way to match "annual leave" to "vacation
+#  entitlement".
+# ══════════════════════════════════════════════════════════
+
+class TestBM25:
+    DOCS = [
+        "Employees accrue 25 days of annual leave per calendar year.",
+        "The expense claim deadline is the fifth working day of the month.",
+        "Quarterly revenue grew 12 percent in the enterprise segment.",
+        "Policy number HR-2024-08 governs remote working arrangements.",
+        "Vacation entitlement rises to 28 days after five years of service.",
+    ]
+
+    def _index(self):
+        from app.rag.retrieval import BM25Index
+        return BM25Index(self.DOCS)
+
+    def test_it_finds_an_exact_identifier(self):
+        """The case dense retrieval is worst at: a policy number carries
+        almost no meaning to embed, and is exactly what someone types."""
+        top = self._index().search("HR-2024-08", k=1)
+        assert top and "HR-2024-08" in self.DOCS[top[0][0]]
+
+    def test_a_rare_term_outweighs_a_common_one(self):
+        """Raw term frequency let a passage win by repeating a common
+        word. IDF is what stops that."""
+        index = self._index()
+        assert index.idf["vacation"] > index.idf["day"]
+
+    def test_length_does_not_win_on_its_own(self):
+        from app.rag.retrieval import BM25Index
+        short = "annual leave policy"
+        padded = short + " " + " ".join(["filler"] * 200)
+        index = BM25Index([short, padded])
+        ranked = index.search("annual leave", k=2)
+        assert ranked[0][0] == 0, "the padded passage outranked the answer"
+
+    def test_plurals_reach_the_same_term(self):
+        from app.rag.retrieval import tokenize
+        assert tokenize("expense claims")[-1] == tokenize("expense claim")[-1]
+
+    def test_a_query_about_nothing_returns_nothing(self):
+        assert self._index().search("photosynthesis chlorophyll") == []
+
+
+class TestFusion:
+    def test_agreement_between_retrievers_wins(self):
+        """Ranked second and first beats ranked first and third — which
+        is the point of fusing, and is not what averaging a cosine
+        against a BM25 score would give."""
+        from app.rag.retrieval import reciprocal_rank_fusion
+        fused = reciprocal_rank_fusion([[2, 0, 1], [0, 1, 2]])
+        assert fused[0][0] == 0
+
+    def test_fusion_uses_ranks_not_scores(self):
+        """A cosine of 0.71 and a BM25 score of 14.2 are not comparable
+        quantities; only the order each retriever produced is."""
+        from app.rag.retrieval import reciprocal_rank_fusion
+        a = reciprocal_rank_fusion([[5, 3, 1], [3, 5, 1]])
+        b = reciprocal_rank_fusion([[5, 3, 1], [3, 5, 1]])
+        assert a == b
+
+    def test_one_retriever_alone_still_returns_results(self):
+        """No embedder configured, or a knowledge base with no vectors
+        yet: the fusion degrades rather than returning nothing."""
+        from app.rag.retrieval import BM25Index, hybrid_search
+        index = BM25Index(TestBM25.DOCS)
+        hits = hybrid_search("annual leave", None, None, index, k=2)
+        assert hits and hits[0][0] == 0
+
+    def test_no_retriever_returns_nothing_rather_than_guessing(self):
+        from app.rag.retrieval import hybrid_search
+        assert hybrid_search("anything", None, None, None) == []
+
+
+class TestKnowledgeBaseSearch:
+    DOCS = [
+        "Staff may take up to 25 paid days off each calendar year.",
+        "Reimbursement requests must be submitted by the fifth working day.",
+        "Turnover among engineers reached 19 percent last quarter.",
+    ]
+
+    @staticmethod
+    def _kb(tmp_path, docs):
+        from app.rag.vector_store import KnowledgeBase
+        kb = KnowledgeBase("k", "K", str(tmp_path / "k.json"))
+        kb.add_chunks([{"text": t, "source": "h", "locator": f"p{i}",
+                        "kind": "text"} for i, t in enumerate(docs)],
+                      "h.pdf", "pdf")
+        return kb
+
+    def test_exact_terms_are_found_without_any_embedder(self, tmp_path):
+        kb = self._kb(tmp_path, TestBM25.DOCS)
+        hits = kb.search("HR-2024-08", k=1)
+        assert hits and "HR-2024-08" in hits[0]["text"]
+
+    def test_synonyms_need_the_sentence_embedder(self, tmp_path, monkeypatch):
+        """The failure the hashed vector cannot fix, and the reason the
+        sentence model is worth its install: "holiday entitlement" and
+        "paid days off" share no token at all."""
+        import numpy as np
+        from app.rag import vector_store as vs
+
+        space = {
+            "holiday": [1, 0, 0], "leave": [1, 0, 0], "vacation": [1, 0, 0],
+            "paid": [.9, 0, 0], "day": [.8, 0, 0], "off": [.8, 0, 0],
+            "entitlement": [.9, 0, 0],
+            "attrition": [0, 1, 0], "turnover": [0, 1, 0],
+            "engineer": [0, .8, 0], "percent": [0, .6, 0],
+            "quarter": [0, .5, 0],
+            "expense": [0, 0, 1], "reimbursement": [0, 0, 1],
+            "deadline": [0, 0, .9], "submitted": [0, 0, .8],
+            "request": [0, 0, .7], "working": [0, 0, .5],
+        }
+
+        def fake(texts):
+            out = []
+            for t in texts:
+                v = np.zeros(3)
+                for tok in vs._tokens(t):
+                    v += np.array(space.get(tok, [0, 0, 0]), dtype=float)
+                norm = np.linalg.norm(v)
+                out.append(v / norm if norm else v)
+            return np.asarray(out, dtype=np.float32)
+
+        monkeypatch.setattr(vs._SentenceEmbedder, "_tried", True)
+        monkeypatch.setattr(vs._SentenceEmbedder, "_model", object())
+        monkeypatch.setattr(vs._SentenceEmbedder, "encode",
+                            classmethod(lambda cls, texts: fake(texts)))
+
+        kb = self._kb(tmp_path, self.DOCS)
+        assert kb.embedder == "sentence"
+        for query, expected in (("holiday entitlement", "paid days off"),
+                                ("attrition rate", "Turnover"),
+                                ("expense deadline", "Reimbursement")):
+            hits = kb.search(query, k=1)
+            assert hits, f"{query!r} found nothing"
+            assert expected in hits[0]["text"], (query, hits[0]["text"])
+
+    def test_a_question_the_documents_do_not_cover_returns_nothing(self,
+                                                                   tmp_path):
+        """Handing back the k least-irrelevant chunks is what let this
+        answer questions the documents never addressed."""
+        kb = self._kb(tmp_path, self.DOCS)
+        assert kb.search("photosynthesis in marine algae", k=3) == []

@@ -25,8 +25,14 @@ from typing import List, Optional
 import numpy as np
 
 from app.config import config
+from app.rag.retrieval import (BM25Index, CrossEncoderReranker,
+                               hybrid_search)
 
 logger = logging.getLogger(__name__)
+
+# Small, fast, and good enough that offline retrieval stops
+# being keyword matching. 384 dimensions, ~90MB.
+LOCAL_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 _EMBED_BATCH = 90
 _LOCAL_DIM = 384
@@ -94,10 +100,68 @@ def _local_embed(texts: List[str]) -> np.ndarray:
     return out / norms
 
 
+class _SentenceEmbedder:
+    """all-MiniLM-L6-v2, loaded once, when it is available.
+
+    This is what makes offline retrieval semantic rather than lexical.
+    The hashed fallback below cannot match "annual leave" to "vacation
+    entitlement" — the two share no token, so their hashed dimensions are
+    unrelated and the cosine is zero. A sentence encoder puts them next
+    to each other, which is the whole point of embedding text.
+
+    Optional on purpose: the model is a download and a torch dependency,
+    and an install without it still works, on BM25 and the hashed vector.
+    """
+
+    _model = None
+    _tried = False
+
+    @classmethod
+    def get(cls):
+        if cls._tried:
+            return cls._model
+        cls._tried = True
+        try:
+            from sentence_transformers import SentenceTransformer
+            cls._model = SentenceTransformer(LOCAL_MODEL_NAME)
+            logger.info("local sentence embedder loaded: %s", LOCAL_MODEL_NAME)
+        except Exception as exc:
+            logger.info("local sentence embedder unavailable (%s) — falling "
+                        "back to hashed term vectors, which match on shared "
+                        "words only", exc)
+            cls._model = None
+        return cls._model
+
+    @classmethod
+    def encode(cls, texts: List[str]) -> Optional[np.ndarray]:
+        model = cls.get()
+        if model is None:
+            return None
+        try:
+            return np.asarray(
+                model.encode(list(texts), normalize_embeddings=True,
+                             show_progress_bar=False),
+                dtype=np.float32)
+        except Exception:
+            logger.warning("sentence embedding failed", exc_info=True)
+            return None
+
+
 def embed(texts: List[str], task: str = "retrieval_document") -> tuple[np.ndarray, str]:
+    """Vectors for a batch of texts, and which backend produced them.
+
+    Order is deliberate: a configured API embedder is the strongest, a
+    local sentence model is the strongest thing that needs no key, and
+    the hashed vector is the floor that guarantees retrieval works at
+    all. The name comes back because the relevance floor differs per
+    backend — their cosines are not on the same scale.
+    """
     vecs = _gemini_embed(texts, task)
     if vecs is not None:
         return vecs, "gemini"
+    vecs = _SentenceEmbedder.encode(texts)
+    if vecs is not None:
+        return vecs, "sentence"
     return _local_embed(texts), "local"
 
 
@@ -108,7 +172,7 @@ def embed(texts: List[str], task: str = "retrieval_document") -> tuple[np.ndarra
 # unrelated business text around 0.3-0.5, while the local hashing
 # embedder scores unrelated text far lower because it only matches on
 # shared tokens — so one number cannot serve both.
-MIN_SCORE = {"gemini": 0.45, "local": 0.12}
+MIN_SCORE = {"gemini": 0.45, "sentence": 0.28, "local": 0.12}
 # A chunk scoring far below the best match is padding: it was returned
 # only because k slots had to be filled.
 RELATIVE_FLOOR = 0.55
@@ -226,21 +290,79 @@ class KnowledgeBase:
         the citations even look right, because they point at the
         paragraphs that were supplied.
         """
-        if self.vectors is None or not len(self.chunks):
+        if not len(self.chunks):
             return []
-        if self.embedder == "gemini":
-            qv, backend = embed([query], "retrieval_query")
-            if backend != "gemini":   # key vanished mid-session
-                return []
-        else:
-            qv = _local_embed([query])
-        qv = qv[0]
+
+        # Dense half — only when the query can be embedded the same way
+        # the chunks were. A query vector from a different backend is not
+        # comparable to the stored ones.
+        qv = None
+        if self.vectors is not None:
+            if self.embedder == "gemini":
+                vec, backend = embed([query], "retrieval_query")
+                qv = vec[0] if backend == "gemini" else None
+            elif self.embedder == "sentence":
+                vec = _SentenceEmbedder.encode([query])
+                qv = vec[0] if vec is not None else None
+            else:
+                qv = _local_embed([query])[0]
+
         mat = self.vectors
-        sims = (mat @ qv) / (
-            (np.linalg.norm(mat, axis=1) * np.linalg.norm(qv)) + 1e-9)
-        idx = np.argsort(-sims)[:k]
-        hits = [{**self.chunks[i], "score": float(sims[i])} for i in idx]
+        if mat is not None and qv is not None:
+            # Normalise once so the fusion sees a cosine, whichever
+            # backend produced the vectors.
+            norms = np.linalg.norm(mat, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            mat = mat / norms
+            qv = qv / (np.linalg.norm(qv) or 1.0)
+        else:
+            mat = None
+
+        # Sparse half — exact terms a dense model has no way to hold: a
+        # policy number, a surname, an SKU.
+        bm25 = self._bm25_index()
+
+        fused = hybrid_search(query, mat, qv, bm25,
+                              k=max(k * 3, 12), candidates=30)
+        if not fused:
+            return []
+
+        # Reranking reads each candidate against the question rather than
+        # comparing two vectors built in isolation. Too slow for a
+        # corpus, affordable on a shortlist, and it is what moves the
+        # right passage from rank six to rank one.
+        order = [i for i, _ in fused]
+        if CrossEncoderReranker.available():
+            texts = [self.chunks[i].get("text", "") for i in order]
+            ranked = CrossEncoderReranker.rerank(query, texts, top_k=k)
+            order = [order[pos] for pos, _score in ranked]
+
+        scores = dict(fused)
+        hits = []
+        for i in order[:k]:
+            chunk = self.chunks[i]
+            # The cosine, where there is one, is what the relevance floor
+            # is calibrated against — a fused RRF score has no absolute
+            # meaning.
+            cosine = float(mat[i] @ qv) if mat is not None and qv is not None \
+                else float(scores.get(i, 0.0))
+            hits.append({**chunk, "score": cosine,
+                         "fusion_score": float(scores.get(i, 0.0))})
         return _filter_by_relevance(hits, self.embedder)
+
+    def _bm25_index(self):
+        """Built on first use and rebuilt when the chunks change."""
+        signature = len(self.chunks)
+        cached = getattr(self, "_bm25_cache", None)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        try:
+            index = BM25Index([c.get("text", "") for c in self.chunks])
+        except Exception:
+            logger.warning("could not build the keyword index", exc_info=True)
+            return None
+        self._bm25_cache = (signature, index)
+        return index
 
 
 class RagStore:
