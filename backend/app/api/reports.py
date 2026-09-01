@@ -197,6 +197,21 @@ def _generate_pdf(ds_id: str, req: PdfRequest, owner: str):
     # predictive.py has been in the codebase throughout, but build_pdf had
     # no parameter to receive its output, so this ran (when anything called
     # it at all) and was discarded. The report now carries it.
+    # Governance travels with the analysis rather than being asked for
+    # afterwards: what the data is, where it came from, and who it could
+    # still identify once the names are gone.
+    governance = None
+    try:
+        from app.engines.governance import build_governance
+        governance = build_governance(
+            df, meta=store.get_meta(owner, ds_id),
+            cleaning_summary=store.cache_get(owner, ds_id, "clean_report"),
+            retention_days=config.data_ttl_days)
+    except Exception:
+        logger.warning("governance record failed — section omitted",
+                       exc_info=True)
+        skipped.append("governance")
+
     predictive = top_cluster = None
     driver_chart = risk_heatmap = None
     try:
@@ -290,6 +305,7 @@ def _generate_pdf(ds_id: str, req: PdfRequest, owner: str):
             predictive=predictive, top_cluster=top_cluster,
             driver_chart=driver_chart, risk_heatmap=risk_heatmap,
             avg_salary_k=float(req.avg_salary_k), forecast=forecast,
+            governance=governance,
         )
     except Exception as e:
         logger.exception("PDF build failed")

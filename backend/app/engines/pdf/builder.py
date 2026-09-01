@@ -43,7 +43,8 @@ from app.engines.pdf.narrative_sections import (
 from app.engines.pdf.predictive_sections import _predictive_section
 from app.engines.pdf.data_sections import (
     _data_prep_section, _dataset_overview, _estimates_block, _stats_section,
-    _bi_section, _chart_page, _recommendations,
+    _bi_section, _chart_page, _governance_section,
+    _recommendations,
 )
 from app.engines.pdf.domain_sections import (
     APPENDIX_TITLE, _appendix, _prepared_by_line, _domain_deep_page,
@@ -97,6 +98,7 @@ def build_pdf(
     driver_chart: bytes = None,
     risk_heatmap: bytes = None,
     avg_salary_k: float = 0.0,
+    governance=None,
 ) -> bytes:
     """Build the report.
 
@@ -239,6 +241,8 @@ def build_pdf(
     _add_toc("Report at a Glance")
     _add_toc("Executive Summary")
     _add_toc("Data Quality & Transparency Note")
+    if governance is not None:
+        _add_toc("Data Governance")
     if cleaning_summary:
         _add_toc("Data Preparation")
     if _has_reference_ranges(domain, df):
@@ -298,6 +302,10 @@ def build_pdf(
 
         _dq_note(story, s, T, df, profile, CW)
         story.append(PageBreak())
+
+        if governance is not None:
+            _governance_section(story, s, T, governance, CW)
+            story.append(PageBreak())
 
         if cleaning_summary:
             _data_prep_section(story, s, T, cleaning_summary, CW,

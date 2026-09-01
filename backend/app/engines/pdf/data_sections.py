@@ -26,6 +26,7 @@ from reportlab.pdfgen import canvas as CV
 
 logger = logging.getLogger(__name__)
 
+from app.engines import present as _P
 from app.engines.present import (label as _PL, num as _PN,
                                  truncate as _fit, value as _PV)
 
@@ -586,3 +587,118 @@ def _recommendations(story, s, T, actions, CW, insights=None):
         "what to do and why, not who should do it. Every recommendation "
         "rests solely on the dataset provided; confirm with the people who "
         "know the process before acting.", s["sm"]))
+
+# ══════════════════════════════════════════════════════════
+#  DATA GOVERNANCE
+# ══════════════════════════════════════════════════════════
+
+_SENSITIVITY_ORDER = {"special": 0, "direct": 1, "quasi-identifier": 2,
+                      "none": 3}
+
+
+def _governance_section(story, s, T, record, CW):
+    """What the data is, where it came from, and who it could identify.
+
+    The half of a deliverable a client's data owner asks for, usually
+    after the analysis has already been circulated.
+    """
+    _sec(story, s, T, "Data Governance",
+         "Provenance, classification, and re-identification risk")
+
+    facts = [("Source", record.source_file or "Supplied dataset"),
+             ("Received", record.ingested_at or "—"),
+             ("Scope", "{} rows x {} columns".format(_P.count(record.rows),
+                                                     record.columns))]
+    if record.retention_days:
+        facts.append(("Retention", "{} days".format(record.retention_days)))
+    _gtable(story, T, ["", ""],
+            [[k, v] for k, v in facts], [CW * 0.25, CW * 0.75])
+    story.append(Spacer(1, 3*mm))
+
+    # What this classification requires of whoever holds the file.
+    if record.obligations:
+        story.append(Paragraph("What this means for handling", s["h3"]))
+        for item in record.obligations:
+            _narrative_box(story, s, T, _clean(item))
+        story.append(Spacer(1, 2*mm))
+
+    risk = record.reidentification
+    if risk is not None:
+        story.append(Paragraph("Re-identification risk", s["h3"]))
+        _kpi_row(story, s, T, [
+            {"label": "SMALLEST GROUP", "value": "{:,}".format(risk.k_min),
+             "sub": "records sharing a profile",
+             "color": T["negative"] if risk.k_min < 5 else T["positive"]},
+            {"label": "UNIQUE RECORDS", "value": "{:,}".format(risk.unique_rows),
+             "sub": "{}% of the file".format(risk.unique_pct),
+             "color": T["negative"] if risk.unique_pct >= 5
+                      else T["positive"]},
+            {"label": "RISK", "value": risk.verdict, "sub": "on these fields",
+             "color": {"High": T["negative"], "Moderate": T["warning"]}
+                      .get(risk.verdict, T["positive"])},
+        ], CW)
+        story.append(Paragraph(
+            "Measured as k-anonymity over {}: how many records share each "
+            "combination of those fields. A group of one is a person who "
+            "can be picked out by anyone holding the same facts about them, "
+            "whether or not a name column is present.".format(
+                _P.join_and([_PL(c) for c in risk.quasi_identifiers],
+                            limit=4)),
+            s["note"]))
+        story.append(Spacer(1, 3*mm))
+
+    # The data dictionary. Sensitive columns first, because they are what
+    # the page is read for.
+    if record.dictionary:
+        story.append(Paragraph("Data dictionary", s["h3"]))
+        rows = [[Paragraph("<b>{}</b>".format(h), s["sm"])
+                 for h in ("Field", "Type", "Role", "Sensitivity",
+                           "Complete", "Distinct", "Example")]]
+        ordered = sorted(record.dictionary,
+                         key=lambda c: (_SENSITIVITY_ORDER.get(c.sensitivity, 3),
+                                        c.name))
+        for col in ordered[:40]:
+            rows.append([
+                Paragraph(_clean(col.label), s["sm"]),
+                Paragraph(_clean(col.dtype), s["sm"]),
+                Paragraph(col.role, s["sm"]),
+                Paragraph(
+                    "—" if col.sensitivity == "none" else
+                    '<font color="{}"><b>{}</b></font>'.format(
+                        T["negative"] if col.sensitivity in
+                        ("direct", "special") else T["warning"],
+                        col.sensitivity), s["sm"]),
+                Paragraph("{:.0f}%".format(col.completeness_pct), s["sm"]),
+                Paragraph("{:,}".format(col.distinct), s["sm"]),
+                Paragraph(_clean(_fit(col.example, 22)), s["sm"]),
+            ])
+        table = Table(rows, colWidths=[CW * x for x in
+                                       (0.22, 0.11, 0.13, 0.17, 0.10,
+                                        0.11, 0.16)], repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND",     (0, 0), (-1, 0), _c(T["header_bg"])),
+            ("TEXTCOLOR",      (0, 0), (-1, 0), white),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [white, _c(T["bg_light"])]),
+            ("VALIGN",         (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING",     (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING",  (0, 0), (-1, -1), 4),
+            ("LEFTPADDING",    (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING",   (0, 0), (-1, -1), 5),
+            ("GRID",           (0, 0), (-1, -1), 0.3, _c(T["border"])),
+        ]))
+        story.append(table)
+        if len(record.dictionary) > 40:
+            story.append(Paragraph(
+                "{} further columns are not listed here; the full "
+                "dictionary is available from the API."
+                .format(len(record.dictionary) - 40), s["note"]))
+
+    if record.lineage:
+        story.append(Spacer(1, 3*mm))
+        story.append(Paragraph("What was done to the data", s["h3"]))
+        for step in record.lineage[:12]:
+            story.append(Paragraph("\u2022 " + _clean(str(step)), s["body"]))
+
+    if record.retention_note:
+        story.append(Spacer(1, 2*mm))
+        story.append(Paragraph(_clean(record.retention_note), s["note"]))

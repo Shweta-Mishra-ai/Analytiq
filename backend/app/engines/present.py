@@ -152,6 +152,19 @@ def num(val: Any, unit: str = "", decimals: int | None = None) -> str:
     return f"{body}{unit}"
 
 
+def count(val: Any) -> str:
+    """A whole number of things.
+
+    `num` scales its precision to magnitude, which is right for a measure
+    and wrong for a tally: it rendered two unique records as "2.00" and
+    forty-one as "41.0".
+    """
+    try:
+        return "{:,}".format(int(round(float(val))))
+    except (TypeError, ValueError):
+        return "—"
+
+
 def money(val: Any, symbol: str = "") -> str:
     """Currency: whole units, because nobody budgets to the cent."""
     try:
@@ -210,8 +223,9 @@ def join_and(items, limit: int = 3) -> str:
     if not vals:
         return ""
     if len(vals) > limit:
-        return "{} and {} others".format(", ".join(vals[:limit]),
-                                         len(vals) - limit)
+        extra = len(vals) - limit
+        return "{} and {} {}".format(", ".join(vals[:limit]), extra,
+                                     "other" if extra == 1 else "others")
     if len(vals) == 1:
         return vals[0]
     return "{} and {}".format(", ".join(vals[:-1]), vals[-1])

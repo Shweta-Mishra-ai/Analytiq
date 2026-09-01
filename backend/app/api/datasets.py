@@ -202,6 +202,27 @@ def profile(ds_id: str, owner: str = Depends(current_owner)):
     return to_jsonable(cached)
 
 
+@router.get("/{ds_id}/governance")
+def governance(ds_id: str, owner: str = Depends(current_owner)):
+    """What the data is, where it came from, and who it could identify.
+
+    The record a client's data owner asks for — usually after the
+    analysis has been circulated. Includes k-anonymity over the
+    quasi-identifiers, which is the number that decides whether the file
+    can be shared: removing the name column does not anonymise a dataset
+    where a postcode, an age and a job title single someone out.
+    """
+    df = store.get_df(owner, ds_id)
+    if df is None:
+        raise HTTPException(404, "Dataset not found")
+    from app.engines.governance import build_governance
+    record = build_governance(
+        df, meta=store.get_meta(owner, ds_id),
+        cleaning_summary=store.cache_get(owner, ds_id, "clean_report"),
+        retention_days=config.data_ttl_days)
+    return to_jsonable(record)
+
+
 @router.get("/{ds_id}/readiness")
 def readiness(ds_id: str, owner: str = Depends(current_owner)):
     """Is this dataset fit to analyse, and if not, what has to happen first."""
