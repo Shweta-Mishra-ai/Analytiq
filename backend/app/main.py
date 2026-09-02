@@ -121,6 +121,95 @@ async def app_metrics():
     return metrics.snapshot()
 
 
+@app.get("/api/admin/llm-status")
+async def llm_status():
+    """What this deployment is configured to use, without calling
+    anything. Fast, safe to poll, and never reveals a key — only whether
+    one is present and, when it is not, the exact variable name to set."""
+    from app.ai.llm_client import get_client
+    return get_client().status()
+
+
+@app.post("/api/admin/llm-check")
+async def llm_check(providers: str = "", timeout: float = 12.0):
+    """Actually call every configured provider and report what happened.
+
+    This exists because a key can be present, well-formed, and still not
+    work — expired, wrong account, out of quota, or blocked by the
+    network the app is deployed on. None of that is visible from the
+    configuration, and all of it looks identical from the outside: the
+    reports quietly come back in the engines' own wording instead of the
+    model's, with nothing in the UI to say why.
+
+    It also has to be *here*, in the running service, rather than in a
+    developer's terminal. The keys live in the deployment's environment
+    (Render's Settings → Environment, say) and a GitHub Actions secret of
+    the same name is not visible to the running service at all unless the
+    workflow passes it through — so the only machine that can answer
+    "does my key work" is the one holding it.
+
+    `providers` narrows the run to a comma-separated subset; `timeout`
+    caps each individual call so one stalled host cannot hold the page.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from app.ai import providers as provider_registry
+    from app.ai.llm_client import get_client
+
+    only = [n.strip() for n in providers.split(",") if n.strip()] or None
+    timeout = max(1.0, min(float(timeout), 60.0))
+
+    checks = await run_in_threadpool(
+        provider_registry.check_all, only, timeout)
+    rows = [c.as_dict() for c in checks]
+    working = [c["name"] for c in rows if c["ok"]]
+    status = get_client().status()
+
+    return {
+        "checked_at": _now_iso(),
+        "providers": rows,
+        "working": working,
+        "any_working": bool(working),
+        "routing": status["routing"],
+        "order": status["order"],
+        "privacy_mode": status["privacy_mode"],
+        # The one line a person actually reads first.
+        "summary": _llm_check_summary(rows, working, status["privacy_mode"]),
+    }
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _llm_check_summary(rows: list, working: list, privacy: bool) -> str:
+    """Plain English, because the failure mode this endpoint exists to
+    catch is someone reading a wall of JSON and concluding the wrong
+    thing."""
+    if privacy and not working:
+        return ("Privacy mode is on and no local model answered, so every "
+                "narrative will be written by the engines themselves. No "
+                "data has left this machine.")
+    if not rows:
+        return "No providers were checked."
+    configured = [r for r in rows if r["configured"]]
+    if not configured:
+        return ("No LLM provider is configured. Reports still build — the "
+                "engines write their own wording — but nothing will be "
+                "phrased by a model. Set any one of GROQ_API_KEY, "
+                "OPENROUTER_API_KEY, CEREBRAS_API_KEY, TOGETHER_API_KEY or "
+                "GEMINI_API_KEY, or point LOCAL_LLM_URL at a local model.")
+    if not working:
+        first = configured[0]
+        return (f"{len(configured)} provider(s) are configured but none "
+                f"answered. {first['label']}: {first['error']}")
+    names = ", ".join(r["label"] for r in rows if r["ok"])
+    broken = [r for r in configured if not r["ok"]]
+    tail = (f" {len(broken)} configured provider(s) failed — see below."
+            if broken else "")
+    return f"Working: {names}.{tail}"
+
+
 class CreateUserRequest(BaseModel):
     username: str
     password: str

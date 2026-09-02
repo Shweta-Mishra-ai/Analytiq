@@ -251,14 +251,31 @@ def test_chat_task_serves_the_second_identical_call_from_cache(monkeypatch,
                         cache_mod.LLMCache(base_dir=str(tmp_path / "llm")))
 
     calls = []
-    monkeypatch.setattr(mod, "Groq", lambda api_key: object())
-    client = mod.LLMClient(api_key="fake")
-    monkeypatch.setattr(mod.gemini_client, "is_configured", lambda: False)
 
-    def fake(*a, **k):
-        calls.append(1)
-        return "narrative"
-    monkeypatch.setattr(client, "_groq_report", fake)
+    class _Counting:
+        """One configured provider that counts how often it is asked."""
+        name, label, model = "groq", "Groq", "test-model"
+        free = local = False
+        key_env = "GROQ_API_KEY"
+
+        def is_configured(self):
+            return True
+
+        def missing(self):
+            return ""
+
+        def generate(self, *a, **k):
+            calls.append(1)
+            return "narrative"
+
+    from app.ai import providers as providers_mod
+    from app.config import config
+    monkeypatch.setattr(config, "llm_provider_order", "groq")
+    monkeypatch.setattr(config, "llm_routing", "")
+    monkeypatch.setattr(config, "llm_privacy_mode", False)
+    monkeypatch.setattr(providers_mod, "_providers",
+                        lambda: {"groq": _Counting()})
+    client = mod.LLMClient()
 
     first = client.chat_task("sys", "user", task="executive_summary")
     second = client.chat_task("sys", "user", task="executive_summary")

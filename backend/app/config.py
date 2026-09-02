@@ -21,6 +21,51 @@ class AppConfig(BaseSettings):
     # (generally available, production) replacements as of Aug 2026:
     gemini_model: str = "gemini-3.6-flash"
     gemini_embed_model: str = "gemini-embedding-001"
+    # Base URLs are configurable because these all move: a provider
+    # changes path, or a client fronts one with their own gateway. The
+    # defaults are the vendors' current public endpoints.
+    groq_base_url: str = Field(default="https://api.groq.com/openai",
+                               alias="GROQ_BASE_URL")
+
+    # ── Open-source / free-tier providers ────────────────
+    # All three speak the OpenAI dialect, so they share one adapter in
+    # ai/providers.py and differ only in these rows. Each has a free
+    # tier that serves openly-licensed weights (Llama, Qwen, DeepSeek,
+    # Gemma), which is what makes running this app cost nothing.
+    openrouter_api_key: str = Field(default="", alias="OPENROUTER_API_KEY")
+    # The `:free` suffix is not decoration — it selects OpenRouter's
+    # no-cost pool. Drop it and the same slug bills.
+    openrouter_model: str = Field(
+        default="meta-llama/llama-3.3-70b-instruct:free",
+        alias="OPENROUTER_MODEL")
+    openrouter_base_url: str = Field(default="https://openrouter.ai/api",
+                                     alias="OPENROUTER_BASE_URL")
+
+    cerebras_api_key: str = Field(default="", alias="CEREBRAS_API_KEY")
+    cerebras_model: str = Field(default="llama-3.3-70b", alias="CEREBRAS_MODEL")
+    cerebras_base_url: str = Field(default="https://api.cerebras.ai",
+                                   alias="CEREBRAS_BASE_URL")
+
+    together_api_key: str = Field(default="", alias="TOGETHER_API_KEY")
+    together_model: str = Field(
+        default="meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+        alias="TOGETHER_MODEL")
+    together_base_url: str = Field(default="https://api.together.xyz",
+                                   alias="TOGETHER_BASE_URL")
+
+    # ── Task routing ─────────────────────────────────────
+    # Which provider gets first refusal on which kind of work, and the
+    # order everything else falls back through. Both are plain strings
+    # so a deployment can re-route without a code change:
+    #   LLM_ROUTING="executive_summary=gemini,narrative=groq"
+    #   LLM_PROVIDER_ORDER="groq,openrouter,cerebras,gemini,local"
+    # A provider named here that isn't configured is skipped, not an
+    # error — that is what makes a half-configured deployment work.
+    llm_routing: str = Field(default="", alias="LLM_ROUTING")
+    llm_provider_order: str = Field(
+        default="groq,openrouter,cerebras,together,gemini,local",
+        alias="LLM_PROVIDER_ORDER")
+
     llm_temperature: float = 0.0
     llm_max_tokens: int = 2048
     llm_timeout_sec: int = 20

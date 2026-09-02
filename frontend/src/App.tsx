@@ -23,6 +23,7 @@ const MlPage = lazy(() => import('./pages/MlPage'))
 const ChatPage = lazy(() => import('./pages/ChatPage'))
 const RagPage = lazy(() => import('./pages/RagPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
+const SystemPage = lazy(() => import('./pages/SystemPage'))
 
 function RouteFallback() {
   return (
@@ -55,6 +56,7 @@ export default function App() {
               <Route path="/chat" element={<ChatPage />} />
               <Route path="/rag" element={<RagPage />} />
               <Route path="/reports" element={<ReportsPage />} />
+              <Route path="/system" element={<SystemPage />} />
             </Route>
           </Routes>
         </Suspense>

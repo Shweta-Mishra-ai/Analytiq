@@ -19,6 +19,7 @@ import {
   Gauge,
   Search,
   FileLock2,
+  ServerCog,
 } from 'lucide-react'
 import { getToken, setToken } from '../api/client'
 import CommandPalette from './CommandPalette'
@@ -61,6 +62,7 @@ const navGroups = [
       { to: '/chat', label: 'AI Chat', icon: MessageSquare },
       { to: '/rag', label: 'RAG Studio', icon: Layers },
       { to: '/reports', label: 'Reports', icon: FileText },
+      { to: '/system', label: 'System', icon: ServerCog },
     ],
   },
 ]

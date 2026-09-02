@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, FileLock2, ShieldCheck, Users } from 'lucide-react'
+import {
+  AlertTriangle,
+  Fingerprint,
+  FileLock2,
+  ShieldCheck,
+  ShieldX,
+  Users,
+} from 'lucide-react'
 import { apiGet } from '../api/client'
 import { useApp } from '../store/app'
 import { ErrorBox, NeedData, PageHeader, Panel, Spinner } from '../components/Ui'
@@ -25,6 +32,33 @@ interface Reidentification {
   below_floor_pct: number
   verdict: string
   explanation: string
+}
+
+interface AuditEntry {
+  seq: number
+  at: number
+  event: string
+  actor: string
+  detail: Record<string, unknown>
+}
+
+interface Integrity {
+  record: {
+    source_filename: string
+    source_bytes: number
+    source_sha256: string
+    raw_digest: string
+    active_digest: string
+    ingested_at: number
+  } | null
+  verdict: {
+    intact: boolean
+    verdict: string
+    explanation: string
+    events: number
+  }
+  audit: AuditEntry[]
+  manifest: Record<string, string>
 }
 
 interface Governance {
@@ -59,6 +93,7 @@ const SENSITIVITY_ORDER: Record<string, number> = {
 export default function GovernancePage() {
   const dataset = useApp((s) => s.dataset)
   const [record, setRecord] = useState<Governance | null>(null)
+  const [integrity, setIntegrity] = useState<Integrity | null>(null)
   const [error, setError] = useState('')
   const ds = dataset?.dataset_id
 
@@ -69,6 +104,13 @@ export default function GovernancePage() {
     apiGet<Governance>(`/api/datasets/${ds}/governance`)
       .then(setRecord)
       .catch((e) => setError(e.message))
+    // Integrity is fetched separately and failing softly on purpose: a
+    // dataset stored before integrity tracking existed has no record,
+    // and that must not blank out the governance page.
+    setIntegrity(null)
+    apiGet<Integrity>(`/api/datasets/${ds}/integrity`)
+      .then(setIntegrity)
+      .catch(() => setIntegrity(null))
   }, [ds])
 
   if (!dataset) return <NeedData />
@@ -126,6 +168,8 @@ export default function GovernancePage() {
               })}
             </div>
           </Panel>
+
+          {integrity && <IntegrityPanel data={integrity} />}
 
           <div className="grid gap-5 lg:grid-cols-3">
             <Panel title="Provenance" className="lg:col-span-1">
@@ -301,4 +345,121 @@ export default function GovernancePage() {
       )}
     </div>
   )
+}
+
+// Wording per verdict. The verdicts are distinct on purpose: "the data
+// changed" and "the record of changes was edited" are different failures
+// with different responses, and collapsing them into one red banner
+// tells the reader nothing they can act on.
+const VERDICTS: Record<string, { label: string; tone: 'teal' | 'amber' | 'rose' }> = {
+  intact: { label: 'Verified', tone: 'teal' },
+  unaccounted: { label: 'Unverified change', tone: 'rose' },
+  tampered: { label: 'Audit trail broken', tone: 'rose' },
+  compromised: { label: 'Failed', tone: 'rose' },
+  unverifiable: { label: 'Not tracked', tone: 'amber' },
+}
+
+function IntegrityPanel({ data }: { data: Integrity }) {
+  const v = VERDICTS[data.verdict.verdict] ?? {
+    label: 'Unknown',
+    tone: 'amber' as const,
+  }
+  const good = data.verdict.intact
+  const rec = data.record
+
+  return (
+    <Panel
+      title="Data integrity"
+      subtitle="Whether this is still the data that was uploaded, and whether every change to it is accounted for"
+    >
+      <div
+        className={`flex gap-3 rounded-lg border px-4 py-3 ${
+          v.tone === 'teal'
+            ? 'border-teal/25 bg-teal/[0.04]'
+            : v.tone === 'amber'
+              ? 'border-amber/25 bg-amber/[0.04]'
+              : 'border-rose/25 bg-rose/[0.04]'
+        }`}
+      >
+        {good ? (
+          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-teal" />
+        ) : (
+          <ShieldX className="mt-0.5 h-4 w-4 shrink-0 text-rose" />
+        )}
+        <div>
+          <div className="text-sm font-semibold text-ink">{v.label}</div>
+          <p className="mt-0.5 text-sm leading-relaxed text-ink2">
+            {data.verdict.explanation}
+          </p>
+        </div>
+      </div>
+
+      {rec?.source_sha256 && (
+        <div className="mt-4 rounded-lg border border-edge p-3">
+          <div className="flex items-center gap-2 text-xs font-semibold text-mute">
+            <Fingerprint className="h-3.5 w-3.5" />
+            Source file digest (SHA-256)
+          </div>
+          <div className="mt-1 break-all font-mono text-[11px] leading-relaxed text-ink2">
+            {rec.source_sha256}
+          </div>
+          <p className="mt-1.5 text-xs text-faint">
+            Taken from the uploaded bytes before parsing. Run{' '}
+            <span className="font-mono">sha256sum</span> on your original file
+            and compare — if it matches, every figure in this workspace came
+            from that file and no other.
+          </p>
+        </div>
+      )}
+
+      {data.audit.length > 0 && (
+        <div className="mt-4">
+          <div className="mb-2 text-xs font-semibold text-mute">
+            Chain of custody
+          </div>
+          <ol className="space-y-1.5">
+            {data.audit.slice(-12).map((e) => (
+              <li
+                key={e.seq}
+                className="flex flex-wrap items-baseline gap-x-2 rounded-md border border-edge px-3 py-2 text-sm"
+              >
+                <span className="font-mono text-xs text-faint">{e.seq}</span>
+                <span className="font-medium text-ink">{fmt.label(e.event)}</span>
+                <span className="text-xs text-mute">
+                  {new Date(e.at * 1000).toLocaleString()}
+                </span>
+                <span className="text-xs text-faint">{describe(e.detail)}</span>
+              </li>
+            ))}
+          </ol>
+          <p className="mt-1.5 text-xs text-faint">
+            Each entry carries the hash of the one before it, so a removed or
+            edited entry breaks the chain and is reported rather than hidden.
+          </p>
+        </div>
+      )}
+
+      {Object.keys(data.manifest).length > 0 && (
+        <p className="mt-4 text-xs text-faint">
+          Computed with{' '}
+          {Object.entries(data.manifest)
+            .filter(([, val]) => val && val !== 'unavailable')
+            .map(([k, val]) => `${k.replace(/_/g, '-')} ${val}`)
+            .join(', ')}
+          . Versions are recorded because they move results — a quantile or a
+          solver default can change between releases.
+        </p>
+      )}
+    </Panel>
+  )
+}
+
+function describe(detail: Record<string, unknown>): string {
+  const parts = Object.entries(detail || {})
+    .slice(0, 3)
+    .map(([k, val]) => {
+      const shown = Array.isArray(val) ? `${val.length} item(s)` : String(val)
+      return `${fmt.label(k)}: ${shown.length > 24 ? shown.slice(0, 24) + '…' : shown}`
+    })
+  return parts.join(' · ')
 }

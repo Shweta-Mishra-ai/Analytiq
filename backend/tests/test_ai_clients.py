@@ -209,15 +209,67 @@ def test_no_hardcoded_model_names_in_ai_modules():
 #  LLMClient routing / graceful degradation
 # ══════════════════════════════════════════════════════════
 
-def _make_llm_client(monkeypatch):
-    """Builds an LLMClient without touching the real Groq constructor."""
+class _StubProvider:
+    """Stands in for a real provider. The routing tests are about which
+    provider gets asked and in what order, so the stub records that and
+    nothing else."""
+
+    def __init__(self, name, reply="", raises=None, configured=True):
+        self.name = name
+        self.label = name.title()
+        self.model = f"{name}-model"
+        self.free = False
+        self.local = name == "local"
+        self.key_env = f"{name.upper()}_API_KEY"
+        self._reply = reply
+        self._raises = raises
+        self._configured = configured
+        self.calls = []
+
+    def is_configured(self):
+        return self._configured
+
+    def missing(self):
+        return "" if self._configured else f"{self.key_env} is not set"
+
+    def complete(self, messages, system="", max_tokens=512, temperature=0.2,
+                 timeout_sec=None):
+        self.calls.append("complete")
+        if self._raises:
+            raise self._raises
+        return self._reply
+
+    def generate(self, system, user, max_tokens=512, temperature=0.2,
+                 timeout_sec=None):
+        self.calls.append("generate")
+        if self._raises:
+            raise self._raises
+        return self._reply
+
+
+def _install(monkeypatch, **stubs):
+    """Replace the whole provider registry for the duration of a test."""
+    from app.ai import providers as mod
+    monkeypatch.setattr(mod, "_providers", lambda: dict(stubs))
+    return stubs
+
+
+def _fresh_client(monkeypatch, order="groq,gemini"):
+    """An LLMClient with a known fallback order and an empty narrative
+    cache, so one test's answer cannot satisfy another's call."""
     from app.ai import llm_client as mod
-    monkeypatch.setattr(mod, "Groq", lambda api_key: object())
-    return mod.LLMClient(api_key="fake"), mod
+    from app.config import config
+    monkeypatch.setattr(config, "llm_provider_order", order)
+    monkeypatch.setattr(config, "llm_routing", "")
+    monkeypatch.setattr(config, "llm_privacy_mode", False)
+    from app.services.llm_cache import llm_cache
+    monkeypatch.setattr(llm_cache, "get", lambda *a, **k: None)
+    monkeypatch.setattr(llm_cache, "put", lambda *a, **k: None)
+    return mod.LLMClient(), mod
 
 
 def test_chat_safe_returns_fallback_instead_of_raising(monkeypatch):
-    client, _ = _make_llm_client(monkeypatch)
+    client, _ = _fresh_client(monkeypatch)
     monkeypatch.setattr(client, "chat",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
     out = client.chat_safe([{"role": "user", "content": "hi"}], fallback="FALLBACK")
@@ -228,59 +280,124 @@ def test_chat_task_returns_none_when_all_providers_fail(monkeypatch):
     """None is the contract that tells callers to use their rule-based
     fallback. Returning "" or raising would surface an empty/blown-up
     section in the report instead."""
-    client, mod = _make_llm_client(monkeypatch)
-    monkeypatch.setattr(client, "_groq_report", lambda *a, **k: None)
-    monkeypatch.setattr(mod.gemini_client, "is_configured", lambda: False)
+    client, _ = _fresh_client(monkeypatch)
+    _install(monkeypatch,
+             groq=_StubProvider("groq", reply=None),
+             gemini=_StubProvider("gemini", configured=False))
     assert client.chat_task("sys", "user", task="narrative") is None
 
 
 def test_chat_task_prefers_gemini_for_gemini_routed_tasks(monkeypatch):
-    client, mod = _make_llm_client(monkeypatch)
-    calls = []
-    monkeypatch.setattr(mod.gemini_client, "is_configured", lambda: True)
-    monkeypatch.setattr(client, "_gemini",
-                        lambda *a, **k: calls.append("gemini") or "from gemini")
-    monkeypatch.setattr(client, "_groq_report",
-                        lambda *a, **k: calls.append("groq") or "from groq")
+    client, _ = _fresh_client(monkeypatch)
+    stubs = _install(monkeypatch,
+                     groq=_StubProvider("groq", reply="from groq"),
+                     gemini=_StubProvider("gemini", reply="from gemini"))
     out = client.chat_task("sys", "user", task="executive_summary")
     assert out == "from gemini"
-    assert calls == ["gemini"], "gemini-routed task should not call Groq first"
+    assert stubs["groq"].calls == [], "gemini-routed task should not call Groq first"
 
 
 def test_chat_task_falls_back_to_groq_when_gemini_unavailable(monkeypatch):
-    client, mod = _make_llm_client(monkeypatch)
-    monkeypatch.setattr(mod.gemini_client, "is_configured", lambda: False)
-    monkeypatch.setattr(client, "_groq_report", lambda *a, **k: "from groq")
+    client, _ = _fresh_client(monkeypatch)
+    _install(monkeypatch,
+             groq=_StubProvider("groq", reply="from groq"),
+             gemini=_StubProvider("gemini", configured=False))
     assert client.chat_task("sys", "user", task="executive_summary") == "from groq"
 
 
 def test_chat_task_skips_provider_that_raises(monkeypatch):
-    client, mod = _make_llm_client(monkeypatch)
-    monkeypatch.setattr(mod.gemini_client, "is_configured", lambda: True)
-    monkeypatch.setattr(client, "_gemini",
-                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("gemini down")))
-    monkeypatch.setattr(client, "_groq_report", lambda *a, **k: "from groq")
+    client, _ = _fresh_client(monkeypatch)
+    _install(monkeypatch,
+             groq=_StubProvider("groq", reply="from groq"),
+             gemini=_StubProvider("gemini", raises=RuntimeError("gemini down")))
     assert client.chat_task("sys", "user", task="executive_summary") == "from groq"
 
 
-def test_gemini_helper_returns_none_when_unconfigured(monkeypatch):
-    client, mod = _make_llm_client(monkeypatch)
-    monkeypatch.setattr(mod.gemini_client, "is_configured", lambda: False)
-    assert client._gemini("sys", "user", 100) is None
+def test_routing_can_be_overridden_by_environment(monkeypatch):
+    """A deployment must be able to re-point a task at another provider
+    without a code change — that is the whole reason the routing table
+    is configuration rather than a constant."""
+    from app.ai import llm_client as mod
+    from app.config import config
+    client, _ = _fresh_client(monkeypatch, order="groq,openrouter")
+    monkeypatch.setattr(config, "llm_routing", "executive_summary=openrouter")
+    stubs = _install(
+        monkeypatch,
+        groq=_StubProvider("groq", reply="from groq"),
+        openrouter=_StubProvider("openrouter", reply="from openrouter"))
+    assert mod.task_routing()["executive_summary"] == "openrouter"
+    assert client.chat_task("sys", "user", task="executive_summary") == "from openrouter"
+    assert stubs["groq"].calls == []
+
+
+def test_unparseable_routing_entry_is_ignored_not_fatal(monkeypatch):
+    """A typo in one environment variable must not stop the service
+    starting; the self-check reports the effective routing so the typo is
+    still visible."""
+    from app.ai import llm_client as mod
+    from app.config import config
+    monkeypatch.setattr(config, "llm_routing", "nonsense,story=local")
+    routing = mod.task_routing()
+    assert routing["story"] == "local"
+    assert routing["narrative"] == "groq"
+
+
+def test_privacy_mode_collapses_the_chain_to_the_local_model(monkeypatch):
+    """Privacy mode is the one configuration where a cloud provider must
+    be unreachable rather than merely deprioritised."""
+    from app.ai import llm_client as mod
+    from app.config import config
+    _fresh_client(monkeypatch, order="groq,gemini,local")
+    monkeypatch.setattr(config, "llm_privacy_mode", True)
+    _install(monkeypatch,
+             groq=_StubProvider("groq", reply="cloud"),
+             local=_StubProvider("local", reply="on-prem"))
+    assert mod.resolve_chain("narrative") == ["local"]
+
+
+def test_unconfigured_providers_are_skipped_not_attempted(monkeypatch):
+    from app.ai import llm_client as mod
+    _fresh_client(monkeypatch, order="groq,openrouter,local")
+    _install(monkeypatch,
+             groq=_StubProvider("groq", configured=False),
+             openrouter=_StubProvider("openrouter"),
+             local=_StubProvider("local", configured=False))
+    assert mod.resolve_chain("narrative") == ["openrouter"]
 
 
 def test_status_reports_provider_availability(monkeypatch):
-    client, mod = _make_llm_client(monkeypatch)
-    monkeypatch.setattr(mod.gemini_client, "is_configured", lambda: True)
+    client, _ = _fresh_client(monkeypatch)
+    _install(monkeypatch,
+             groq=_StubProvider("groq"),
+             gemini=_StubProvider("gemini"))
     st = client.status()
     assert st["gemini"] is True
     assert st["groq_model"] == config.llm_model
+    assert st["providers"]["gemini"]["configured"] is True
+    assert st["any_available"] is True
+    # Each row names itself, because the UI iterates the values rather
+    # than the keys.
+    for name, row in st["providers"].items():
+        assert row["name"] == name
+
+
+def test_status_names_the_variable_to_set_when_a_provider_is_missing(monkeypatch):
+    """"Not configured" is useless on its own; the operator needs the
+    exact variable name, which is the whole difference between a status
+    page and a support ticket."""
+    client, _ = _fresh_client(monkeypatch)
+    _install(monkeypatch, groq=_StubProvider("groq", configured=False))
+    st = client.status()
+    assert st["providers"]["groq"]["missing"] == "GROQ_API_KEY is not set"
+    assert st["any_available"] is False
 
 
 def test_task_routing_table_targets_known_providers():
-    from app.ai.llm_client import TASK_ROUTING
-    assert set(TASK_ROUTING.values()) <= {"groq", "gemini"}
-    assert "default" in TASK_ROUTING
+    from app.ai import providers
+    from app.ai.llm_client import DEFAULT_TASK_ROUTING
+    known = {p.name for p in providers.all_providers()}
+    assert set(DEFAULT_TASK_ROUTING.values()) <= known
+    assert "default" in DEFAULT_TASK_ROUTING
 
 
 # ══════════════════════════════════════════════════════════

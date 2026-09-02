@@ -142,8 +142,15 @@ The application remains fully functional locally without keys (AI modules degrad
 
 | Environment Variable | Source | Functionality |
 |---|---|---|
-| `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) | Powering the AI Chat copilot and chart generation narratives |
-| `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com) | Powering image/video analysis, RAG indexing, and executive summaries |
+| `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) | Free tier. Powers the AI Chat copilot and chart narratives |
+| `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com) | Powers image/video analysis, RAG indexing, and executive summaries |
+| `OPENROUTER_API_KEY` | [openrouter.ai](https://openrouter.ai) | Optional. The `:free` model slugs cost nothing — Llama 3.3, DeepSeek, Qwen |
+| `CEREBRAS_API_KEY` | [cloud.cerebras.ai](https://cloud.cerebras.ai) | Optional. Free tier, openly-licensed weights, very fast |
+| `TOGETHER_API_KEY` | [api.together.xyz](https://api.together.xyz) | Optional. Small free credit, openly-licensed weights |
+| `LOCAL_LLM_URL` | your own machine | Optional. Any OpenAI-compatible server (Ollama, llama.cpp, vLLM, LM Studio). No key, no cost, no data leaving the box |
+| `LLM_ROUTING` | you choose | Which provider does which job, e.g. `executive_summary=openrouter,narrative=local`. Overrides the defaults without a code change |
+| `LLM_PROVIDER_ORDER` | you choose | The fallback chain. Default `groq,openrouter,cerebras,together,gemini,local`. A provider with no key is skipped, not an error |
+| `LLM_PRIVACY_MODE` | you choose | `1` refuses every cloud call outright. Only a local model may be used. Reports still build — the engines write their own findings |
 | `APP_ADMIN_KEY` | you choose | Master key for account management (`/api/admin/*`). Unset + zero accounts created = open/no-auth (local dev only). `APP_PASSWORD` also works as a fallback name. |
 | `DATA_TTL_DAYS` | you choose | Days before an uploaded dataset or RAG knowledge base is auto-deleted. Default `30`. Set `0` to disable expiry entirely. |
 | `CLEANUP_INTERVAL_HOURS` | you choose | How often the expiry sweep runs in the background. Default `6`. A sweep also runs once at startup, and can be triggered manually via `POST /api/admin/cleanup`. |
@@ -175,20 +182,66 @@ curl -X DELETE https://your-deployment/api/admin/users/acme_corp \
 
 List current clients with `GET /api/admin/users` (same admin header).
 
-### ✅ Verifying your GROQ/GEMINI keys actually work
+### ✅ Verifying your keys actually work
 
-An AI assistant helping you set this up can't reach `api.groq.com` or
-`generativelanguage.googleapis.com` to test a key for you — both are
-outside what its sandbox can call. Run this yourself instead (takes a
-few seconds, your key never leaves your machine):
+A key can be present, well-formed, and still not work — expired, from
+the wrong account, out of quota, or blocked by the network the app is
+deployed on. None of that is visible from the configuration, and all of
+it looks identical from the outside: the reports quietly come back in
+the engines' own wording instead of the model's.
+
+The only machine that can answer "does my key work" is the one holding
+the key. Secrets set in Render's dashboard, or in GitHub Actions, are
+not visible anywhere else — a GitHub secret in particular is *not*
+readable by the running service unless a workflow passes it through.
+
+So the check lives in the running app. Open the **System** page, or:
 
 ```bash
-cd backend
-python3 scripts/check_api_keys.py
+curl -X POST https://your-deployment/api/admin/llm-check \
+  -H "Authorization: Bearer $APP_ADMIN_KEY"
 ```
 
-It makes one minimal real call to each provider and tells you plainly
-whether each key works, and the actual error if not.
+It makes one real call to every configured provider and reports, per
+provider: whether the key is present, whether the host answered, whether
+the model produced words, how long it took — and if not, the provider's
+own error message plus what to do about it. `GET /api/admin/llm-status`
+is the same picture without making any calls.
+
+Locally, `python3 backend/scripts/check_api_keys.py` does the same from
+a terminal.
+
+### 🔒 Data integrity
+
+Governance says what the data is; integrity says whether it can be
+trusted. Every upload is hashed as it arrives, every change to it is
+appended to a hash-chained audit trail, and the verdict is recomputed
+from the stored data on every request rather than read back from a
+stored claim.
+
+`GET /api/datasets/{id}/integrity` — and the Governance page, and the
+report's Data Governance section — carry the SHA-256 of the file as it
+was received. Run `sha256sum` on your original file: if it matches,
+every figure in that report came from that file and no other. The report
+also records the library versions it was computed with, because a
+quantile or a solver default can change between releases.
+
+### 🗄️ Reading from a database instead of a CSV
+
+`POST /api/datasets/warehouse/import` pulls a dataset straight out of
+PostgreSQL, MySQL, Snowflake, BigQuery, SQL Server or SQLite, and it
+lands in the same store with the same integrity record — except the
+audit trail records the *query* it came from rather than a file someone
+emailed.
+
+Only `SELECT` and `WITH` are accepted, checked before the statement is
+sent, and the connection is rolled back regardless. The connection URL
+is supplied per request, never stored, and its password is stripped from
+everything the server writes down. SQLAlchemy is included; each
+database's own driver (`psycopg[binary]`, `pymysql`,
+`snowflake-sqlalchemy`, `sqlalchemy-bigquery`, `pyodbc`) is optional —
+`GET /api/datasets/warehouse/backends` reports which are installed and
+names the package for the rest.
 
 
 

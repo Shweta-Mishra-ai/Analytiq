@@ -1,38 +1,55 @@
 """
-ai/llm_client.py — Analytiq
-MERGED v2: Existing Groq client preserved + Google Gemini added.
+ai/llm_client.py — the one way this app asks a model for words.
 
-Existing behaviour (unchanged):
-  - LLMClient(api_key) constructor
-  - chat(messages, system) with tenacity retry
-  - chat_safe(messages, system, fallback)
-  - config.settings used for model/temperature/max_tokens/timeout
+What changed and why: this file used to be Groq-shaped by construction.
+`from groq import Groq` sat at the top, the client object *was* a Groq
+client, and every other provider had to be special-cased around it.
+Gemini was bolted on as an `elif`; anything else — a local model, a free
+OpenRouter slug, a client's own gateway — was not expressible without
+editing this file.
 
-New additions:
-  - chat_task(system, user, task) — routes chart→Groq, summary→Gemini
-  - status() — provider availability
-  - get_client() — module-level singleton helper
-  - Gemini loaded from GEMINI_API_KEY secret (optional)
+Now the providers live in `ai/providers.py` as data, and this file only
+does the two things that are genuinely about *this app*:
+
+  1. **Routing.** Which provider gets first refusal on which kind of
+     work, and the order everything else falls through. Both come from
+     config, so a deployment re-routes without a code change.
+  2. **Degrading well.** Nothing here is load-bearing. Every narrative
+     in this app has a deterministic fallback written by the engine that
+     computed the numbers, so "no provider configured" is a supported
+     state, not an outage. chat_task returns None and the caller writes
+     the sentence itself.
+
+The public surface is unchanged — LLMClient(api_key), .chat(),
+.chat_safe(), .chat_task(), .status(), get_client() — so no call site
+needed touching.
 """
+
+from __future__ import annotations
 
 import logging
 import os
 
-from groq import Groq
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
 )
+
 from app.config import config
-from app.ai import gemini_client
+from app.ai import providers
 
 logger = logging.getLogger(__name__)
 
 
 # ── Task → provider routing ───────────────────────────────
-TASK_ROUTING = {
+# The defaults reflect what each provider is actually good at here:
+# Groq and the other OpenAI-dialect free tiers are fast, which suits the
+# many short per-chart calls; Gemini holds a longer argument together,
+# which suits the summary and root-cause work. Override any row with
+# LLM_ROUTING="executive_summary=openrouter,narrative=local".
+DEFAULT_TASK_ROUTING = {
     "chart_analysis":    "groq",
     "narrative":         "groq",
     "json_output":       "groq",
@@ -44,17 +61,91 @@ TASK_ROUTING = {
 }
 
 
-class LLMClient:
+def _parse_routing(raw: str) -> dict:
+    """LLM_ROUTING="task=provider,task=provider" → dict.
 
-    def __init__(self, api_key: str):
-        # ── Existing Groq setup — unchanged ──────────────
-        self._client = Groq(api_key=api_key)
-        self.model   = config.llm_model
+    Unparseable entries are dropped with a warning rather than raising:
+    a typo in one environment variable should not stop the service from
+    starting, and the self-check reports the effective routing so the
+    typo is still visible.
+    """
+    out = {}
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            logger.warning("LLM_ROUTING: ignoring %r (expected task=provider)",
+                           part)
+            continue
+        task, prov = part.split("=", 1)
+        task, prov = task.strip(), prov.strip()
+        if not task or not prov:
+            continue
+        out[task] = prov
+    return out
+
+
+def task_routing() -> dict:
+    """Effective routing: the defaults, with LLM_ROUTING layered on top."""
+    routing = dict(DEFAULT_TASK_ROUTING)
+    routing.update(_parse_routing(config.llm_routing))
+    return routing
+
+
+def fallback_order() -> list[str]:
+    names = [n.strip() for n in (config.llm_provider_order or "").split(",")]
+    return [n for n in names if n]
+
+
+def resolve_chain(task: str = "default", force: str = "") -> list[str]:
+    """The providers this call will try, in order, already filtered to
+    the ones that could actually answer.
+
+    Privacy mode collapses the chain to the local model alone — not by
+    dropping the cloud entries quietly, but because a cloud call in
+    privacy mode raises at the provider layer. Keeping them out of the
+    chain means the failure reads as "no local model configured", which
+    is the true problem, rather than a stack of refusals.
+    """
+    from app.ai import local_llm
+
+    if local_llm.privacy_mode():
+        chain = ["local"]
+    else:
+        preferred = force or task_routing().get(task, "default")
+        chain = [preferred] + [n for n in fallback_order() if n != preferred]
+
+    seen, out = set(), []
+    for name in chain:
+        if name in seen:
+            continue
+        seen.add(name)
+        p = providers.get(name)
+        if p is None:
+            logger.warning("unknown provider %r in routing/order", name)
+            continue
+        if p.is_configured():
+            out.append(name)
+    return out
+
+
+class LLMClient:
+    """Provider-agnostic. Holds no vendor client, only routing."""
+
+    def __init__(self, api_key: str = ""):
+        # Historic signature: callers passed the Groq key positionally.
+        # Honour it by filling the config slot when it is empty, so an
+        # explicitly-passed key still works, without making Groq special
+        # anywhere else in this file.
+        if api_key and not config.groq_api_key:
+            config.groq_api_key = api_key.strip()
+        self.model = config.llm_model
         self._gemini_model = config.gemini_model
 
     # ─────────────────────────────────────────────────────
-    #  EXISTING METHODS — completely unchanged
-    #  All other files continue working with no changes
+    #  Conversation API — used by the chat page and the
+    #  tool dispatcher, which both send a message history.
     # ─────────────────────────────────────────────────────
 
     @retry(
@@ -64,19 +155,38 @@ class LLMClient:
         reraise=True,
     )
     def chat(self, messages: list, system: str = "") -> str:
-        """Existing Groq chat — unchanged."""
-        full = []
-        if system:
-            full.append({"role": "system", "content": system})
-        full.extend(messages)
-        resp = self._client.chat.completions.create(
-            messages    = full,
-            model       = self.model,
-            temperature = config.llm_temperature,
-            max_tokens  = config.llm_max_tokens,
-            timeout     = config.llm_timeout_sec,
-        )
-        return resp.choices[0].message.content
+        """One completion from the first provider that answers.
+
+        Raises if none does — the retry above then gets a second and
+        third go at the whole chain, since the common failure is a rate
+        limit that clears in a second or two.
+        """
+        chain = resolve_chain("json_output")
+        if not chain:
+            raise RuntimeError(
+                "No LLM provider is configured. Set one of GROQ_API_KEY, "
+                "OPENROUTER_API_KEY, CEREBRAS_API_KEY, TOGETHER_API_KEY or "
+                "GEMINI_API_KEY, or point LOCAL_LLM_URL at a local model.")
+
+        errors = []
+        for name in chain:
+            provider = providers.get(name)
+            try:
+                text = provider.complete(
+                    messages, system=system,
+                    max_tokens=config.llm_max_tokens,
+                    temperature=config.llm_temperature,
+                    timeout_sec=config.llm_timeout_sec)
+            except Exception as e:                 # noqa: BLE001 — collected
+                errors.append(f"{name}: {e}")
+                logger.warning("[%s] chat failed: %s", name, e)
+                continue
+            if text and text.strip():
+                self.model = provider.model
+                return text.strip()
+            errors.append(f"{name}: empty response")
+
+        raise RuntimeError("; ".join(errors) or "no provider answered")
 
     def chat_safe(
         self,
@@ -84,16 +194,16 @@ class LLMClient:
         system:   str = "",
         fallback: str = '{"tool":"none","params":{},"explanation":"Unable to process."}',
     ) -> str:
-        """Existing safe wrapper — unchanged."""
+        """chat() but never raises — the dispatcher needs a parseable
+        answer more than it needs the truth about why one failed."""
         try:
             return self.chat(messages, system)
-        except Exception as e:
+        except Exception as e:                     # noqa: BLE001
             logger.error(f"LLM failed: {e}")
             return fallback
 
     # ─────────────────────────────────────────────────────
-    #  NEW METHODS — for report_narrator.py only
-    #  Does NOT affect any existing code
+    #  Report/narrative API
     # ─────────────────────────────────────────────────────
 
     def chat_task(
@@ -104,13 +214,8 @@ class LLMClient:
         max_tokens: int = 400,
         force:      str = "",
     ) -> str | None:
-        """
-        Route request to best provider by task type.
-        chart_analysis → Groq  (fast)
-        executive_summary → Gemini (deep reasoning), Groq fallback
-        Returns text or None — caller should use rule-based fallback on None.
-        """
-        from app.ai import local_llm
+        """Route by task, fall through the chain, return None if nothing
+        answers — the caller then uses its own rule-based wording."""
         from app.services.llm_cache import llm_cache
 
         # Regenerating a report re-ran every call: the same summary for the
@@ -122,82 +227,68 @@ class LLMClient:
             logger.debug("llm cache hit for task=%s", task)
             return cached
 
-        provider = force or TASK_ROUTING.get(task, "groq")
-        order    = (["gemini", "groq"] if provider == "gemini"
-                    else ["groq", "gemini"])
-        # A local model runs on the client's own hardware, so it is both
-        # the only permitted provider under privacy mode and a working
-        # fallback when the cloud providers are down or out of quota.
-        if local_llm.privacy_mode():
-            order = ["local"]
-        elif local_llm.is_configured():
-            order = order + ["local"]
-
-        for prov in order:
+        for name in resolve_chain(task, force=force):
+            provider = providers.get(name)
             try:
-                if prov == "local":
-                    result = local_llm.generate(system, user, max_tokens)
-                elif prov == "groq":
-                    result = self._groq_report(system, user, max_tokens)
-                elif prov == "gemini" and gemini_client.is_configured():
-                    result = self._gemini(system, user, max_tokens)
-                else:
-                    continue
-                if result and result.strip():
-                    text = result.strip()
-                    llm_cache.put(system, user, task, self.model, text)
-                    return text
-            except Exception as e:
-                logger.warning(f"[{prov}] task={task} failed: {e}")
+                result = provider.generate(system, user, max_tokens=max_tokens,
+                                           temperature=0.15)
+            except Exception as e:                 # noqa: BLE001
+                logger.warning("[%s] task=%s failed: %s", name, task, e)
                 continue
+            if result and result.strip():
+                text = result.strip()
+                llm_cache.put(system, user, task, self.model, text)
+                return text
 
         return None
 
+    # ─────────────────────────────────────────────────────
+    #  Introspection
+    # ─────────────────────────────────────────────────────
+
     def status(self) -> dict:
+        """What is configured, without calling anything.
+
+        `status()` answers "what did this deployment set up"; the
+        /api/admin/llm-check endpoint answers "does it work" — those are
+        different questions and a key can pass the first and fail the
+        second.
+        """
+        from app.ai import local_llm
+
+        rows = {}
+        for p in providers.all_providers():
+            rows[p.name] = {
+                # The name is repeated inside the row, not left implicit
+                # in the dict key: callers iterate the values (the UI
+                # renders a list of cards) and a row that cannot say
+                # which provider it is has to be threaded back to its key
+                # by hand — which the UI got wrong.
+                "name": p.name,
+                "label": p.label,
+                "configured": p.is_configured(),
+                "model": p.model,
+                "free": p.free,
+                "local": p.local,
+                "missing": p.missing(),
+            }
         return {
-            "groq":         True,
-            "gemini":       gemini_client.is_configured(),
+            # Kept for the existing callers that read these two keys.
+            # `.get` rather than `[...]`: the registry is data, and a
+            # deployment that drops a provider from it should lose a row,
+            # not crash the status page.
+            "groq":         rows.get("groq", {}).get("configured", False),
+            "gemini":       rows.get("gemini", {}).get("configured", False),
             "groq_model":   self.model,
             "gemini_model": self._gemini_model,
+            # The full picture.
+            "providers":    rows,
+            "configured":   providers.configured_names(),
+            "routing":      task_routing(),
+            "order":        fallback_order(),
+            "privacy_mode": local_llm.privacy_mode(),
+            "any_available": bool(resolve_chain()),
         }
-
-    # ─────────────────────────────────────────────────────
-    #  PRIVATE HELPERS
-    # ─────────────────────────────────────────────────────
-
-    def _groq_report(self, system: str, user: str,
-                     max_tokens: int) -> str | None:
-        """
-        Simple Groq call for report tasks.
-        Uses low temperature to reduce hallucination.
-        No tenacity retry — fast fail preferred for reports.
-        """
-        try:
-            resp = self._client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user",   "content": user},
-                ],
-                model       = self.model,
-                temperature = 0.15,
-                max_tokens  = max_tokens,
-            )
-            return resp.choices[0].message.content
-        except Exception as e:
-            logger.warning(f"Groq report call failed: {e}")
-            return None
-
-    def _gemini(self, system: str, user: str,
-                max_tokens: int) -> str | None:
-        if not gemini_client.is_configured():
-            return None
-        try:
-            return gemini_client.generate_text(
-                [user], system=system, max_output_tokens=max_tokens,
-                temperature=0.2, timeout_sec=60)
-        except Exception as e:
-            logger.warning(f"Gemini call failed: {e}")
-            return None
 
     @staticmethod
     def _load_secret(key: str) -> str:
@@ -205,19 +296,24 @@ class LLMClient:
 
 
 # ─────────────────────────────────────────────────────────
-#  SINGLETON — used by report_narrator.py
+#  SINGLETON
 # ─────────────────────────────────────────────────────────
 
 _instance: LLMClient | None = None
 
 
 def get_client(api_key: str = "") -> LLMClient:
-    """Get or create singleton. Used by report_narrator.py."""
     global _instance
     if _instance is None:
-        key = api_key or _load_groq_key()
-        _instance = LLMClient(api_key=key)
+        _instance = LLMClient(api_key=api_key or _load_groq_key())
     return _instance
+
+
+def reset_client() -> None:
+    """Drop the singleton so the next call re-reads config. Used by the
+    tests, and by the self-check after an environment change."""
+    global _instance
+    _instance = None
 
 
 def _load_groq_key() -> str:

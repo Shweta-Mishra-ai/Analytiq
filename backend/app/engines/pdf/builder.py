@@ -99,6 +99,7 @@ def build_pdf(
     risk_heatmap: bytes = None,
     avg_salary_k: float = 0.0,
     governance=None,
+    integrity=None,
 ) -> bytes:
     """Build the report.
 
@@ -304,7 +305,8 @@ def build_pdf(
         story.append(PageBreak())
 
         if governance is not None:
-            _governance_section(story, s, T, governance, CW)
+            _governance_section(story, s, T, governance, CW,
+                                integrity=integrity)
             story.append(PageBreak())
 
         if cleaning_summary:

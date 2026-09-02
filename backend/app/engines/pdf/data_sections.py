@@ -596,7 +596,7 @@ _SENSITIVITY_ORDER = {"special": 0, "direct": 1, "quasi-identifier": 2,
                       "none": 3}
 
 
-def _governance_section(story, s, T, record, CW):
+def _governance_section(story, s, T, record, CW, integrity=None):
     """What the data is, where it came from, and who it could identify.
 
     The half of a deliverable a client's data owner asks for, usually
@@ -702,3 +702,163 @@ def _governance_section(story, s, T, record, CW):
     if record.retention_note:
         story.append(Spacer(1, 2*mm))
         story.append(Paragraph(_clean(record.retention_note), s["note"]))
+
+    if integrity:
+        _integrity_block(story, s, T, integrity, CW)
+
+
+_VERDICT_WORDING = {
+    "intact": ("Verified",
+               "The figures in this report were computed from the data as "
+               "received. Every change made to it between upload and "
+               "analysis is recorded below."),
+    "unaccounted": ("Unverified",
+                    "The working copy of the data does not match any "
+                    "recorded change, so at least one modification was made "
+                    "outside the audited path. Treat the figures in this "
+                    "report as unconfirmed until the data is re-uploaded."),
+    "tampered": ("Audit trail broken",
+                 "The record of changes has been edited or truncated since "
+                 "it was written. The data itself still matches what was "
+                 "received, but its history can no longer be relied on."),
+    "compromised": ("Failed",
+                    "The stored copy of the uploaded data no longer matches "
+                    "the digest taken when it was received. Do not rely on "
+                    "any figure in this report."),
+    "unverifiable": ("Not tracked",
+                     "This dataset predates integrity tracking, so its "
+                     "history cannot be checked. Re-upload it to bring it "
+                     "under the audit trail."),
+}
+
+
+def _integrity_block(story, s, T, integrity, CW):
+    """Where the numbers came from and whether anything moved them.
+
+    A report is an assertion about someone's business, and the reader has
+    no way to check it against the source. This is the page that makes
+    the assertion falsifiable: the digest of the file as received, the
+    digest of the data the figures were computed from, and the list of
+    every step in between. Anyone holding the original file can recompute
+    the first hash themselves and see whether it matches.
+    """
+    record = integrity.get("record") or {}
+    verdict = integrity.get("verdict") or {}
+    audit = integrity.get("audit") or []
+    manifest = integrity.get("manifest") or {}
+
+    story.append(Spacer(1, 4*mm))
+    story.append(Paragraph("Data integrity", s["h3"]))
+
+    label, wording = _VERDICT_WORDING.get(
+        verdict.get("verdict", ""), ("Unknown", ""))
+    good = bool(verdict.get("intact"))
+    story.append(Paragraph(
+        '<font color="{}"><b>{}</b></font> — {}'.format(
+            T["positive"] if good else T["negative"], label, _clean(wording)),
+        s["body"]))
+    story.append(Spacer(1, 2*mm))
+
+    facts = []
+    if record.get("source_sha256"):
+        facts.append(("Source file digest (SHA-256)",
+                      _grouped(record["source_sha256"])))
+    if record.get("source_bytes"):
+        facts.append(("Source file size",
+                      "{} bytes".format(_P.count(record["source_bytes"]))))
+    if record.get("raw_digest"):
+        facts.append(("Data as received", _grouped(record["raw_digest"])))
+    if record.get("active_digest"):
+        facts.append(("Data analysed", _grouped(record["active_digest"])))
+    if facts:
+        # Markup rather than a Paragraph object: _gtable wraps every cell
+        # in a Paragraph of its own, so a Paragraph passed in renders as
+        # its repr.
+        _gtable(story, T, ["", ""],
+                [[k, '<font face="Courier">{}</font>'.format(v)]
+                 for k, v in facts],
+                [CW * 0.34, CW * 0.66])
+        story.append(Spacer(1, 2*mm))
+        story.append(Paragraph(
+            "Digests are shown in groups of eight for readability; the "
+            "spaces are not part of the value. The source digest is taken "
+            "from the uploaded bytes before parsing, so anyone holding the "
+            "original file can recompute it and confirm this report was "
+            "built from that file and no other.", s["note"]))
+
+    if audit:
+        story.append(Spacer(1, 3*mm))
+        story.append(Paragraph("Chain of custody", s["h3"]))
+        rows = [[Paragraph("<b>{}</b>".format(h), s["sm"])
+                 for h in ("#", "When", "Event", "Detail")]]
+        for entry in audit[-15:]:
+            rows.append([
+                Paragraph(str(entry.get("seq", "")), s["sm"]),
+                Paragraph(_fmt_ts(entry.get("at")), s["sm"]),
+                Paragraph(_clean(str(entry.get("event", ""))).title(), s["sm"]),
+                Paragraph(_clean(_audit_detail(entry)), s["sm"]),
+            ])
+        table = Table(rows, colWidths=[CW * x for x in (0.06, 0.24, 0.16, 0.54)],
+                      repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND",     (0, 0), (-1, 0), _c(T["header_bg"])),
+            ("TEXTCOLOR",      (0, 0), (-1, 0), white),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [white, _c(T["bg_light"])]),
+            ("VALIGN",         (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING",     (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING",  (0, 0), (-1, -1), 4),
+            ("LEFTPADDING",    (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING",   (0, 0), (-1, -1), 5),
+            ("GRID",           (0, 0), (-1, -1), 0.3, _c(T["border"])),
+        ]))
+        story.append(table)
+        if len(audit) > 15:
+            story.append(Paragraph(
+                "The {} earlier entries are omitted here; the full trail is "
+                "available from the API.".format(len(audit) - 15), s["note"]))
+        story.append(Paragraph(
+            "Each entry carries the hash of the one before it, so an entry "
+            "that was removed or altered after the fact breaks the chain and "
+            "is reported rather than hidden.", s["note"]))
+
+    if manifest:
+        story.append(Spacer(1, 3*mm))
+        story.append(Paragraph("Computed with", s["h3"]))
+        parts = [f"{k.replace('_', '-')} {v}" for k, v in manifest.items()
+                 if v and v != "unavailable"]
+        story.append(Paragraph(
+            _clean(", ".join(parts)) + ". Version numbers are recorded "
+            "because they move results: a quantile, a solver default or a "
+            "tie-break rule can change between releases, and a figure that "
+            "cannot be reproduced on the same versions has not been "
+            "reproduced.", s["note"]))
+
+
+def _grouped(digest: str, size: int = 8) -> str:
+    """A 64-character hex string has no spaces, so a table cell cannot
+    wrap it — it overflows the column silently. Grouping gives the
+    renderer break points and gives the reader something checkable by
+    eye."""
+    digest = str(digest or "")
+    return " ".join(digest[i:i + size] for i in range(0, len(digest), size))
+
+
+def _fmt_ts(value) -> str:
+    from datetime import datetime, timezone
+    try:
+        return datetime.fromtimestamp(float(value), timezone.utc).strftime(
+            "%d %b %Y %H:%M UTC")
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _audit_detail(entry: dict) -> str:
+    detail = entry.get("detail") or {}
+    if not isinstance(detail, dict) or not detail:
+        return "—"
+    parts = []
+    for key, value in list(detail.items())[:4]:
+        if isinstance(value, (list, tuple)):
+            value = "{} item(s)".format(len(value))
+        parts.append("{}: {}".format(_PL(str(key)), value))
+    return "; ".join(parts)

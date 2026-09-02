@@ -41,6 +41,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from app.config import config
+from app.services import integrity
 from app.services.frame_io import read_frame, write_frame
 
 logger = logging.getLogger(__name__)
@@ -118,9 +119,16 @@ class DatasetStore:
         return f"{owner}/{ds_id}"
 
     # ── lifecycle ────────────────────────────────────────
+    def dataset_dir(self, owner: str, ds_id: str) -> str:
+        """Where a dataset's files live. Public because the integrity
+        layer writes its record and audit trail alongside them."""
+        return self._dir(owner, ds_id)
+
     def create(self, owner: str, df_raw: pd.DataFrame, filename: str, size_mb: float,
                sheet_names: Optional[list] = None,
-               warnings: Optional[list] = None) -> DatasetMeta:
+               warnings: Optional[list] = None,
+               source_bytes: int = 0,
+               source_sha256: str = "") -> DatasetMeta:
         ds_id = uuid.uuid4().hex[:12]
         meta = DatasetMeta(
             dataset_id=ds_id,
@@ -146,6 +154,13 @@ class DatasetStore:
                     + ("…" if len(coerced) > 5 else ""))
             self._write_meta(owner, ds_id, meta)
             self._touch_mem(owner, ds_id, raw=df_raw, active=df_raw.copy(), meta=meta)
+            # Taken here, at the moment of receipt, and never recomputed:
+            # a digest written later would only prove the data matches
+            # itself.
+            integrity.record_ingest(
+                self._dir(owner, ds_id), ds_id, df_raw, filename,
+                source_bytes=source_bytes, source_sha256=source_sha256,
+                actor=owner)
         return meta
 
     def list_meta(self, owner: str) -> list[DatasetMeta]:
@@ -214,7 +229,14 @@ class DatasetStore:
     def get_raw_df(self, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
         return self._load("raw", owner, ds_id)
 
-    def update_active(self, owner: str, ds_id: str, df: pd.DataFrame) -> None:
+    def update_active(self, owner: str, ds_id: str, df: pd.DataFrame,
+                      event: str = "transform",
+                      detail: Optional[dict] = None) -> None:
+        """Every change to the working copy goes through here, which is
+        what lets the integrity check distinguish a recorded change from
+        an unaccounted one. Callers name the event (`clean`, `reset`) so
+        the audit trail says what happened, not just that something did.
+        """
         mkey = self._mkey(owner, ds_id)
         with self._lock:
             self._save_df(owner, ds_id, "active", df)
@@ -226,14 +248,34 @@ class DatasetStore:
                 self._write_meta(owner, ds_id, meta)
                 if mkey in self._mem:
                     self._mem[mkey]["meta"] = meta
+            integrity.record_change(self._dir(owner, ds_id), df,
+                                    event=event, actor=owner, detail=detail)
 
     def reset_active(self, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
         """Restore active df back to the raw upload."""
         raw = self.get_raw_df(owner, ds_id)
         if raw is None:
             return None
-        self.update_active(owner, ds_id, raw.copy())
+        self.update_active(owner, ds_id, raw.copy(), event="reset",
+                           detail={"restored_to": "the original upload"})
         return raw
+
+    def record_event(self, owner: str, ds_id: str, event: str,
+                     detail: Optional[dict] = None) -> None:
+        """Note in the audit trail that something used this dataset —
+        a report, an export — without changing it."""
+        integrity.record_event(self._dir(owner, ds_id), event,
+                               self.get_df(owner, ds_id), actor=owner,
+                               detail=detail)
+
+    def integrity(self, owner: str, ds_id: str) -> Optional[dict]:
+        """Recomputed on every call, deliberately: an integrity verdict
+        that is cached is a verdict about the past."""
+        if self.get_meta(owner, ds_id) is None:
+            return None
+        return integrity.summary(self._dir(owner, ds_id),
+                                 self.get_raw_df(owner, ds_id),
+                                 self.get_df(owner, ds_id))
 
     # ── analysis caches (hash-invalidated) ───────────────
     def cache_get(self, owner: str, ds_id: str, key: str) -> Optional[Any]:

@@ -63,6 +63,7 @@ def _df_or_404(owner: str, ds_id: str):
 @router.get("/{ds_id}/csv")
 def export_csv(ds_id: str, owner: str = Depends(current_owner)):
     df = _df_or_404(owner, ds_id)
+    store.record_event(owner, ds_id, "export", {"format": "csv", "rows": len(df)})
     buf = io.BytesIO(df.to_csv(index=False).encode("utf-8-sig"))
     return StreamingResponse(buf, media_type="text/csv", headers={
         "Content-Disposition": "attachment; filename=analytiq_cleaned_data.csv"})
@@ -71,6 +72,7 @@ def export_csv(ds_id: str, owner: str = Depends(current_owner)):
 @router.get("/{ds_id}/excel")
 def export_excel(ds_id: str, owner: str = Depends(current_owner)):
     df = _df_or_404(owner, ds_id)
+    store.record_event(owner, ds_id, "export", {"format": "xlsx", "rows": len(df)})
     buf = io.BytesIO()
     import pandas as pd
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
@@ -105,6 +107,11 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
 
 def _generate_pdf(ds_id: str, req: PdfRequest, owner: str):
     df = _df_or_404(owner, ds_id)
+    # Recorded before the build, with the digest of the data as it stands,
+    # so a PDF circulating later can be tied to the exact state it came
+    # from rather than merely to a date.
+    store.record_event(owner, ds_id, "report",
+                       {"format": req.format, "rows": len(df)})
 
     from app.engines.data_profiler import profile_dataset
     from app.engines.story_engine import detect_domain, generate_story
@@ -306,6 +313,10 @@ def _generate_pdf(ds_id: str, req: PdfRequest, owner: str):
             driver_chart=driver_chart, risk_heatmap=risk_heatmap,
             avg_salary_k=float(req.avg_salary_k), forecast=forecast,
             governance=governance,
+            # Recomputed at build time, not read from a cache: a report
+            # that asserts its own data was intact hours ago asserts
+            # nothing.
+            integrity=store.integrity(owner, ds_id),
         )
     except Exception as e:
         logger.exception("PDF build failed")
@@ -386,6 +397,8 @@ def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
                          owner: str = Depends(current_owner)):
     """Client-facing Data Health & Business Insights report (PDF)."""
     df = _df_or_404(owner, ds_id)
+    store.record_event(owner, ds_id, "report",
+                       {"format": "health-pdf", "rows": len(df)})
     meta = store.get_meta(owner, ds_id)
     filename = meta.filename if meta else f"{ds_id}.csv"
 

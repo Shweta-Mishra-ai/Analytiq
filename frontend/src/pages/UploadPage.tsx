@@ -9,6 +9,7 @@ import {
   type TableData,
 } from '../api/client'
 import { useApp } from '../store/app'
+import WarehouseSource from '../components/WarehouseSource'
 import DataTable from '../components/DataTable'
 import { Btn, ErrorBox, PageHeader, Panel, Spinner } from '../components/Ui'
 
@@ -208,6 +209,15 @@ export default function UploadPage() {
           <DataTable data={preview} />
         </div>
       )}
+
+      <div className="mt-6">
+        <WarehouseSource
+          onImported={(m) => {
+            setDataset(m)
+            setError('')
+          }}
+        />
+      </div>
 
       {recent.length > 0 && (
         <Panel title="Recent datasets" className="mt-6">
