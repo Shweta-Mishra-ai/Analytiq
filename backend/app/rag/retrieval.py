@@ -208,9 +208,14 @@ class CrossEncoderReranker:
         cls._tried = True
         try:
             from sentence_transformers import CrossEncoder
-            cls._model = CrossEncoder(
-                "cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)
-            logger.info("cross-encoder reranker loaded")
+            from app.config import config
+            # Configurable via RERANKER_MODEL. Not a generative model, so
+            # it has no place in the task registry — but it does change
+            # which passages a client is shown, so it has no place as a
+            # literal in a call site either.
+            name = config.reranker_model
+            cls._model = CrossEncoder(name, max_length=512)
+            logger.info("cross-encoder reranker loaded: %s", name)
         except Exception as exc:
             logger.info("cross-encoder unavailable (%s) — retrieval will use "
                         "the hybrid order without reranking", exc)

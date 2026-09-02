@@ -330,3 +330,65 @@ def test_llm_status_never_returns_a_key(monkeypatch):
     reset_client()
     assert "gsk_super_secret_value" not in raw
     assert "GROQ_API_KEY" not in raw or "is not set" not in raw
+
+
+# ── per-call model, JSON mode, and images on the wire ────
+
+def test_a_per_call_model_overrides_the_providers_default(server):
+    """What makes per-task routing possible: the model name comes from
+    the catalogue, not from the provider's own configuration."""
+    _provider(server, model="provider-default").generate(
+        "", "hi", model="task-specific-model")
+    assert server.received[0]["body"]["model"] == "task-specific-model"
+
+
+def test_without_an_override_the_configured_default_is_still_used(server):
+    _provider(server, model="provider-default").generate("", "hi")
+    assert server.received[0]["body"]["model"] == "provider-default"
+
+
+def test_a_provider_with_a_key_but_no_default_model_can_still_be_routed(server):
+    """is_credentialed() exists for exactly this: under model routing the
+    model name comes from elsewhere, so a blank *_MODEL must not make the
+    provider invisible."""
+    p = _provider(server, model="")
+    assert p.is_credentialed()
+    assert not p.is_configured()
+    assert p.generate("", "hi", model="named-by-the-caller") == "ready"
+    assert server.received[0]["body"]["model"] == "named-by-the-caller"
+
+
+def test_json_mode_is_requested_at_the_api_level(server):
+    """A model that usually returns valid JSON is not the same as one
+    required to. The chat dispatcher parses this reply."""
+    _provider(server).generate("", "hi", json_mode=True)
+    assert server.received[0]["body"]["response_format"] == {"type": "json_object"}
+
+
+def test_json_mode_is_absent_unless_asked_for(server):
+    _provider(server).generate("", "hi")
+    assert "response_format" not in server.received[0]["body"]
+
+
+def test_an_image_is_sent_inline_rather_than_as_a_link(server):
+    """The image is a client's data. Uploading it somewhere to be fetched
+    back would put it on a third host that nobody agreed to."""
+    import base64
+    png = b"\x89PNG\r\n\x1a\n" + b"payload"
+    _provider(server).describe_image("be brief", "what is this?", png,
+                                     mime="image/png")
+    content = server.received[0]["body"]["messages"][-1]["content"]
+    kinds = [part["type"] for part in content]
+    assert kinds == ["text", "image_url"]
+    url = content[1]["image_url"]["url"]
+    assert url.startswith("data:image/png;base64,")
+    assert base64.b64decode(url.split(",", 1)[1]) == png
+
+
+def test_a_plain_string_message_is_not_rewritten(server):
+    """The overwhelming majority of calls; rewriting them would be churn
+    and a chance to break multi-turn history."""
+    history = [{"role": "user", "content": "first"},
+               {"role": "assistant", "content": "second"}]
+    _provider(server).complete(history, system="s")
+    assert server.received[0]["body"]["messages"][1:] == history

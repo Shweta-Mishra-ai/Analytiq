@@ -38,7 +38,8 @@ from tenacity import (
 )
 
 from app.config import config
-from app.ai import providers
+from app.ai import providers, routing, tasks
+from app.ai.capabilities import Capability as C
 
 logger = logging.getLogger(__name__)
 
@@ -161,32 +162,41 @@ class LLMClient:
         third go at the whole chain, since the common failure is a rate
         limit that clears in a second or two.
         """
-        chain = resolve_chain("json_output")
+        chain = routing.resolve_models("tool_call")
         if not chain:
             raise RuntimeError(
-                "No LLM provider is configured. Set one of GROQ_API_KEY, "
-                "OPENROUTER_API_KEY, CEREBRAS_API_KEY, TOGETHER_API_KEY or "
-                "GEMINI_API_KEY, or point LOCAL_LLM_URL at a local model.")
+                "No model is configured that can return structured JSON. Set "
+                "one of GROQ_API_KEY, OPENROUTER_API_KEY, CEREBRAS_API_KEY, "
+                "TOGETHER_API_KEY or GEMINI_API_KEY, or point LOCAL_LLM_URL "
+                "at a local model.")
 
         errors = []
-        for name in chain:
-            provider = providers.get(name)
+        for spec in chain:
+            provider = providers.get(spec.provider)
+            if provider is None:
+                continue
             try:
                 text = provider.complete(
                     messages, system=system,
                     max_tokens=config.llm_max_tokens,
                     temperature=config.llm_temperature,
-                    timeout_sec=config.llm_timeout_sec)
+                    timeout_sec=config.llm_timeout_sec,
+                    model=spec.model, json_mode=True)
             except Exception as e:                 # noqa: BLE001 — collected
-                errors.append(f"{name}: {e}")
-                logger.warning("[%s] chat failed: %s", name, e)
+                errors.append(f"{spec.id}: {e}")
+                logger.warning("[%s] chat failed: %s", spec.id, e)
                 continue
             if text and text.strip():
-                self.model = provider.model
+                # Deliberately not stored on self. This used to write
+                # self.model, which the narrative cache keys on — so a
+                # chat turn could silently change the key a later
+                # chat_task wrote under, and two different prompts could
+                # collide on one cache entry.
+                self.last_model = spec.id
                 return text.strip()
-            errors.append(f"{name}: empty response")
+            errors.append(f"{spec.id}: empty response")
 
-        raise RuntimeError("; ".join(errors) or "no provider answered")
+        raise RuntimeError("; ".join(errors) or "no model answered")
 
     def chat_safe(
         self,
@@ -218,26 +228,41 @@ class LLMClient:
         answers — the caller then uses its own rule-based wording."""
         from app.services.llm_cache import llm_cache
 
+        spec = tasks.get(task) or tasks.TASKS["default"]
+        needs_json = C.JSON in spec.requires
+        chain = routing.resolve_models(task, force=force)
+
         # Regenerating a report re-ran every call: the same summary for the
         # same dataset, billed again and adding thirty seconds to a rebuild
         # that changed nothing. Keyed on the prompt, so a cleaned dataset
-        # produces a different prompt and correctly misses.
-        cached = llm_cache.get(system, user, task, self.model)
+        # produces a different prompt and correctly misses — and on the
+        # model that will actually answer, so switching a task to a
+        # different model does not serve the old model's wording.
+        cache_model = chain[0].id if chain else ""
+        cached = llm_cache.get(system, user, task, cache_model)
         if cached:
-            logger.debug("llm cache hit for task=%s", task)
+            logger.debug("llm cache hit for task=%s model=%s", task, cache_model)
             return cached
 
-        for name in resolve_chain(task, force=force):
-            provider = providers.get(name)
+        for model_spec in chain:
+            provider = providers.get(model_spec.provider)
+            if provider is None:
+                continue
             try:
                 result = provider.generate(system, user, max_tokens=max_tokens,
-                                           temperature=0.15)
+                                           temperature=0.15,
+                                           model=model_spec.model,
+                                           json_mode=needs_json)
             except Exception as e:                 # noqa: BLE001
-                logger.warning("[%s] task=%s failed: %s", name, task, e)
+                logger.warning("[%s] task=%s failed: %s", model_spec.id, task, e)
                 continue
             if result and result.strip():
                 text = result.strip()
-                llm_cache.put(system, user, task, self.model, text)
+                # Keyed on the model that answered, which is not always
+                # the one asked first.
+                llm_cache.put(system, user, task, model_spec.id, text)
+                if model_spec.id != cache_model:
+                    llm_cache.put(system, user, task, cache_model, text)
                 return text
 
         return None

@@ -105,53 +105,48 @@ def _table(name: str, data: bytes) -> List[dict]:
 
 # ── media via Gemini ─────────────────────────────────────
 
-def _require_gemini():
-    if not config.gemini_api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY is required to analyze images and video")
-
-
 def _image(name: str, data: bytes) -> List[dict]:
-    _require_gemini()
-    from app.ai import gemini_client
+    """Describe an image so its content is searchable with the documents.
+
+    Routed rather than pinned to one vendor: any model declaring the
+    vision capability can do this, which includes a local multimodal
+    model — and for a knowledge base, which holds a client's contracts
+    and policies, keeping the option of never leaving the machine is the
+    point.
+    """
+    from app.ai import multimodal
     from PIL import Image
     img = Image.open(io.BytesIO(data))
     img.load()
     try:
-        text = gemini_client.generate_text(
-            [IMAGE_PROMPT, img], timeout_sec=60).strip()
+        text = multimodal.describe_image(
+            image=data, prompt=IMAGE_PROMPT, task="image_understanding",
+            mime=Image.MIME.get(img.format or "", "image/png"),
+            timeout_sec=60)
+    except multimodal.NoCapableModel:
+        raise
     except Exception as e:
         raise RuntimeError(f"Image analysis failed: {e}")
-    if not text:
-        raise RuntimeError("Gemini returned no analysis for the image")
     return [{"text": f"[Image analysis of {name}]\n{text}",
              "source": name, "locator": "image"}]
 
 
 def _video(name: str, data: bytes, ext: str) -> List[dict]:
-    """Native video understanding via the Gemini File API
-    (covers visuals, on-screen text and audio narration)."""
-    _require_gemini()
-    from app.ai import gemini_client
-    import tempfile
-    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-        tmp.write(data)
-        path = tmp.name
+    """Watch a clip whole — visuals, on-screen text and narration.
+
+    Routed through the video capability rather than named after Gemini,
+    even though Gemini is currently the only model that has it. The
+    difference shows up the day a second one does: this code needs no
+    change, and the System page already says which models can serve it.
+    The temp-file and remote-file cleanup both live in ai/multimodal.py.
+    """
+    from app.ai import multimodal
     try:
-        try:
-            vfile = gemini_client.upload_file(path, timeout_sec=300)
-        except Exception as e:
-            raise RuntimeError(f"Could not process video for analysis: {e}")
-        try:
-            text = gemini_client.generate_text(
-                [VIDEO_PROMPT, vfile], timeout_sec=120).strip()
-        except Exception as e:
-            raise RuntimeError(f"Video analysis failed: {e}")
-        finally:
-            gemini_client.delete_file(vfile.name)
-        if not text:
-            raise RuntimeError("Gemini returned no analysis for the video")
-        return [{"text": f"[Video analysis of {name}]\n{text}",
-                 "source": name, "locator": "video"}]
-    finally:
-        os.unlink(path)
+        text = multimodal.understand_video(
+            data=data, ext=ext, prompt=VIDEO_PROMPT, timeout_sec=120)
+    except multimodal.NoCapableModel:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"Video analysis failed: {e}")
+    return [{"text": f"[Video analysis of {name}]\n{text}",
+             "source": name, "locator": "video"}]

@@ -114,6 +114,7 @@ def _generate_pdf(ds_id: str, req: PdfRequest, owner: str):
                        {"format": req.format, "rows": len(df)})
 
     from app.engines.data_profiler import profile_dataset
+    from app.ai.report_narrator import polish_executive_summary
     from app.engines.story_engine import detect_domain, generate_story
     from app.engines.pdf_builder import build_pdf
     from app.engines.chart_exporter import generate_all_charts
@@ -144,7 +145,12 @@ def _generate_pdf(ds_id: str, req: PdfRequest, owner: str):
         "Analysis completed by Analytiq.", [], [], [], [])
     try:
         story_obj = generate_story(df)
-        exec_summary = story_obj.executive_summary
+        # The engine computes the summary and owns every figure in it.
+        # A model, if one is assigned to the task, rewrites the wording
+        # and nothing else — and the paragraph reverts to this text if
+        # the rewrite touches a number. Off unless someone opts in.
+        exec_summary = polish_executive_summary(
+            story_obj.executive_summary, df)
         findings = story_obj.key_findings
         risks = story_obj.business_risks
         opportunities = story_obj.opportunities

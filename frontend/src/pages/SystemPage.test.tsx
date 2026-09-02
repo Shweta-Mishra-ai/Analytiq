@@ -39,10 +39,58 @@ const status = {
   any_available: true,
 }
 
+const routing = {
+  tasks: [
+    {
+      task: 'chart_caption',
+      label: 'Chart captions',
+      description: 'One sentence per chart.',
+      requires: ['text'],
+      min_context: 8000,
+      degrades_to: 'The engine writes its own wording.',
+      assigned: 'groq/llama-3.1-8b-instant',
+      source: 'default',
+      resolved: ['groq/llama-3.1-8b-instant'],
+      eligible: ['groq/llama-3.1-8b-instant'],
+      served: true,
+    },
+  ],
+  models: [
+    {
+      id: 'groq/llama-3.1-8b-instant',
+      provider: 'groq',
+      label: 'Llama 3.1 8B Instant',
+      capabilities: ['text', 'json'],
+      tier: 'fast',
+      context: 128000,
+      free: true,
+      declared: false,
+      notes: '',
+    },
+  ],
+  problems: [],
+  deprecated: [],
+  capabilities: { text: 'Writes prose', json: 'Returns structured JSON' },
+}
+
 describe('SystemPage', () => {
+  // The page now makes two GETs — provider status and task routing — so
+  // the mock answers by path rather than returning one shape to both.
+  function mockGet(statusBody: unknown = status, routingBody: unknown = routing) {
+    return vi.spyOn(client, 'apiGet').mockImplementation((path: string) => {
+      if (path.endsWith('/llm-status')) {
+        return statusBody instanceof Error
+          ? Promise.reject(statusBody)
+          : Promise.resolve(statusBody)
+      }
+      if (path.endsWith('/routing')) return Promise.resolve(routingBody)
+      return Promise.reject(new Error(`unexpected ${path}`))
+    })
+  }
+
   beforeEach(() => {
     vi.restoreAllMocks()
-    vi.spyOn(client, 'apiGet').mockResolvedValue(status)
+    mockGet()
   })
 
   it('says which providers are configured before anything is called', async () => {
@@ -57,11 +105,7 @@ describe('SystemPage', () => {
   })
 
   it('shows that reports still work when no model is available', async () => {
-    vi.spyOn(client, 'apiGet').mockResolvedValue({
-      ...status,
-      configured: [],
-      any_available: false,
-    })
+    mockGet({ ...status, configured: [], any_available: false })
     render(<SystemPage />)
     expect(await screen.findByText('Engines')).toBeInTheDocument()
     expect(
@@ -158,7 +202,7 @@ describe('SystemPage', () => {
   })
 
   it('surfaces the fetch error rather than rendering an empty page', async () => {
-    vi.spyOn(client, 'apiGet').mockRejectedValue(new Error('403 Forbidden'))
+    mockGet(new Error('403 Forbidden'))
     render(<SystemPage />)
     expect(await screen.findByText(/403 Forbidden/)).toBeInTheDocument()
   })

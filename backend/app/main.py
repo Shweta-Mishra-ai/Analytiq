@@ -177,6 +177,140 @@ async def llm_check(providers: str = "", timeout: float = 12.0):
     }
 
 
+class RoutingAssignment(BaseModel):
+    task: str
+    model_id: str = ""
+
+
+class ModelDeclaration(BaseModel):
+    model_id: str
+    capabilities: list[str]
+    label: str = ""
+    tier: str = "balanced"
+    context: int = 0
+    free: bool = False
+    notes: str = ""
+
+
+def _routing_payload() -> dict:
+    """The one shape every routing endpoint returns.
+
+    Built once because the read and the write must agree: a POST that
+    answers with a subset of what the GET returns leaves the caller
+    holding a half-populated object, and the UI that renders it crashes
+    on whichever field the write happened to omit. That is not
+    hypothetical — it was a real crash, found by clicking the dropdown.
+    """
+    from app.ai import routing
+    from app.ai.capabilities import DESCRIPTIONS
+    from app.ai.settings_store import settings_store
+
+    payload = routing.status()
+    payload["capabilities"] = {c.value: text for c, text in DESCRIPTIONS.items()}
+    payload["overrides"] = settings_store.as_dict()
+    return payload
+
+
+@app.get("/api/admin/routing")
+async def get_routing():
+    """Which model does which job, what each job needs, and which models
+    could serve it. Everything the System page's routing table renders."""
+    return _routing_payload()
+
+
+@app.post("/api/admin/routing")
+async def set_routing(body: RoutingAssignment):
+    """Point one task at one model.
+
+    Validated before it is written. An assignment that cannot do the job
+    is refused with the reason — accepting it and skipping it at the
+    point of use would look exactly like the model never being called.
+    """
+    from fastapi import HTTPException
+    from app.ai import routing
+    from app.ai.settings_store import RoutingRejected, settings_store
+    try:
+        settings_store.assign(body.task, body.model_id)
+    except RoutingRejected as e:
+        raise HTTPException(422, str(e))
+    return _routing_payload()
+
+
+@app.delete("/api/admin/routing")
+async def clear_routing():
+    """Back to whatever the environment says."""
+    from app.ai import routing
+    from app.ai.settings_store import settings_store
+    settings_store.clear()
+    return _routing_payload()
+
+
+@app.post("/api/admin/models")
+async def declare_model(body: ModelDeclaration):
+    """Record what an operator says a model can do.
+
+    The catalogue cannot know every model — OpenRouter alone serves
+    hundreds — so an unknown one is assumed to write text and nothing
+    else until someone who knows says otherwise. This is that saying.
+    """
+    from fastapi import HTTPException
+    from app.ai import routing
+    from app.ai.model_catalogue import catalogue
+    try:
+        catalogue.declare(body.model_id, body.capabilities, label=body.label,
+                          tier=body.tier, context=body.context,
+                          free=body.free, notes=body.notes)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return _routing_payload()
+
+
+@app.delete("/api/admin/models/{model_id:path}")
+async def forget_model(model_id: str):
+    from fastapi import HTTPException
+    from app.ai import routing
+    from app.ai.model_catalogue import catalogue
+    if not catalogue.forget(model_id):
+        raise HTTPException(
+            404, f"'{model_id}' was not added here. Built-in catalogue "
+                 f"entries cannot be removed — declare the same id to "
+                 f"change what it claims.")
+    return _routing_payload()
+
+
+@app.post("/api/admin/task-check")
+async def task_check(task: str, timeout: float = 12.0):
+    """Call the model actually assigned to one task, and report what
+    happened — the per-task version of the provider check."""
+    from fastapi import HTTPException
+    from starlette.concurrency import run_in_threadpool
+    from app.ai import providers as provider_registry
+    from app.ai import routing, tasks
+
+    spec = tasks.get(task)
+    if spec is None:
+        raise HTTPException(404, f"'{task}' is not a task this app has.")
+
+    chain = routing.resolve_models(spec.name)
+    if not chain:
+        return {"task": spec.name, "ok": False, "model": "",
+                "error": "No configured model can serve this task.",
+                "hint": spec.degrades_to}
+
+    model = chain[0]
+    provider = provider_registry.get(model.provider)
+    timeout = max(1.0, min(float(timeout), 60.0))
+    check = await run_in_threadpool(provider.check, timeout, model.model)
+    result = check.as_dict()
+    result.update({"task": spec.name, "model": model.id})
+    if result["ok"]:
+        from app.ai.model_catalogue import catalogue
+        from app.ai.capabilities import Capability
+        await run_in_threadpool(catalogue.record_probe, model.id,
+                                Capability.TEXT, True, "")
+    return result
+
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat(timespec="seconds")

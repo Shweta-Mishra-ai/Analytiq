@@ -148,7 +148,7 @@ The application remains fully functional locally without keys (AI modules degrad
 | `CEREBRAS_API_KEY` | [cloud.cerebras.ai](https://cloud.cerebras.ai) | Optional. Free tier, openly-licensed weights, very fast |
 | `TOGETHER_API_KEY` | [api.together.xyz](https://api.together.xyz) | Optional. Small free credit, openly-licensed weights |
 | `LOCAL_LLM_URL` | your own machine | Optional. Any OpenAI-compatible server (Ollama, llama.cpp, vLLM, LM Studio). No key, no cost, no data leaving the box |
-| `LLM_ROUTING` | you choose | Which provider does which job, e.g. `executive_summary=openrouter,narrative=local`. Overrides the defaults without a code change |
+| `LLM_ROUTING` | you choose | Which **model** does which job, e.g. `chart_caption=groq/llama-3.1-8b-instant,rag_report=openrouter/deepseek/deepseek-r1:free`. A bare provider name still works and means that provider's default model |
 | `LLM_PROVIDER_ORDER` | you choose | The fallback chain. Default `groq,openrouter,cerebras,together,gemini,local`. A provider with no key is skipped, not an error |
 | `LLM_PRIVACY_MODE` | you choose | `1` refuses every cloud call outright. Only a local model may be used. Reports still build — the engines write their own findings |
 | `APP_ADMIN_KEY` | you choose | Master key for account management (`/api/admin/*`). Unset + zero accounts created = open/no-auth (local dev only). `APP_PASSWORD` also works as a fallback name. |
@@ -210,6 +210,64 @@ is the same picture without making any calls.
 
 Locally, `python3 backend/scripts/check_api_keys.py` does the same from
 a terminal.
+
+### 🎯 A model per job, chosen by what it is good at
+
+Routing is per **task** and per **model**, not per provider — a provider
+serves many models, and "use Groq" cannot express "the cheap fast one
+for the twenty chart captions in a report, the reasoning one for the
+executive summary".
+
+Each task declares the capabilities it needs, each model declares what
+it has, and **only a model that has them can be assigned — as a fallback
+too**. That last part is the one that matters: gating only the first
+choice prevents nothing, because the fallback is exactly where the wrong
+model gets in. A photograph of a table can never reach a text-only
+model; a root-cause question can never quietly land on a small chat
+model that answers confidently and worse.
+
+| Task | Needs | Default |
+|---|---|---|
+| Chart captions | text | `groq/llama-3.1-8b-instant` — ~20 calls per report, so cheap and fast wins |
+| Chat commands | json | `groq/llama-3.3-70b-versatile` — the reply is parsed, not read |
+| Executive summary polish | reasoning | *off* — the engine's own wording ships unless you opt in |
+| Knowledge base answers / report | reasoning | prefers a **local** model where one is configured |
+| Tables from photos and video | vision + json | `gemini/gemini-3.6-flash`, or any local multimodal model |
+| Video in the knowledge base | video | `gemini/gemini-3.6-flash` |
+| Knowledge base embeddings | embedding | `gemini/gemini-embedding-001`, local MiniLM below it |
+| Report cover artwork | image generation | *off* — see below |
+
+Set it on the **System** page (takes effect immediately, no redeploy) or
+with `LLM_ROUTING`. The catalogue does not need to know a model for you
+to use it: name any `provider/model` and tick what it can do. An unknown
+model is assumed to write text and nothing else, so it can never be
+picked for vision or embeddings by accident.
+
+Two consequences worth stating: **vision is no longer Gemini-only**, so a
+machine running Ollama with Gemma 3 and no API keys at all can take a
+photograph of a table and turn it into a report; and the knowledge base
+now prefers a model on your own hardware by declaration rather than by
+luck of the fallback order.
+
+### 🖼️ Generated imagery — deliberately almost nowhere
+
+Every figure in a report here traces to a source digest. A generated
+image traces to nothing, so in a deliverable aiming at Big-4 standard it
+is a liability wherever it could be mistaken for information.
+
+So: **off by default**, and when on it may appear on the report cover and
+the deck title slide and nowhere else. Never a chart, a table, a KPI
+tile or any diagram that asserts a relationship — those stay
+deterministic matplotlib and Plotly. The prompt is built from the report
+title alone and never touches a column name, a value or a finding, so
+the image cannot depict the data even by accident. Every generated image
+carries a caption saying it is decorative and contains no data — not
+configurable, because that caption is the whole defence of the feature —
+and is recorded in the hash-chained audit trail alongside the numbers.
+
+Free and open-source path: point `LOCAL_LLM_URL` at any OpenAI-compatible
+`/v1/images/generations` server (AUTOMATIC1111, LocalAI, SD.Next,
+ComfyUI) and assign `local/sdxl`.
 
 ### 🔒 Data integrity
 

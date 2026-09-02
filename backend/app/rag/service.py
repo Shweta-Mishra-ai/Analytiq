@@ -102,64 +102,42 @@ def ingest_file(kb: KnowledgeBase, filename: str, data: bytes) -> dict:
 
 # ── generation ───────────────────────────────────────────
 
-def _gemini_generate(system: str, user: str, max_tokens: int = 2048) -> Optional[str]:
-    if not config.gemini_api_key:
-        return None
-    try:
-        from app.ai import gemini_client
-        return gemini_client.generate_text(
-            [user], system=system, max_output_tokens=max_tokens,
-            temperature=0.2, timeout_sec=60).strip() or None
-    except Exception as e:
-        logger.warning(f"Gemini generation failed: {e}")
-        return None
+def _generate(system: str, user: str, task: str = "rag_answer",
+              max_tokens: int = 2048) -> str:
+    """Answer through the routed model for this task.
 
+    This used to be a private ladder — local, then Gemini, then Groq —
+    written before models were addressable. It meant OpenRouter,
+    Cerebras and Together could never answer a knowledge-base question
+    no matter how they were configured, and that the one genuinely
+    important thing about it, the local-first privacy posture, was
+    buried in the order of three function calls.
 
-def _groq_generate(system: str, user: str, max_tokens: int = 2048) -> Optional[str]:
-    if not config.groq_api_key:
-        return None
-    try:
-        from app.ai.llm_client import get_client
-        return get_client(config.groq_api_key).chat_task(
-            system, user, task="default", max_tokens=max_tokens)
-    except Exception as e:
-        logger.warning(f"Groq generation failed: {e}")
-        return None
-
-
-def _local_generate(system: str, user: str, max_tokens: int = 2048) -> Optional[str]:
-    from app.ai import local_llm
-    return local_llm.generate(system, user, max_tokens=max_tokens)
-
-
-def _generate(system: str, user: str, max_tokens: int = 2048) -> str:
-    """Answer with a local model where one is available or required.
-
-    A knowledge base is the most sensitive thing in this app — it holds
-    the client's own contracts, policies and reports — so privacy mode
-    routes it to a model on their hardware and never falls back to a
-    cloud provider.
+    That posture is now declared on the task itself
+    (`prefers_local=True` in ai/tasks.py), so it is visible on the
+    System page and cannot be undone by reordering an environment
+    variable. A knowledge base holds the client's contracts and
+    policies; where a model on their own hardware can answer, it does.
     """
     from app.ai import local_llm
+    from app.ai.llm_client import get_client
 
-    if local_llm.privacy_mode():
-        text = _local_generate(system, user, max_tokens)
-        if not text:
-            raise RuntimeError(
-                "LLM_PRIVACY_MODE is on and no local model answered. Set "
-                "LOCAL_LLM_URL and LOCAL_LLM_MODEL (any OpenAI-compatible "
-                "server: Ollama, llama.cpp, vLLM, LM Studio). No data was "
-                "sent anywhere.")
+    text = get_client().chat_task(system=system, user=user, task=task,
+                                  max_tokens=max_tokens)
+    if text:
         return text
 
-    text = (_local_generate(system, user, max_tokens)
-            or _gemini_generate(system, user, max_tokens)
-            or _groq_generate(system, user, max_tokens))
-    if not text:
+    if local_llm.privacy_mode():
         raise RuntimeError(
-            "No LLM available — set LOCAL_LLM_URL, GEMINI_API_KEY or "
-            "GROQ_API_KEY")
-    return text
+            "LLM_PRIVACY_MODE is on and no local model answered. Set "
+            "LOCAL_LLM_URL and LOCAL_LLM_MODEL (any OpenAI-compatible "
+            "server: Ollama, llama.cpp, vLLM, LM Studio). No data was "
+            "sent anywhere.")
+    raise RuntimeError(
+        "No model is configured that can answer from a knowledge base. "
+        "Assign one on the System page, or set LOCAL_LLM_URL, "
+        "GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, "
+        "CEREBRAS_API_KEY or TOGETHER_API_KEY.")
 
 
 def _context_block(hits: List[dict]) -> str:
@@ -218,7 +196,7 @@ def answer_question(kb: KnowledgeBase, question: str, k: int = 6) -> dict:
     answer = _generate(
         QA_SYSTEM,
         f"CONTEXT:\n{_context_block(hits)}\n\nQUESTION: {question}",
-        max_tokens=1024)
+        task="rag_answer", max_tokens=1024)
 
     # An answer citing nothing was not written from the passages supplied,
     # whatever it says. Flagging it is honest; suppressing it would throw
@@ -276,7 +254,7 @@ def generate_report(kb: KnowledgeBase, title: str, focus: str = "") -> dict:
             + (f"FOCUS: {focus}\n" if focus else "")
             + f"\nCONTEXT:\n{_context_block(hits)}")
     markdown = _generate(REPORT_SYSTEM.replace("{title}", title), user,
-                         max_tokens=3000)
+                         task="rag_report", max_tokens=3000)
     return {
         "markdown": markdown,
         "sources": [{"ref": i + 1, "source": h["source"],

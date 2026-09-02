@@ -71,25 +71,40 @@ def test_rag_refuses_to_reach_a_cloud_provider_in_privacy_mode(
         privacy_on, monkeypatch):
     """A knowledge base holds the client's contracts and policies — the
     most sensitive thing in the app. It must never silently fall back."""
+    from app.ai import providers, routing
     from app.rag import service
 
+    # RAG no longer has its own ladder of provider functions — it asks
+    # the router, so the guarantee is now tested where it actually
+    # lives: privacy mode must leave no cloud model in the chain at all,
+    # and any cloud provider that is somehow reached must blow up.
     def _boom(*a, **kw):
         raise AssertionError("a cloud provider was called in privacy mode")
 
-    monkeypatch.setattr(service, "_gemini_generate", _boom)
-    monkeypatch.setattr(service, "_groq_generate", _boom)
-    monkeypatch.setattr(service, "_local_generate", lambda *a, **kw: None)
+    for provider in providers.all_providers():
+        if not provider.local:
+            monkeypatch.setattr(provider, "generate", _boom, raising=False)
+
+    assert routing.resolve_models("rag_answer") == [] or all(
+        (providers.get(spec.provider) or object()).local
+        for spec in routing.resolve_models("rag_answer"))
 
     with pytest.raises(RuntimeError) as e:
-        service._generate("sys", "user")
+        service._generate("sys", "user", task="rag_answer")
     assert "no data was sent anywhere" in str(e.value).lower()
 
 
 def test_rag_uses_the_local_model_in_privacy_mode(privacy_on, monkeypatch):
     from app.rag import service
-    monkeypatch.setattr(service, "_local_generate",
-                        lambda *a, **kw: "A local answer [1].")
-    assert service._generate("sys", "user") == "A local answer [1]."
+
+    class _Client:
+        def chat_task(self, system, user, task="default", max_tokens=400,
+                      force=""):
+            return "A local answer [1]."
+
+    monkeypatch.setattr("app.ai.llm_client.get_client", lambda *a, **k: _Client())
+    assert service._generate("sys", "user", task="rag_answer") == \
+        "A local answer [1]."
 
 
 def test_privacy_mode_is_off_by_default():

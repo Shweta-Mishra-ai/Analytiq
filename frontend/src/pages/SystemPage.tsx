@@ -11,6 +11,7 @@ import {
 import { apiGet, apiPost } from '../api/client'
 import { Badge, Btn, ErrorBox, PageHeader, Panel, Stat } from '../components/Ui'
 import * as fmt from '../lib/format'
+import TaskRouting from '../components/TaskRouting'
 
 interface ProviderRow {
   name: string
@@ -155,30 +156,7 @@ export default function SystemPage() {
         </div>
       </Panel>
 
-      {status && (
-        <Panel
-          title="Task routing"
-          subtitle="Which provider gets first refusal on which kind of work. Override any row with LLM_ROUTING, and the fallback chain with LLM_PROVIDER_ORDER."
-        >
-          <div className="grid gap-2 sm:grid-cols-2">
-            {Object.entries(status.routing).map(([task, prov]) => (
-              <div
-                key={task}
-                className="flex items-center justify-between rounded-md border border-edge px-3 py-2 text-sm"
-              >
-                <span className="text-mute">{fmt.label(task)}</span>
-                <span className="font-medium">
-                  {status.providers[prov]?.label ?? prov}
-                </span>
-              </div>
-            ))}
-          </div>
-          <p className="mt-3 text-xs text-mute">
-            Fallback order: {status.order.join(' → ')}. A provider with no key is
-            skipped rather than failing the call.
-          </p>
-        </Panel>
-      )}
+      <TaskRouting />
     </div>
   )
 }

@@ -38,6 +38,8 @@ state — reports still build, in the engines' own wording.
 """
 from __future__ import annotations
 
+import base64
+import io
 import json
 import logging
 import time
@@ -120,8 +122,19 @@ class Provider:
     def api_key(self) -> str:
         return (self._key_getter() or "").strip()
 
+    def is_credentialed(self) -> bool:
+        """Can this provider be *reached* — key present, endpoint known.
+
+        Separate from is_configured() because model-level routing gets
+        the model name from the catalogue, not from this provider's
+        configured default. A provider holding a valid key but a blank
+        *_MODEL is unusable under provider routing and perfectly usable
+        under model routing; conflating the two would hide it.
+        """
+        return bool(self.api_key)
+
     def is_configured(self) -> bool:
-        return bool(self.api_key and self.model)
+        return self.is_credentialed() and bool(self.model)
 
     def missing(self) -> str:
         """Why this provider is unavailable, named so it can be fixed."""
@@ -134,24 +147,56 @@ class Provider:
     # ── work ─────────────────────────────────────────────
     def complete(self, messages: list[dict], system: str = "",
                  max_tokens: int = 512, temperature: float = 0.2,
-                 timeout_sec: Optional[float] = None) -> Optional[str]:
+                 timeout_sec: Optional[float] = None,
+                 model: str = "", json_mode: bool = False) -> Optional[str]:
         """The primitive: a conversation in, one completion out.
 
         Multi-turn matters here — the chat page and the tool dispatcher
         both send a history, and flattening it to one string is how a
         provider layer quietly makes the assistant forget what it just
-        said."""
+        said.
+
+        `model` overrides this provider's configured default for one
+        call, which is what makes per-task model routing possible: the
+        model name comes from the catalogue, not from the provider.
+        Empty means "the configured default", so every existing caller
+        is unaffected.
+
+        `json_mode` asks the provider for structured output at the API
+        level rather than in the prompt. The difference matters where
+        the reply is *parsed* rather than read — a model that usually
+        returns valid JSON is not the same as one that is required to.
+
+        A message's `content` may be a plain string or a list of parts
+        (`{"type": "text", ...}` / `{"type": "image", "data": bytes,
+        "mime": ...}`), which is how an image reaches a model.
+        """
         raise NotImplementedError
 
     def generate(self, system: str, user: str, max_tokens: int = 512,
                  temperature: float = 0.2,
-                 timeout_sec: Optional[float] = None) -> Optional[str]:
+                 timeout_sec: Optional[float] = None,
+                 model: str = "", json_mode: bool = False) -> Optional[str]:
         """One-shot convenience over complete()."""
         return self.complete([{"role": "user", "content": user}],
                              system=system, max_tokens=max_tokens,
-                             temperature=temperature, timeout_sec=timeout_sec)
+                             temperature=temperature, timeout_sec=timeout_sec,
+                             model=model, json_mode=json_mode)
 
-    def check(self, timeout_sec: float = CHECK_TIMEOUT_SEC) -> ProviderCheck:
+    def describe_image(self, system: str, user: str, image: bytes,
+                       mime: str = "image/png", max_tokens: int = 1024,
+                       model: str = "", json_mode: bool = False,
+                       timeout_sec: Optional[float] = None) -> Optional[str]:
+        """Ask about an image. Convenience over the parts form above."""
+        return self.complete(
+            [{"role": "user", "content": [
+                {"type": "text", "text": user},
+                {"type": "image", "data": image, "mime": mime}]}],
+            system=system, max_tokens=max_tokens, temperature=0.0,
+            timeout_sec=timeout_sec, model=model, json_mode=json_mode)
+
+    def check(self, timeout_sec: float = CHECK_TIMEOUT_SEC,
+              model: str = "") -> ProviderCheck:
         """A real round trip, not a key-format check.
 
         A key can be present, well-formed, and rejected — expired, wrong
@@ -159,9 +204,13 @@ class Provider:
         deployed on. Only a call finds that out, so this makes one, with
         a prompt whose correct answer is short enough to verify.
         """
+        # With an explicit model, "configured" means credentialed: the
+        # model name came from the caller, not from this provider's own
+        # default, so a blank default must not read as unavailable.
+        configured = (self.is_credentialed() if model else self.is_configured())
         chk = ProviderCheck(name=self.name, label=self.label,
-                            configured=self.is_configured(),
-                            model=self.model, free=self.free,
+                            configured=configured,
+                            model=model or self.model, free=self.free,
                             local=self.local)
         if not chk.configured:
             chk.error = self.missing()
@@ -173,7 +222,8 @@ class Provider:
             reply = self.generate(
                 system="You are a connectivity check. Reply with one word.",
                 user="Reply with the single word: ready",
-                max_tokens=16, temperature=0.0, timeout_sec=timeout_sec)
+                max_tokens=16, temperature=0.0, timeout_sec=timeout_sec,
+                model=model)
         except Exception as e:                     # noqa: BLE001 — reported
             chk.latency_ms = int((time.monotonic() - started) * 1000)
             chk.error = str(e)[:_ERROR_BODY_CHARS]
@@ -222,11 +272,14 @@ class OpenAICompatibleProvider(Provider):
     def base_url(self) -> str:
         return (self._base_url_getter() or "").rstrip("/")
 
-    def is_configured(self) -> bool:
-        if not self.base_url or not self.model:
+    def is_credentialed(self) -> bool:
+        if not self.base_url:
             return False
         # A local endpoint has no key and needs none; a hosted one does.
         return self.local or bool(self.api_key)
+
+    def is_configured(self) -> bool:
+        return self.is_credentialed() and bool(self.model)
 
     def missing(self) -> str:
         if not self.base_url:
@@ -239,18 +292,22 @@ class OpenAICompatibleProvider(Provider):
 
     def complete(self, messages: list[dict], system: str = "",
                  max_tokens: int = 512, temperature: float = 0.2,
-                 timeout_sec: Optional[float] = None) -> Optional[str]:
-        if not self.is_configured():
+                 timeout_sec: Optional[float] = None,
+                 model: str = "", json_mode: bool = False) -> Optional[str]:
+        wire_model = model or self.model
+        if not self.is_credentialed() or not wire_model:
             return None
 
         payload = {
-            "model": self.model,
+            "model": wire_model,
             "messages": (([{"role": "system", "content": system}] if system else [])
-                         + list(messages)),
+                         + [_openai_message(m) for m in messages]),
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": False,
         }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -286,39 +343,165 @@ class OpenAICompatibleProvider(Provider):
         return _extract_openai_text(body)
 
 
+    def generate_image(self, prompt: str, size: str = "1024x1024",
+                       model: str = "",
+                       timeout_sec: Optional[float] = 120) -> Optional[bytes]:
+        """POST {base}/v1/images/generations — the dialect a local Stable
+        Diffusion server speaks, as well as several hosted ones.
+
+        Returns raw bytes. The response may carry base64 or a URL; only
+        the base64 form is accepted, because fetching a URL would mean a
+        second request to a host nobody vetted, for an image that is
+        decoration.
+        """
+        wire_model = model or self.model
+        if not self.is_credentialed() or not wire_model:
+            return None
+
+        payload = {"model": wire_model, "prompt": prompt, "size": size,
+                   "n": 1, "response_format": "b64_json"}
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        headers.update(self._extra_headers)
+
+        req = urllib.request.Request(
+            f"{self.base_url}/v1/images/generations",
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers, method="POST")
+        opener = (urllib.request.build_opener() if self._use_proxy
+                  else urllib.request.build_opener(
+                      urllib.request.ProxyHandler({})))
+        try:
+            with opener.open(req, timeout=timeout_sec or 120) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(_http_error_message(e)) from None
+        except Exception as e:                     # noqa: BLE001
+            raise RuntimeError(f"{self.base_url}: {e}") from None
+
+        try:
+            encoded = body["data"][0]["b64_json"]
+        except (KeyError, IndexError, TypeError):
+            raise RuntimeError(
+                "the image endpoint returned no inline image data") from None
+        return base64.b64decode(encoded)
+
+
 class GeminiProvider(Provider):
     """Google, through the shared gemini_client wrapper — which is where
     the hard wall-clock timeout and the model name live."""
 
-    def is_configured(self) -> bool:
+    def is_credentialed(self) -> bool:
         from app.ai import gemini_client
-        return gemini_client.is_configured() and bool(self.model)
+        return gemini_client.is_configured()
+
+    def is_configured(self) -> bool:
+        return self.is_credentialed() and bool(self.model)
+
+    def generate_image(self, prompt: str, size: str = "1024x1024",
+                       model: str = "",
+                       timeout_sec: Optional[float] = 120) -> Optional[bytes]:
+        from app.ai import gemini_client
+        return gemini_client.generate_image(
+            prompt, model=model or None, timeout_sec=timeout_sec or 120)
+
+    def embed(self, texts: list[str], task: str = "retrieval_document",
+              model: str = "") -> Optional[list]:
+        from app.ai import gemini_client
+        return gemini_client.embed(texts, task=task, model=model or None)
+
+    def understand_video(self, data: bytes, ext: str, prompt: str,
+                         max_tokens: int = 2048, model: str = "",
+                         timeout_sec: float = 120) -> Optional[str]:
+        """Native video understanding via the Files API. Declared here
+        and nowhere else, which is why VIDEO is its own capability."""
+        from app.ai import multimodal
+        return multimodal.gemini_video(
+            data=data, ext=ext, prompt=prompt, max_tokens=max_tokens,
+            model=model, timeout_sec=timeout_sec)
 
     def complete(self, messages: list[dict], system: str = "",
                  max_tokens: int = 512, temperature: float = 0.2,
-                 timeout_sec: Optional[float] = None) -> Optional[str]:
+                 timeout_sec: Optional[float] = None,
+                 model: str = "", json_mode: bool = False) -> Optional[str]:
         from app.ai import gemini_client
         if not gemini_client.is_configured():
             return None
         # Gemini takes a flat contents list rather than roled messages.
         # Prior assistant turns are labelled so the history still reads
-        # as a conversation instead of one long user monologue.
-        contents = []
+        # as a conversation instead of one long user monologue. Image
+        # parts go in as PIL images, which the SDK converts itself.
+        contents: list = []
         for m in messages:
             role = (m.get("role") or "user").lower()
-            text = m.get("content") or ""
-            if not text:
+            content = m.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if part.get("type") == "image":
+                        img = _as_pil(part.get("data"))
+                        if img is not None:
+                            contents.append(img)
+                    elif part.get("text"):
+                        contents.append(part["text"])
                 continue
-            contents.append(f"Assistant: {text}" if role == "assistant" else text)
+            if not content:
+                continue
+            contents.append(f"Assistant: {content}" if role == "assistant"
+                            else content)
         if not contents:
             return None
         return gemini_client.generate_text(
             contents, system=system, max_output_tokens=max_tokens,
-            temperature=temperature,
+            temperature=temperature, json_mode=json_mode,
+            model=model or None,
             timeout_sec=timeout_sec or config.llm_timeout_sec)
 
 
 # ── helpers ──────────────────────────────────────────────
+
+def _openai_message(message: dict) -> dict:
+    """Render one message into the OpenAI wire dialect.
+
+    A plain string passes through untouched — that is the overwhelming
+    majority of calls, and rewriting them would be churn. A parts list
+    becomes the vision dialect that OpenRouter, Together, vLLM and
+    Ollama all speak, with the image inlined as a data URL rather than
+    a link: the image is a client's data and must not be uploaded
+    somewhere first to be fetched back.
+    """
+    content = message.get("content")
+    if not isinstance(content, list):
+        return message
+    parts = []
+    for part in content:
+        if part.get("type") == "image":
+            data = part.get("data")
+            if not data:
+                continue
+            encoded = base64.b64encode(data).decode("ascii")
+            mime = part.get("mime") or "image/png"
+            parts.append({"type": "image_url",
+                          "image_url": {"url": f"data:{mime};base64,{encoded}"}})
+        elif part.get("text"):
+            parts.append({"type": "text", "text": part["text"]})
+    return {"role": message.get("role", "user"), "content": parts}
+
+
+def _as_pil(data):
+    """Bytes → PIL image, or None. Pillow is already a dependency (the
+    table extractor opens uploads with it), so this adds nothing."""
+    if data is None:
+        return None
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        return img
+    except Exception:                              # noqa: BLE001
+        logger.warning("could not read an image part", exc_info=True)
+        return None
+
 
 def _extract_openai_text(body: dict) -> Optional[str]:
     """The dialect is standard but the error shape is not: some providers

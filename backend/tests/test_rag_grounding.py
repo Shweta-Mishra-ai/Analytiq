@@ -168,9 +168,10 @@ def test_a_covered_question_reaches_the_model_with_its_passages(
     kb = _kb(tmp_path, HR_DOCS)
     captured = {}
 
-    def _fake(system, user, max_tokens=2048):
+    def _fake(system, user, task="rag_answer", max_tokens=2048):
         captured["user"] = user
         captured["system"] = system
+        captured["task"] = task
         return "Staff receive 25 days of annual leave [1]."
     monkeypatch.setattr(service, "_generate", _fake)
 
@@ -399,7 +400,12 @@ class TestKnowledgeBaseSearch:
                             classmethod(lambda cls, texts: fake(texts)))
 
         kb = self._kb(tmp_path, self.DOCS)
-        assert kb.embedder == "sentence"
+        # The backend identity now carries the model, so that switching
+        # embedding models forces a re-embed instead of silently mixing
+        # two vector spaces. The family is what determines the relevance
+        # floor, and that is what this test is about.
+        from app.rag.vector_store import _family
+        assert _family(kb.embedder) == "sentence"
         for query, expected in (("holiday entitlement", "paid days off"),
                                 ("attrition rate", "Turnover"),
                                 ("expense deadline", "Reimbursement")):

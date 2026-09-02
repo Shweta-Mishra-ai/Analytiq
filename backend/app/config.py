@@ -71,6 +71,18 @@ class AppConfig(BaseSettings):
     llm_timeout_sec: int = 20
     llm_max_retries: int = 3
 
+    # ── Retrieval models ─────────────────────────────────
+    # Were hardcoded in rag/vector_store.py and rag/retrieval.py. Neither
+    # is a generative model, so neither belongs in the task registry —
+    # but both change results, so neither should be a literal buried in
+    # a call site either.
+    embed_local_model: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        alias="EMBED_LOCAL_MODEL")
+    reranker_model: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        alias="RERANKER_MODEL")
+
     # ── Local / open-source model ────────────────────────
     # Any OpenAI-compatible endpoint: Ollama, llama.cpp's server, vLLM,
     # LM Studio. Point LOCAL_LLM_URL at the base (e.g.

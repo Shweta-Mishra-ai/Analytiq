@@ -189,12 +189,24 @@ AI_DIR = Path(__file__).resolve().parent.parent / "app" / "ai"
 _MODEL_LITERAL = re.compile(r'["\'](gemini-[\w.\-]+|text-embedding-\d+)["\']')
 
 
+#: The catalogue's whole job is to be a list of model names, so the rule
+#: below cannot apply to it — but the exemption is one file, by name,
+#: not a pattern that would quietly grow. Everywhere else, a model
+#: literal is still a bug: a name in a *call site* is how llm_client
+#: ended up pinned to a different, already-retired model than the
+#: configured one, and no amount of catalogue is a reason to allow that
+#: again.
+_CATALOGUE_FILES = {"model_catalogue.py"}
+
+
 def test_no_hardcoded_model_names_in_ai_modules():
-    """Regression: model identifiers must live in config.py only. A
-    literal in a call site is how llm_client ended up pinned to a
-    different, already-retired model than the configured one."""
+    """Regression: outside the catalogue, model identifiers come from
+    config or from a ModelSpec — never from a literal at the point of
+    use."""
     offenders = []
     for path in sorted(AI_DIR.glob("*.py")):
+        if path.name in _CATALOGUE_FILES:
+            continue
         for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
             if stripped.startswith("#") or stripped.startswith("*"):
@@ -202,7 +214,16 @@ def test_no_hardcoded_model_names_in_ai_modules():
             if _MODEL_LITERAL.search(line):
                 offenders.append(f"app/ai/{path.name}:{i}: {stripped}")
     assert not offenders, (
-        "Hardcoded model name(s) outside config.py:\n" + "\n".join(offenders))
+        "Hardcoded model name(s) outside config.py and the catalogue:\n"
+        + "\n".join(offenders))
+
+
+def test_the_catalogue_is_the_only_exempt_file():
+    """Keeps the exemption honest: if a second file gets added to the
+    allow-list, this test makes that a deliberate, visible decision
+    rather than a quiet widening of the rule."""
+    assert _CATALOGUE_FILES == {"model_catalogue.py"}
+    assert (AI_DIR / "model_catalogue.py").exists()
 
 
 # ══════════════════════════════════════════════════════════
@@ -226,6 +247,9 @@ class _StubProvider:
         self._configured = configured
         self.calls = []
 
+    def is_credentialed(self):
+        return self._configured
+
     def is_configured(self):
         return self._configured
 
@@ -233,24 +257,46 @@ class _StubProvider:
         return "" if self._configured else f"{self.key_env} is not set"
 
     def complete(self, messages, system="", max_tokens=512, temperature=0.2,
-                 timeout_sec=None):
-        self.calls.append("complete")
+                 timeout_sec=None, model="", json_mode=False):
+        self.calls.append(model or "complete")
         if self._raises:
             raise self._raises
         return self._reply
 
     def generate(self, system, user, max_tokens=512, temperature=0.2,
-                 timeout_sec=None):
-        self.calls.append("generate")
+                 timeout_sec=None, model="", json_mode=False):
+        self.calls.append(model or "generate")
         if self._raises:
             raise self._raises
         return self._reply
 
 
 def _install(monkeypatch, **stubs):
-    """Replace the whole provider registry for the duration of a test."""
+    """Replace the provider registry, and give each stub provider one
+    model in the catalogue so routing has something to resolve to.
+
+    Every stub model is given the full generative capability set, so
+    these tests observe *ordering and failure handling* and leave the
+    capability gate itself to tests/test_model_routing.py, where it is
+    the subject rather than a precondition.
+    """
     from app.ai import providers as mod
+    from app.ai import routing as routing_mod
+    from app.ai.capabilities import Capability as Cap
+    from app.ai.model_catalogue import ModelCatalogue, ModelSpec
+
     monkeypatch.setattr(mod, "_providers", lambda: dict(stubs))
+
+    specs = [ModelSpec(provider=name, model=f"{name}-model",
+                       label=f"{name}-model", context=128_000,
+                       capabilities=frozenset({Cap.TEXT, Cap.JSON,
+                                               Cap.REASONING}))
+             for name in stubs]
+    import os as _os
+    import tempfile as _tf
+    cat = ModelCatalogue(_os.path.join(_tf.mkdtemp(), "models.json"))
+    monkeypatch.setattr(cat, "all", lambda: list(specs))
+    monkeypatch.setattr(routing_mod, "catalogue", cat)
     return stubs
 
 
@@ -262,6 +308,15 @@ def _fresh_client(monkeypatch, order="groq,gemini"):
     monkeypatch.setattr(config, "llm_provider_order", order)
     monkeypatch.setattr(config, "llm_routing", "")
     monkeypatch.setattr(config, "llm_privacy_mode", False)
+    # The tasks under test here have their own defaults pointing at real
+    # catalogue models; clear them so the stub registry is what routing
+    # actually sees.
+    import dataclasses
+    from app.ai import tasks as tasks_mod
+    for name in ("chart_caption", "tool_call", "executive_summary", "default"):
+        monkeypatch.setitem(tasks_mod.TASKS, name,
+                            dataclasses.replace(tasks_mod.TASKS[name],
+                                                default_model=""))
     from app.services.llm_cache import llm_cache
     monkeypatch.setattr(llm_cache, "get", lambda *a, **k: None)
     monkeypatch.setattr(llm_cache, "put", lambda *a, **k: None)
@@ -287,22 +342,37 @@ def test_chat_task_returns_none_when_all_providers_fail(monkeypatch):
     assert client.chat_task("sys", "user", task="narrative") is None
 
 
-def test_chat_task_prefers_gemini_for_gemini_routed_tasks(monkeypatch):
-    client, _ = _fresh_client(monkeypatch)
+def test_an_assigned_model_is_the_one_that_gets_the_work(monkeypatch):
+    """The point of the whole routing layer.
+
+    This replaces an older test that asserted a hardcoded
+    executive_summary→Gemini table. That table is gone deliberately:
+    which model does the reasoning work is now a decision someone makes
+    and can see, not a constant compiled into the app.
+    """
+    from app.config import config
+    client, _ = _fresh_client(monkeypatch, order="groq,gemini")
+    monkeypatch.setattr(config, "llm_routing",
+                        "executive_summary=gemini/gemini-model")
     stubs = _install(monkeypatch,
                      groq=_StubProvider("groq", reply="from groq"),
                      gemini=_StubProvider("gemini", reply="from gemini"))
-    out = client.chat_task("sys", "user", task="executive_summary")
-    assert out == "from gemini"
-    assert stubs["groq"].calls == [], "gemini-routed task should not call Groq first"
+    assert client.chat_task("sys", "user", task="executive_summary") == "from gemini"
+    assert stubs["groq"].calls == [], \
+        "the assigned model should answer; the other is only a fallback"
+    assert stubs["gemini"].calls == ["gemini-model"], \
+        "the provider must be told which model to use, not left on its default"
 
 
 def test_chat_task_falls_back_to_groq_when_gemini_unavailable(monkeypatch):
+    # `default` rather than `executive_summary`: the latter is opt-in
+    # now, and the mechanic under test here is the fallback, not whether
+    # the task is switched on.
     client, _ = _fresh_client(monkeypatch)
     _install(monkeypatch,
              groq=_StubProvider("groq", reply="from groq"),
              gemini=_StubProvider("gemini", configured=False))
-    assert client.chat_task("sys", "user", task="executive_summary") == "from groq"
+    assert client.chat_task("sys", "user", task="default") == "from groq"
 
 
 def test_chat_task_skips_provider_that_raises(monkeypatch):
@@ -310,7 +380,8 @@ def test_chat_task_skips_provider_that_raises(monkeypatch):
     _install(monkeypatch,
              groq=_StubProvider("groq", reply="from groq"),
              gemini=_StubProvider("gemini", raises=RuntimeError("gemini down")))
-    assert client.chat_task("sys", "user", task="executive_summary") == "from groq"
+    monkeypatch.setattr(config, "llm_provider_order", "gemini,groq")
+    assert client.chat_task("sys", "user", task="default") == "from groq"
 
 
 def test_routing_can_be_overridden_by_environment(monkeypatch):

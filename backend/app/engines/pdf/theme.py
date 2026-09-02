@@ -378,7 +378,37 @@ class _ReportCanvas(CV.Canvas):
 #  COVER PAGE  (drawn on separate canvas, merged via pypdf)
 # ══════════════════════════════════════════════════════════
 
-def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
+def _draw_cover_art(cv, T: dict, art: dict) -> None:
+    """Paint the artwork, then the caption that says what it is.
+
+    Both, always, in one function: the caption is the whole defence of
+    this feature, so it is not possible to draw the image without it.
+    Failure is swallowed to the flat colour — a decorative background is
+    never worth losing a report over.
+    """
+    try:
+        from reportlab.lib.utils import ImageReader
+        reader = ImageReader(io.BytesIO(art["image"]))
+        cv.saveState()
+        # Dimmed hard: this sits behind the title block, and cover text
+        # staying readable matters more than the picture does.
+        cv.setFillAlpha(0.30)
+        cv.drawImage(reader, 0, 0, width=W, height=H,
+                     preserveAspectRatio=True, anchor="c", mask="auto")
+        cv.restoreState()
+
+        caption = art.get("caption") or ""
+        if caption:
+            cv.setFillColor(HexColor("#8AA0BF"))
+            cv.setFont(FONT_BODY, 6)
+            cv.drawString(14*mm, 8*mm, caption)
+    except Exception:
+        logger.warning("cover artwork could not be drawn — using the flat "
+                       "cover colour", exc_info=True)
+
+
+def _build_cover(T: dict, config: dict, kpis_preview: list,
+                 cover_art: dict = None) -> bytes:
     buf = io.BytesIO()
     cv  = CV.Canvas(buf, pagesize=A4)
     title       = config.get("title", "Data Analysis Report")
@@ -389,6 +419,14 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     # BG
     cv.setFillColor(_c(T["cover_bg"]))
     cv.rect(0, 0, W, H, fill=1, stroke=0)
+
+    # Optional generated artwork, behind everything and heavily dimmed.
+    # This is the only surface in the entire deliverable where a
+    # generated image may appear — see ai/imagery.py for the argument.
+    # It is off unless someone assigned a model to the task, and the
+    # caption below is not optional.
+    if cover_art and cover_art.get("image"):
+        _draw_cover_art(cv, T, cover_art)
     # Top stripe
     cv.setFillColor(_c(T["cover_accent"]))
     cv.rect(0, H - 5*mm, W, 5*mm, fill=1, stroke=0)

@@ -100,7 +100,8 @@ def _run_with_hard_timeout(fn, timeout_sec: float):
 
 def generate_text(contents: list, system: Optional[str] = None,
                    json_mode: bool = False, max_output_tokens: int = 2048,
-                   temperature: float = 0.2, timeout_sec: float = 60) -> str:
+                   temperature: float = 0.2, timeout_sec: float = 60,
+                   model: Optional[str] = None) -> str:
     """contents: list of str / PIL.Image / uploaded-file objects (the SDK
     auto-converts PIL images and accepts File objects from upload_file()
     directly in this list, same as the old SDK did). Raises on any
@@ -121,11 +122,38 @@ def generate_text(contents: list, system: Optional[str] = None,
 
     def _call():
         resp = client.models.generate_content(
-            model=config.gemini_model,
+            # Per-call override for task routing; the configured default
+            # when nobody asked for anything in particular.
+            model=model or config.gemini_model,
             contents=contents,
             config=types.GenerateContentConfig(**cfg_kwargs),
         )
         return resp.text or ""
+
+    return _run_with_hard_timeout(_call, timeout_sec)
+
+
+def generate_image(prompt: str, model: Optional[str] = None,
+                   timeout_sec: float = 120) -> Optional[bytes]:
+    """One decorative image, or None. Never raises for the ordinary
+    "this model does not do images" case — the caller falls through to
+    the next candidate, and ultimately to the flat cover colour."""
+    client = get_client()
+    if client is None:
+        return None
+
+    def _call():
+        resp = client.models.generate_content(
+            model=model or config.gemini_model,
+            contents=[prompt],
+        )
+        for candidate in getattr(resp, "candidates", None) or []:
+            parts = getattr(getattr(candidate, "content", None), "parts", None)
+            for part in parts or []:
+                blob = getattr(part, "inline_data", None)
+                if blob is not None and getattr(blob, "data", None):
+                    return blob.data
+        return None
 
     return _run_with_hard_timeout(_call, timeout_sec)
 
@@ -175,7 +203,8 @@ _TASK_TYPE_MAP = {
 
 def embed(texts: list[str], task: str = "retrieval_document",
           output_dimensionality: int = 768,
-          timeout_sec: float = 30) -> Optional[list[list[float]]]:
+          timeout_sec: float = 30,
+          model: Optional[str] = None) -> Optional[list[list[float]]]:
     """Returns one embedding vector per input text, or None if Gemini
     isn't configured or the call fails (callers fall back to the local
     hashing embedder — see rag/vector_store.py)."""
@@ -188,7 +217,7 @@ def embed(texts: list[str], task: str = "retrieval_document",
 
     def _call():
         resp = client.models.embed_content(
-            model=config.gemini_embed_model,
+            model=model or config.gemini_embed_model,
             contents=texts,
             config=types.EmbedContentConfig(
                 task_type=task_type,

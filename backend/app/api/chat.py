@@ -42,8 +42,20 @@ def chat(ds_id: str, req: ChatRequest, owner: str = Depends(current_owner)):
     df = store.get_df(owner, ds_id)
     if df is None:
         raise HTTPException(404, "Dataset not found")
-    if not config.groq_api_key:
-        raise HTTPException(503, "GROQ_API_KEY is not configured on the server")
+    # Was: a hard 503 unless GROQ_API_KEY was set — which was wrong the
+    # moment there was more than one provider, and wronger still now
+    # that the model is chosen per task. Ask the router whether anything
+    # can do this job instead of interrogating one vendor's key.
+    from app.ai.routing import resolve_models
+    from app.ai.tasks import TASKS
+    if not resolve_models("tool_call"):
+        raise HTTPException(
+            503,
+            "No model is configured that can answer chat commands. "
+            + TASKS["tool_call"].degrades_to
+            + " Assign one on the System page, or set any of GROQ_API_KEY, "
+              "OPENROUTER_API_KEY, CEREBRAS_API_KEY, TOGETHER_API_KEY or "
+              "GEMINI_API_KEY.")
 
     client = get_client(config.groq_api_key)
     system = build_chat_system_prompt(df)

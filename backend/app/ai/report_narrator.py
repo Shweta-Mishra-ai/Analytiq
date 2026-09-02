@@ -725,41 +725,74 @@ def generate_chart_narrative(
                 f"{len(df.columns)} variables.")
 
 
-def generate_executive_summary(
-    df:           pd.DataFrame,
-    domain:       str = "general",
-    story_report  = None,
-    groq_api_key: str = "",
-) -> str:
-    """Executive summary — domain-aware prompt, guaranteed non-empty."""
-    try:
-        prompt = _build_exec_prompt(df, domain)
-        if prompt:
-            raw = _llm_call(prompt, groq_api_key,
-                            task="executive_summary", max_tokens=700)
-            if raw:
-                cleaned = _clean_output(raw)
-                if not _is_hallucinated(cleaned, df) and len(cleaned) > 80:
-                    return cleaned
-    except Exception as e:
-        logger.warning(f"Executive summary LLM failed: {e}")
 
-    # Rule-based fallback
-    atr_col = next((c for c in df.columns
-                    if c.lower() in ("left","attrition","churned","exited")), None)
-    parts = [
-        f"This {domain.upper()} dataset ({len(df):,} records) "
-        "reveals critical patterns requiring executive attention."
-    ]
-    if atr_col:
-        rate   = float(df[atr_col].mean()) * 100
-        n_left = int(df[atr_col].sum())
-        parts.append(
-            f"Attrition is {rate:.1f}% ({n_left:,} employees left) — "
-            f"{'above' if rate > 15 else 'at'} the healthy 10–15% benchmark."
-        )
-    parts.append(
-        "Immediate action on the critical findings below is required "
-        "to prevent further financial and operational impact."
-    )
-    return " ".join(parts)
+
+# ══════════════════════════════════════════════════════════
+#  EXECUTIVE SUMMARY POLISH
+# ══════════════════════════════════════════════════════════
+
+def polish_executive_summary(summary: str, df: "pd.DataFrame") -> str:
+    """Improve the wording of the summary the engine already computed.
+
+    Deliberately a *rewrite*, not a generation. The engine owns every
+    number in this paragraph and the model is shown the finished text
+    with one instruction: say the same thing better. That is the whole
+    reason this is safe to do to the most scrutinised paragraph in the
+    deliverable.
+
+    Three guards, and the paragraph reverts to the engine's own wording
+    if any of them trips:
+
+    * no model is assigned to the task — which is the default, so a
+      deployment that never opts in never sees a model touch this;
+    * the reply mentions a metric the dataset does not contain, caught
+      by the same check the chart narratives use;
+    * the reply changes any number that was in the original. A rewrite
+      that alters a figure has stopped being a rewrite.
+    """
+    text = (summary or "").strip()
+    if not text:
+        return summary
+
+    from app.ai import routing
+    from app.ai.llm_client import get_client
+    if not routing.resolve_models("executive_summary"):
+        return summary
+
+    system = (
+        "You improve the wording of an executive summary that has already "
+        "been written from verified figures. Rules, all absolute: keep "
+        "every number exactly as it appears; do not add a figure, a "
+        "percentage or a claim that is not already there; do not remove a "
+        "caveat; keep it to one paragraph of plain business English. "
+        "Return only the rewritten paragraph.")
+
+    try:
+        rewritten = get_client().chat_task(
+            system=system, user=text, task="executive_summary",
+            max_tokens=600)
+    except Exception:                              # noqa: BLE001
+        logger.warning("executive summary polish failed", exc_info=True)
+        return summary
+
+    if not rewritten:
+        return summary
+    rewritten = _clean_output(rewritten)
+    if _is_hallucinated(rewritten, df):
+        logger.warning("executive summary polish mentioned a metric this "
+                       "dataset does not have — keeping the engine's wording")
+        return summary
+    if _numbers_in(rewritten) != _numbers_in(text):
+        logger.warning("executive summary polish changed a figure — keeping "
+                       "the engine's wording")
+        return summary
+    return rewritten
+
+
+def _numbers_in(text: str) -> set:
+    """Every numeric literal in a piece of prose.
+
+    Compared as a set rather than a sequence: reordering a sentence is a
+    legitimate rewrite, inventing or dropping a figure is not.
+    """
+    return set(re.findall(r"\d[\d,]*\.?\d*", text or ""))

@@ -183,7 +183,20 @@ def build_pdf(
          "color": T["positive"] if miss_pct < 1 else T["warning"]})
 
     # ── Cover page ────────────────────────────────────────
-    cover_bytes = _build_cover(T, config, kpis_cover)
+    # Off unless a model is assigned to the cover_art task, in which
+    # case this returns the image plus the caption that must accompany
+    # it. Never touches an exhibit — see ai/imagery.py.
+    cover_art = None
+    try:
+        from app.ai import imagery
+        cover_art = imagery.generate_cover(
+            title=config.get("title", "Data Analysis Report"),
+            domain=str(domain or ""))
+    except Exception:
+        logger.warning("cover artwork step failed — using the flat cover",
+                       exc_info=True)
+
+    cover_bytes = _build_cover(T, config, kpis_cover, cover_art=cover_art)
 
     # ── Content pages ─────────────────────────────────────
     content_buf = io.BytesIO()

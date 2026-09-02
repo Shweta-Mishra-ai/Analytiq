@@ -31,8 +31,10 @@ from app.rag.retrieval import (BM25Index, CrossEncoderReranker,
 logger = logging.getLogger(__name__)
 
 # Small, fast, and good enough that offline retrieval stops
-# being keyword matching. 384 dimensions, ~90MB.
-LOCAL_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+# being keyword matching. 384 dimensions, ~90MB. Configurable via
+# EMBED_LOCAL_MODEL — swapping it re-embeds the store, see below.
+def _local_model_name() -> str:
+    return config.embed_local_model
 
 _EMBED_BATCH = 90
 _LOCAL_DIM = 384
@@ -40,18 +42,33 @@ _LOCAL_DIM = 384
 
 # ── embedding backends ───────────────────────────────────
 
-def _gemini_embed(texts: List[str], task: str) -> Optional[np.ndarray]:
-    if not config.gemini_api_key:
-        return None
-    from app.ai import gemini_client
-    vecs: list = []
-    for i in range(0, len(texts), _EMBED_BATCH):
-        batch = texts[i:i + _EMBED_BATCH]
-        result = gemini_client.embed(batch, task=task)
-        if result is None:
-            return None  # gemini_client already logged the failure
-        vecs.extend(result)
-    return np.array(vecs, dtype=np.float32)
+def _api_embed(texts: List[str], task: str) -> tuple[Optional[np.ndarray], str]:
+    """Embeddings from whichever model the `embedding` task routes to.
+
+    Returns the vectors and the model id that produced them. The id
+    matters as much as the vectors: two embedding models put the same
+    sentence in different places, so a stored index searched with
+    another model's query vector returns confident nonsense.
+    """
+    from app.ai import providers, routing
+
+    for spec in routing.resolve_models("embedding"):
+        provider = providers.get(spec.provider)
+        embedder = getattr(provider, "embed", None) if provider else None
+        if embedder is None:
+            continue
+        vecs: list = []
+        ok = True
+        for i in range(0, len(texts), _EMBED_BATCH):
+            result = embedder(texts[i:i + _EMBED_BATCH], task=task,
+                              model=spec.model)
+            if result is None:
+                ok = False
+                break
+            vecs.extend(result)
+        if ok and vecs:
+            return np.array(vecs, dtype=np.float32), spec.id
+    return None, ""
 
 
 # Function words carry no topic. Left in, they dominate the similarity:
@@ -123,8 +140,9 @@ class _SentenceEmbedder:
         cls._tried = True
         try:
             from sentence_transformers import SentenceTransformer
-            cls._model = SentenceTransformer(LOCAL_MODEL_NAME)
-            logger.info("local sentence embedder loaded: %s", LOCAL_MODEL_NAME)
+            name = _local_model_name()
+            cls._model = SentenceTransformer(name)
+            logger.info("local sentence embedder loaded: %s", name)
         except Exception as exc:
             logger.info("local sentence embedder unavailable (%s) — falling "
                         "back to hashed term vectors, which match on shared "
@@ -156,12 +174,16 @@ def embed(texts: List[str], task: str = "retrieval_document") -> tuple[np.ndarra
     all. The name comes back because the relevance floor differs per
     backend — their cosines are not on the same scale.
     """
-    vecs = _gemini_embed(texts, task)
+    vecs, model_id = _api_embed(texts, task)
     if vecs is not None:
-        return vecs, "gemini"
+        # The identity carries the model, not just the family. The store
+        # already re-embeds when this string changes, so recording the
+        # model here is what turns "someone switched embedding models"
+        # from silently-mixed vector spaces into an automatic rebuild.
+        return vecs, f"gemini:{model_id}"
     vecs = _SentenceEmbedder.encode(texts)
     if vecs is not None:
-        return vecs, "sentence"
+        return vecs, f"sentence:{_local_model_name()}"
     return _local_embed(texts), "local"
 
 
@@ -173,6 +195,17 @@ def embed(texts: List[str], task: str = "retrieval_document") -> tuple[np.ndarra
 # embedder scores unrelated text far lower because it only matches on
 # shared tokens — so one number cannot serve both.
 MIN_SCORE = {"gemini": 0.45, "sentence": 0.28, "local": 0.12}
+
+
+def _family(backend: str) -> str:
+    """The scale a backend's cosines live on.
+
+    Backend identities gained a `:model` suffix so a model swap forces a
+    re-embed; the floor is a property of the family, and manifests
+    written before the suffix existed carry the bare family name — both
+    resolve here.
+    """
+    return (backend or "local").split(":", 1)[0]
 # A chunk scoring far below the best match is padding: it was returned
 # only because k slots had to be filled.
 RELATIVE_FLOOR = 0.55
@@ -187,7 +220,7 @@ def _filter_by_relevance(hits: List[dict], embedder: str) -> List[dict]:
     """
     if not hits:
         return []
-    floor = MIN_SCORE.get(embedder or "local", MIN_SCORE["local"])
+    floor = MIN_SCORE.get(_family(embedder), MIN_SCORE["local"])
     top = hits[0]["score"]
     if top < floor:
         return []
@@ -298,10 +331,19 @@ class KnowledgeBase:
         # comparable to the stored ones.
         qv = None
         if self.vectors is not None:
-            if self.embedder == "gemini":
+            # Compared by family, not by the full identity. The identity
+            # carries the model so that a model change forces a re-embed
+            # (see add_chunks, where the comparison must stay exact) —
+            # but the question here is only "can this query be embedded
+            # into the same space as the stored chunks", and the answer
+            # to that is the family. Comparing identities here sent a
+            # sentence-embedded store through the hashed embedder and
+            # returned nothing at all.
+            family = _family(self.embedder)
+            if family == "gemini":
                 vec, backend = embed([query], "retrieval_query")
-                qv = vec[0] if backend == "gemini" else None
-            elif self.embedder == "sentence":
+                qv = vec[0] if _family(backend) == "gemini" else None
+            elif family == "sentence":
                 vec = _SentenceEmbedder.encode([query])
                 qv = vec[0] if vec is not None else None
             else:

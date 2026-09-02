@@ -95,13 +95,11 @@ def _parse_extraction_json(raw: str) -> dict:
 def extract_table_from_image(filename: str, data: bytes) -> tuple[pd.DataFrame, list[str]]:
     """Image bytes → (DataFrame, extraction_warnings). Raises
     ExtractionError with a clear, user-facing message on every failure mode."""
-    if not config.gemini_api_key:
-        raise ExtractionError(
-            "GEMINI_API_KEY must be configured to extract tables from images")
-
-    from app.ai import gemini_client
+    from app.ai import multimodal
     from PIL import Image
 
+    # Validate the image before spending a model call on it, and before
+    # producing an error about models for what is really a broken file.
     try:
         img = Image.open(io.BytesIO(data))
         img.load()
@@ -109,11 +107,17 @@ def extract_table_from_image(filename: str, data: bytes) -> tuple[pd.DataFrame, 
         raise ExtractionError(f"'{filename}' is not a readable image")
 
     try:
-        raw = gemini_client.generate_text(
-            [EXTRACT_PROMPT, img], json_mode=True, temperature=0.0,
-            timeout_sec=60)
+        raw = multimodal.describe_image(
+            image=data, prompt=EXTRACT_PROMPT, task="table_extraction",
+            mime=Image.MIME.get(img.format or "", "image/png"),
+            max_tokens=4096, json_mode=True, timeout_sec=60)
+    except multimodal.NoCapableModel as e:
+        # Names the missing capability rather than one vendor's key —
+        # any model that can read an image can do this now, including a
+        # local one.
+        raise ExtractionError(str(e))
     except Exception as e:
-        logger.warning(f"Gemini extraction call failed: {e}")
+        logger.warning(f"table extraction call failed: {e}")
         raise ExtractionError(f"Table extraction failed: {e}")
 
     payload = _parse_extraction_json(raw)
@@ -135,10 +139,10 @@ def extract_table_from_video(filename: str, data: bytes, ext: str) -> tuple[pd.D
 
     Raises ExtractionError with a clear, user-facing message on every
     failure mode."""
-    if not config.gemini_api_key:
-        raise ExtractionError(
-            "GEMINI_API_KEY must be configured to extract tables from video")
-
+    # No key check here: each frame goes through extract_table_from_image,
+    # which asks the router and reports the real gap. Checking one
+    # vendor's key up front would refuse a machine that has a perfectly
+    # good local vision model.
     from app.services.video_frames import (FrameExtractionError,
                                            extract_table_frames_with_budget)
 

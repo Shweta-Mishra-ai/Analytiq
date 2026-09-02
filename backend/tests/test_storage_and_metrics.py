@@ -258,6 +258,9 @@ def test_chat_task_serves_the_second_identical_call_from_cache(monkeypatch,
         free = local = False
         key_env = "GROQ_API_KEY"
 
+        def is_credentialed(self):
+            return True
+
         def is_configured(self):
             return True
 
@@ -268,17 +271,36 @@ def test_chat_task_serves_the_second_identical_call_from_cache(monkeypatch,
             calls.append(1)
             return "narrative"
 
+    import dataclasses
+    import os as _os
+    import tempfile as _tf
     from app.ai import providers as providers_mod
+    from app.ai import routing as routing_mod
+    from app.ai import tasks as tasks_mod
+    from app.ai.capabilities import Capability as Cap
+    from app.ai.model_catalogue import ModelCatalogue, ModelSpec
     from app.config import config
+
     monkeypatch.setattr(config, "llm_provider_order", "groq")
     monkeypatch.setattr(config, "llm_routing", "")
     monkeypatch.setattr(config, "llm_privacy_mode", False)
     monkeypatch.setattr(providers_mod, "_providers",
                         lambda: {"groq": _Counting()})
+    # `default` rather than `executive_summary`: the latter is opt-in,
+    # so with no assignment it correctly resolves to nothing at all.
+    monkeypatch.setitem(
+        tasks_mod.TASKS, "default",
+        dataclasses.replace(tasks_mod.TASKS["default"], default_model=""))
+    cat = ModelCatalogue(_os.path.join(_tf.mkdtemp(), "models.json"))
+    monkeypatch.setattr(cat, "all", lambda: [ModelSpec(
+        provider="groq", model="test-model", label="test-model",
+        context=128_000,
+        capabilities=frozenset({Cap.TEXT, Cap.JSON, Cap.REASONING}))])
+    monkeypatch.setattr(routing_mod, "catalogue", cat)
     client = mod.LLMClient()
 
-    first = client.chat_task("sys", "user", task="executive_summary")
-    second = client.chat_task("sys", "user", task="executive_summary")
+    first = client.chat_task("sys", "user", task="default")
+    second = client.chat_task("sys", "user", task="default")
     assert first == second == "narrative"
     assert len(calls) == 1, "the identical second call was billed again"
 

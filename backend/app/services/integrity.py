@@ -73,6 +73,7 @@ EVENTS = {
     "export",          # data or a chart left the app
     "delete",          # the dataset was removed
     "verify",          # an integrity check was run
+    "generate",        # a decorative image was produced for a deliverable
 }
 
 
