@@ -36,7 +36,9 @@ class ChartRequest(BaseModel):
     x: Optional[str] = None
     y: Optional[str] = None
     color: Optional[str] = None
-    agg: str = "sum"                # sum|mean|count|median|min|max
+    # "auto" asks the server which aggregation the metric deserves —
+    # summing an age gives 25,000 years and answers nothing.
+    agg: str = "sum"                # auto|sum|mean|count|median|min|max
     nbins: int = 30
     top_n: int = 20
     title: str = ""
@@ -158,6 +160,12 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
 
 def _aggregate(df: pd.DataFrame, req: ChartRequest) -> pd.DataFrame:
     x, y, agg = req.x, req.y, req.agg
+    if agg == "auto" and y:
+        # One rule for how a metric is aggregated, shared with the report
+        # generator, so a dashboard tile and the same chart in the PDF
+        # never disagree.
+        from app.engines.chart_exporter import _agg_for_metric
+        agg, _is_score = _agg_for_metric(str(y))
     if x not in df.columns or y not in df.columns:
         raise KeyError(x if x not in df.columns else y)
     if pd.api.types.is_datetime64_any_dtype(df[x]):

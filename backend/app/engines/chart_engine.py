@@ -371,7 +371,13 @@ def make_pie(df, names_col, values_col, title=""):
 
 
 def make_heatmap(df):
-    num_cols = df.select_dtypes(include="number").columns.tolist()
+    from app.engines.domains.base import is_id_column
+    # A row number correlates with nothing and takes a row and a column
+    # in the matrix saying so.
+    num_cols = [c for c in df.select_dtypes(include="number").columns
+                if not is_id_column(c, df[c])]
+    if len(num_cols) < 2:
+        num_cols = df.select_dtypes(include="number").columns.tolist()
     corr     = df[num_cols].corr().round(2)
     return _style(px.imshow(
         corr, text_auto=True,

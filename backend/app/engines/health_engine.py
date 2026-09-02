@@ -225,7 +225,9 @@ def build_insights(df: pd.DataFrame, niche: str) -> list:
                         "New hires (0–2 yrs) attrition: {:.1f}%".format(new_hire_atr),
                         "Employees in their first 2 years show {:.1f}% attrition — a signal of poor onboarding, misaligned expectations, or poor manager support. "
                         "Veteran employees (6+ yrs) show {:.1f}% attrition by comparison. "
-                        "Replacing a new hire is modelled at {} on the same published basis.".format(REPLACEMENT_COST_RANGE),
+                        "Replacing a new hire is modelled at {} on the same "
+                        "published basis.".format(
+                            new_hire_atr, vet_atr, REPLACEMENT_COST_RANGE),
                         "Implement a structured 90-day onboarding program. Assign mentors to all new hires. "
                         "Run a 30/60/90 check-in survey to catch at-risk employees early.",
                         "critical" if new_hire_atr > 35 else "warning"

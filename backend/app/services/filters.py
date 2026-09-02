@@ -57,25 +57,36 @@ def apply_filters(df: pd.DataFrame, filters: List[dict] | None) -> pd.DataFrame:
 
 
 def field_catalog(df: pd.DataFrame, max_unique: int = 50) -> list[dict]:
-    """Column metadata for the dashboard builder / slicer dropdowns."""
+    """Column metadata for the dashboard builder and slicer dropdowns.
+
+    Identifiers are marked rather than presented as measures. The
+    dashboard picks its default tiles from the first numeric field, and
+    on an HR extract that was EmployeeNumber — so a new user's first
+    screen was a bar chart of summed employee ID numbers by department,
+    a pie of the same, and a correlation matrix with a row number in it.
+    """
+    from app.engines.domains.base import is_id_column
     fields = []
     for col in df.columns:
         s = df[col]
+        identifier = False
         if pd.api.types.is_datetime64_any_dtype(s):
             kind = "datetime"
         elif pd.api.types.is_numeric_dtype(s):
-            kind = "numeric"
+            identifier = is_id_column(col, s)
+            kind = "identifier" if identifier else "numeric"
         else:
             kind = "categorical"
         entry: dict[str, Any] = {
             "name": str(col),
             "kind": kind,
+            "is_identifier": identifier,
             "missing_pct": round(float(s.isna().mean()) * 100, 1),
             "unique": int(s.nunique()),
         }
         if kind == "categorical" and s.nunique() <= max_unique:
             entry["values"] = [str(v) for v in s.dropna().unique().tolist()[:max_unique]]
-        if kind == "numeric":
+        if kind in ("numeric", "identifier"):
             clean = pd.to_numeric(s, errors="coerce").dropna()
             if len(clean):
                 entry["min"] = float(clean.min())

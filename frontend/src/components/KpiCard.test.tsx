@@ -27,19 +27,28 @@ describe('formatting', () => {
     expect(screen.getByText('14,700')).toBeInTheDocument()
   })
 
-  it('abbreviates thousands and millions on a plain number', () => {
+  it('abbreviates millions, using the same convention as the report', () => {
     render(<KpiCard kpi={kpi({ label: 'Revenue', value: 2_430_000, format: 'num' })} />)
-    expect(screen.getByText('2.4M')).toBeInTheDocument()
+    expect(screen.getByText('2.43m')).toBeInTheDocument()
   })
 
-  it('does not abbreviate a number below a thousand', () => {
-    render(<KpiCard kpi={kpi({ label: 'Orders', value: 842.5, format: 'num' })} />)
-    expect(screen.getByText('842.5')).toBeInTheDocument()
+  it('groups thousands rather than abbreviating them', () => {
+    // "14,700" is more useful on a tile than "14.7K", and it is what the
+    // generated report prints for the same figure.
+    render(<KpiCard kpi={kpi({ label: 'Orders', value: 14_700, format: 'num' })} />)
+    expect(screen.getByText('14,700')).toBeInTheDocument()
   })
 
-  it('abbreviates a large negative without losing the sign', () => {
+  it('keeps the sign on a negative', () => {
     render(<KpiCard kpi={kpi({ label: 'Net change', value: -1_500, format: 'num' })} />)
-    expect(screen.getByText('-1.5K')).toBeInTheDocument()
+    expect(screen.getByText('-1,500')).toBeInTheDocument()
+  })
+
+  it('shows a percentage to one decimal, as everything else does', () => {
+    // The dashboard tile read "19.86%" beside a report and an insights
+    // page both saying 19.9%.
+    render(<KpiCard kpi={kpi({ value: 19.86 })} />)
+    expect(screen.getByText('19.9%')).toBeInTheDocument()
   })
 })
 

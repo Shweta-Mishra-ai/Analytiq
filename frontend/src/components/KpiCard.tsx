@@ -1,12 +1,13 @@
 import type { Kpi } from '../api/client'
+import * as format from '../lib/format'
 
-function fmt(k: Kpi): string {
-  if (k.format === 'pct') return `${k.value}%`
-  if (k.format === 'int') return k.value.toLocaleString()
-  const v = k.value
-  if (Math.abs(v) >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`
-  if (Math.abs(v) >= 1_000) return `${(v / 1_000).toFixed(1)}K`
-  return v.toLocaleString(undefined, { maximumFractionDigits: 2 })
+function display(k: Kpi): string {
+  // One decimal, matching every other place the same figure appears.
+  // The dashboard tile read "19.86%" beside a report and an insights
+  // page both saying 19.9%.
+  if (k.format === 'pct') return format.pct(k.value)
+  if (k.format === 'int') return format.count(k.value)
+  return format.num(k.value)
 }
 
 export default function KpiCard({ kpi }: { kpi: Kpi }) {
@@ -20,7 +21,7 @@ export default function KpiCard({ kpi }: { kpi: Kpi }) {
         {kpi.label}
       </div>
       <div className="mt-1 font-data text-2xl font-semibold text-ink">
-        {fmt(kpi)}
+        {display(kpi)}
       </div>
       {kpi.mean !== undefined && (
         <div className="font-data text-[11px] text-mute">

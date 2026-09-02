@@ -15,6 +15,7 @@ import FilterBar from '../components/FilterBar'
 import KpiCard from '../components/KpiCard'
 import PlotlyChart from '../components/PlotlyChart'
 import { Btn, ErrorBox, NeedData, PageHeader, Spinner } from '../components/Ui'
+import * as fmt from '../lib/format'
 
 interface TileSpec {
   id: string
@@ -73,34 +74,39 @@ export default function DashboardPage() {
         if (cats[0] && nums[0])
           auto.push({
             id: 't1',
-            title: `${nums[0].name} by ${cats[0].name}`,
+            title: `${fmt.label(nums[0].name)} by ${fmt.label(cats[0].name)}`,
             type: 'bar',
             x: cats[0].name,
             y: nums[0].name,
-            agg: 'sum',
+            // The server decides: a total of ages is 25,000 years.
+            agg: 'auto',
           })
         if (dates[0] && nums[0])
           auto.push({
             id: 't2',
-            title: `${nums[0].name} over time`,
+            title: `${fmt.label(nums[0].name)} over time`,
             type: 'line',
             x: dates[0].name,
             y: nums[0].name,
-            agg: 'sum',
+            agg: 'auto',
           })
+        // A pie shows composition, so its slices have to add up to a
+        // whole. A pie of an average age is slices of a quantity that
+        // does not total anything — a second bar chart is the honest
+        // view of the same comparison.
         if (cats[1] && nums[0])
           auto.push({
             id: 't3',
-            title: `${nums[0].name} share by ${cats[1].name}`,
-            type: 'pie',
+            title: `${fmt.label(nums[0].name)} by ${fmt.label(cats[1].name)}`,
+            type: 'bar',
             x: cats[1].name,
             y: nums[0].name,
-            agg: 'sum',
+            agg: 'auto',
           })
         if (nums[1])
           auto.push({
             id: 't4',
-            title: `Distribution of ${nums[1].name}`,
+            title: `Distribution of ${fmt.label(nums[1].name)}`,
             type: 'histogram',
             x: nums[1].name,
           })
