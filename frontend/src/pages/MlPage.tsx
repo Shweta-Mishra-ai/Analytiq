@@ -5,6 +5,7 @@ import { LeakageNotes, NoSignal } from '../components/Analysis'
 import type { LeakageFinding, ModelVerdict } from '../components/Analysis'
 import { useApp } from '../store/app'
 import { Btn, ErrorBox, NeedData, PageHeader, Panel, Spinner } from '../components/Ui'
+import * as fmt from '../lib/format'
 
 interface Target {
   column: string
@@ -113,7 +114,7 @@ export default function MlPage() {
             >
               {targets.map((t) => (
                 <option key={t.column} value={t.column}>
-                  {t.column} — {t.task}
+                  {fmt.label(t.column)} — {t.task}
                 </option>
               ))}
             </select>
@@ -204,7 +205,9 @@ export default function MlPage() {
             <div className="space-y-1.5">
               {report.feature_importance.slice(0, 12).map((f) => (
                 <div key={f.feature} className="flex items-center gap-3 text-xs">
-                  <span className="w-40 truncate font-semibold text-ink">{f.feature}</span>
+                  <span className="w-44 truncate font-semibold text-ink" title={f.feature}>
+                    {fmt.label(f.feature)}
+                  </span>
                   <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-panel2">
                     <div
                       className="h-full rounded-full bg-accent"

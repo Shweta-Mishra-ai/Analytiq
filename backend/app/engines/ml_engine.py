@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 MAX_ONEHOT_LEVELS = 30
 
 from app.engines import present as _P
+from app.engines.domains.base import is_id_column
 from app.engines.present import label as _L
 
 
@@ -161,26 +162,81 @@ def suggest_targets(df: pd.DataFrame) -> List[Dict]:
         if s.nunique() / max(len(s), 1) > 0.95 and len(s) > 50:
             continue
 
-        task, reason = detect_task(s)
-        score = 0
+        if is_id_column(col, df[col]):
+            continue
 
-        # Prefer columns that are informative
+        task, reason = detect_task(s)
+        # Ranking used to maximise class balance, which made a seven-way
+        # count of training days (evenly spread, so "balanced") outrank
+        # attrition at 80/20 — the one question the dataset exists to
+        # answer. What makes a good target is being an outcome, not being
+        # uniform.
+        score = 0.0
+
         if task == "regression":
             cv = s.std() / abs(s.mean()) if s.mean() != 0 else 0
-            score = min(cv, 1.0)
+            score = min(float(cv), 1.0) * 0.5
         else:
-            # Prefer balanced classes
             vc = s.value_counts(normalize=True)
-            balance = 1 - vc.max()   # higher = more balanced
-            score = balance
+            n_classes = int(s.nunique())
+            majority = float(vc.max())
+            # A binary outcome is what most business questions are.
+            score = 0.6 if n_classes == 2 else 0.35 if n_classes <= 4 else 0.1
+            # Extreme imbalance is a genuine problem; ordinary imbalance
+            # is what a real outcome looks like.
+            if majority > 0.97:
+                score *= 0.2
+            elif majority > 0.9:
+                score *= 0.7
+
+        # A name that says "outcome" is the strongest signal available,
+        # and the cheapest.
+        if _names_an_outcome(col):
+            score += 0.6
+        elif _names_an_attribute(col):
+            score -= 0.25
 
         suggestions.append({
             "column": col, "task": task,
-            "reason": reason, "score": round(score, 3),
+            "reason": reason, "score": round(max(score, 0.0), 3),
             "n_unique": s.nunique(), "dtype": str(s.dtype),
         })
 
     return sorted(suggestions, key=lambda x: x["score"], reverse=True)
+
+
+# Words that name a thing that happened, rather than a fact about a row.
+_OUTCOME_TOKENS = {
+    "attrition", "churn", "churned", "left", "leaver", "resigned",
+    "terminated", "exited", "converted", "conversion", "default",
+    "defaulted", "fraud", "fraudulent", "won", "lost", "success",
+    "successful", "failed", "failure", "retained", "renewed", "survived",
+    "purchased", "subscribed", "cancelled", "returned", "approved",
+    "rejected", "accepted", "outcome", "status", "target", "label",
+    "response", "responded", "click", "clicked", "readmitted", "escalated",
+}
+
+# Words that name a property of the row, which is a feature.
+_ATTRIBUTE_TOKENS = {
+    "count", "number", "times", "total", "sum", "age", "year", "years",
+    "month", "day", "date", "rating", "score", "level", "band", "grade",
+    "code", "type", "category", "name", "region", "city", "country",
+    "department", "role", "title", "gender", "hours", "distance",
+}
+
+
+def _token_set(col) -> set:
+    import re as _re
+    spaced = _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(col)).lower()
+    return {t for t in _re.split(r"[^a-z0-9]+", spaced) if t}
+
+
+def _names_an_outcome(col) -> bool:
+    return bool(_token_set(col) & _OUTCOME_TOKENS)
+
+
+def _names_an_attribute(col) -> bool:
+    return bool(_token_set(col) & _ATTRIBUTE_TOKENS)
 
 
 # ══════════════════════════════════════════════════════════
@@ -217,9 +273,19 @@ def prepare_features(
             if len(s) == 0:
                 drop_cols.append(col)
                 continue
+            # An identifier is not a feature. EmployeeNumber was coming
+            # second in the importance ranking at 22% — the model had
+            # learned that low row numbers were recorded earlier, which
+            # is true of the file and true of nothing else.
+            if is_id_column(col, df[col]):
+                drop_cols.append(col)
+                continue
             # High cardinality string → drop
             if is_text_dtype(df[col]) and df[col].nunique() / max(len(df), 1) > 0.5:
                 drop_cols.append(col)
+        if drop_cols:
+            logger.info("excluded %d non-feature column(s) from the model: %s",
+                        len(drop_cols), ", ".join(map(str, drop_cols)))
         df = df.drop(columns=drop_cols)
 
     # One-hot, not label encoding. LabelEncoder assigns Sales=0,
@@ -429,8 +495,20 @@ def train_models(
                 model=None,
             ))
 
-    # Sort by cv_score
-    results.sort(key=lambda x: x.cv_score, reverse=True)
+    # "Best" was the top cross-validation score alone, which picked a
+    # model scoring 78.9% with AUC 0.621 and mild overfitting over one
+    # scoring 80.6% with AUC 0.632 and none. Cross-validation is the
+    # right primary signal — it is the one measured on data the model
+    # did not choose its parameters on — but when two models are within
+    # noise of each other on it, the tie is broken on the things that
+    # decide which one to deploy: ranking quality, then held-out score,
+    # then how far the model fell from train to test.
+    def _rank_key(m):
+        return (round(m.cv_score, 2),                 # noise floor
+                m.roc_auc if m.roc_auc is not None else 0.0,
+                m.test_score,
+                -abs(m.overfit_gap))
+    results.sort(key=_rank_key, reverse=True)
     if results:
         results[0].is_best = True
 

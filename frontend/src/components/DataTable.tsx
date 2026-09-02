@@ -1,5 +1,6 @@
 import { Calendar } from 'lucide-react'
 import type { TableData } from '../api/client'
+import * as fmt from '../lib/format'
 
 function isNumericCol(dtype: string | undefined): boolean {
   return !!dtype && (dtype.startsWith('float') || dtype.startsWith('int'))
@@ -30,7 +31,10 @@ export default function DataTable({
                     numeric ? 'text-right' : ''
                   }`}
                 >
-                  {c}
+                  {/* The column as the reader would write it. The raw
+                      identifier belongs in the tooltip, for anyone
+                      matching this back to their own file. */}
+                  <span title={c}>{fmt.label(c)}</span>
                   {numeric && (
                     <span className="ml-1 font-data font-normal text-mute">
                       #
@@ -56,13 +60,10 @@ export default function DataTable({
                       numeric ? 'font-data text-right' : ''
                     }`}
                   >
-                    {row[c] === null || row[c] === undefined
-                      ? '—'
-                      : numeric
-                        ? Number(row[c]).toLocaleString(undefined, {
-                            maximumFractionDigits: 2,
-                          })
-                        : String(row[c])}
+                    {/* fmt.value maps a cleaned boolean back to the
+                        Yes/No that was uploaded — the table was showing
+                        "false" for a column the user typed "No" into. */}
+                    {numeric ? fmt.num(row[c]) : fmt.value(row[c])}
                   </td>
                 )
               })}

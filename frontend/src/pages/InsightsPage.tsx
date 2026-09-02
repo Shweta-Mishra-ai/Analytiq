@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { apiGet } from '../api/client'
 import { useApp } from '../store/app'
 import { ErrorBox, NeedData, PageHeader, Panel, Spinner } from '../components/Ui'
+import * as fmt from '../lib/format'
 
 interface Insight {
   title: string
@@ -127,33 +128,42 @@ export default function InsightsPage() {
 
           {story.attrition && (
             <Panel title="Attrition analysis">
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <div>
-                  <div className="text-xs text-mute uppercase">Rate</div>
-                  <div className="text-2xl font-bold text-rose">
-                    {(story.attrition.rate * 100).toFixed(1)}%
+              <div className="grid grid-cols-3 gap-3">
+                {(
+                  [
+                    // The rate arrives already expressed as a percentage.
+                    // Multiplying again put "1990.0%" on the headline
+                    // tile of a dataset with 19.9% attrition.
+                    ['Rate', fmt.pct(story.attrition.rate), 'text-rose',
+                     `${fmt.count(story.attrition.n_left)} of ${fmt.count(
+                       story.attrition.n_total)}`],
+                    ['Left', fmt.count(story.attrition.n_left), 'text-ink',
+                     'over the period covered'],
+                    ['Same risk profile',
+                     fmt.count(story.attrition.n_flight_risk), 'text-amber',
+                     'of those still here'],
+                  ] as const
+                ).map(([label, val, tone, sub]) => (
+                  <div key={label}>
+                    <div className="text-[11px] uppercase tracking-wide text-mute">
+                      {label}
+                    </div>
+                    <div className={`font-data text-2xl font-bold ${tone}`}>
+                      {val}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-faint">{sub}</div>
                   </div>
-                </div>
-                <div>
-                  <div className="text-xs text-mute uppercase">Left</div>
-                  <div className="text-2xl font-bold text-ink">
-                    {story.attrition.n_left.toLocaleString()}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-mute uppercase">Flight risk</div>
-                  <div className="text-2xl font-bold text-amber">
-                    {story.attrition.n_flight_risk.toLocaleString()}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-mute uppercase">Est. cost</div>
-                  <div className="text-2xl font-bold text-ink">
-                    {story.attrition.cost_estimate}
-                  </div>
-                </div>
+                ))}
               </div>
-              <p className="mt-3 text-xs text-mute">{story.attrition.interpretation}</p>
+              {/* Prose belongs in prose, not in a 24px number tile: the
+                  cost estimate is a sentence and was being rendered in
+                  the display face beside three figures. */}
+              <p className="mt-4 border-t border-edge pt-3 text-xs leading-relaxed text-ink2">
+                {story.attrition.cost_estimate}
+              </p>
+              <p className="mt-2 text-xs text-mute">
+                {story.attrition.interpretation}
+              </p>
             </Panel>
           )}
 

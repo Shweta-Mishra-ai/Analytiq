@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Upload,
   ShieldCheck,
@@ -17,9 +17,12 @@ import {
   Activity,
   GitCompare,
   Gauge,
+  Search,
+  FileLock2,
 } from 'lucide-react'
-import { useApp } from '../store/app'
 import { getToken, setToken } from '../api/client'
+import CommandPalette from './CommandPalette'
+import DatasetSwitcher from './DatasetSwitcher'
 
 // Grouped so the sidebar stays readable as the analysis surface grows —
 // a flat list of 15 links makes it hard to find anything.
@@ -29,6 +32,7 @@ const navGroups = [
     items: [
       { to: '/', label: 'Upload', icon: Upload },
       { to: '/quality', label: 'Data Quality', icon: ShieldCheck },
+      { to: '/governance', label: 'Governance', icon: FileLock2 },
     ],
   },
   {
@@ -61,8 +65,17 @@ const navGroups = [
   },
 ]
 
+/** Every destination, flat, for the palette to search. */
+const allPages = navGroups.flatMap((g) =>
+  g.items.map((i) => ({ to: i.to, label: i.label, group: g.label })),
+)
+
 export default function Layout() {
-  const dataset = useApp((s) => s.dataset)
+  const { pathname } = useLocation()
+  const current = allPages.find((p) =>
+    p.to === '/' ? pathname === '/' : pathname.startsWith(p.to),
+  )
+
   return (
     <div className="flex h-full">
       <aside className="flex w-60 shrink-0 flex-col border-r border-edge bg-panel">
@@ -117,27 +130,6 @@ export default function Layout() {
           ))}
         </nav>
 
-        <div className="border-t border-edge px-4 py-3">
-          {dataset ? (
-            <>
-              <div className="flex items-center gap-1.5">
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-teal" />
-                <span className="truncate text-[12px] font-medium text-ink2">
-                  {dataset.filename}
-                </span>
-              </div>
-              <div className="mt-0.5 pl-3 font-data text-[11px] text-faint">
-                {dataset.rows.toLocaleString()} × {dataset.cols}
-              </div>
-            </>
-          ) : (
-            <div className="flex items-center gap-1.5 text-[11px] text-faint">
-              <span className="h-1.5 w-1.5 rounded-full bg-faint" />
-              No dataset loaded
-            </div>
-          )}
-        </div>
-
         {getToken() && (
           <button
             onClick={() => {
@@ -150,9 +142,46 @@ export default function Layout() {
           </button>
         )}
       </aside>
-      <main className="min-w-0 flex-1 overflow-y-auto">
-        <Outlet />
-      </main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* The one piece of state every page depends on, kept in view.
+            It used to be four words of grey text at the foot of the
+            sidebar, below the fold on a short window, with no way to
+            switch without navigating back to Upload. */}
+        <header className="flex h-14 shrink-0 items-center gap-4 border-b border-edge bg-panel/60 px-6 backdrop-blur">
+          <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
+            <span className="text-[13px] text-faint">
+              {current?.group ?? 'Analytiq'}
+            </span>
+            <span className="text-faint">/</span>
+            <span className="text-[13px] font-medium text-ink">
+              {current?.label ?? 'Home'}
+            </span>
+          </nav>
+
+          <div className="ml-auto flex items-center gap-3">
+            <button
+              onClick={() =>
+                window.dispatchEvent(
+                  new KeyboardEvent('keydown', { key: 'k', metaKey: true }),
+                )
+              }
+              className="hidden items-center gap-2 rounded-lg border border-edge bg-panel2 px-2.5 py-1.5 text-[12px] text-mute transition hover:border-edge2 hover:text-ink2 sm:flex"
+            >
+              <Search className="h-3.5 w-3.5" />
+              Search
+              <kbd className="rounded border border-edge px-1 font-data text-[10px] text-faint">
+                ⌘K
+              </kbd>
+            </button>
+            <DatasetSwitcher />
+          </div>
+        </header>
+
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          <Outlet />
+        </main>
+      </div>
+      <CommandPalette pages={allPages} />
     </div>
   )
 }

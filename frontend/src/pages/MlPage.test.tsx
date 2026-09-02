@@ -93,8 +93,10 @@ describe('target selection', () => {
     expect(
       screen.getByText('two balanced-enough classes'),
     ).toBeInTheDocument()
+    // Rendered as a person would write it, with the raw identifier
+    // still available for anyone matching back to their own file.
     expect(
-      screen.getByRole('option', { name: /monthly_income — regression/ }),
+      screen.getByRole('option', { name: /Monthly Income — regression/ }),
     ).toBeInTheDocument()
   })
 
@@ -133,7 +135,7 @@ describe('a model that worked', () => {
   it('explains each driver rather than listing bare importances', async () => {
     stubApi(goodReport)
     render(<MlPage />)
-    expect(await screen.findByText('overtime')).toBeInTheDocument()
+    expect(await screen.findByText('Overtime')).toBeInTheDocument()
     expect(
       screen.getByText('raises the modelled risk'),
     ).toBeInTheDocument()

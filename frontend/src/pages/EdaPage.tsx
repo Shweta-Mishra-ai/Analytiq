@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { apiGet } from '../api/client'
 import { useApp } from '../store/app'
 import { ErrorBox, NeedData, PageHeader, Panel, Spinner } from '../components/Ui'
+import * as fmt from '../lib/format'
 
 interface Univariate {
   column: string
@@ -131,10 +132,12 @@ export default function EdaPage() {
                 <tbody>
                   {Object.values(report.univariate).map((u) => (
                     <tr key={u.column} className="border-t border-edge/60 text-mute">
-                      <td className="px-2 py-2 font-semibold text-ink">{u.column}</td>
-                      <td className="px-2 py-2">{u.mean?.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? '—'}</td>
-                      <td className="px-2 py-2">{u.median?.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? '—'}</td>
-                      <td className="px-2 py-2">{u.std?.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? '—'}</td>
+                      <td className="px-2 py-2 font-semibold text-ink" title={u.column}>
+                        {fmt.label(u.column)}
+                      </td>
+                      <td className="px-2 py-2 font-data text-right">{fmt.num(u.mean)}</td>
+                      <td className="px-2 py-2 font-data text-right">{fmt.num(u.median)}</td>
+                      <td className="px-2 py-2 font-data text-right">{fmt.num(u.std)}</td>
                       <td className="px-2 py-2">{u.skew_label ?? '—'}</td>
                       <td className="px-2 py-2">{u.normality_verdict ?? '—'}</td>
                       <td className="px-2 py-2">
@@ -157,7 +160,7 @@ export default function EdaPage() {
                 {report.correlations.map((c, i) => (
                   <div key={i} className="rounded-lg bg-panel2 px-3 py-2 text-xs">
                     <div className="font-semibold text-ink">
-                      {c.col_a} ↔ {c.col_b}
+                      {fmt.label(c.col_a)} ↔ {fmt.label(c.col_b)}
                       <span className="ml-2 font-normal text-mute">
                         {c.test_name} · r = {c.statistic.toFixed(3)} · {sig(c.p_value)}
                         {c.effect_label && ` · ${c.effect_label} effect`}
@@ -176,7 +179,7 @@ export default function EdaPage() {
                 {report.group_comparisons.map((g, i) => (
                   <div key={i} className="rounded-lg bg-panel2 px-3 py-2 text-xs">
                     <div className="font-semibold text-ink">
-                      {g.numeric_col} across {g.group_col}
+                      {fmt.label(g.numeric_col)} across {fmt.label(g.group_col)}
                       <span className="ml-2 font-normal text-mute">
                         {g.test_used} · {sig(g.p_value)} ·{' '}
                         {g.is_significant ? (
@@ -200,7 +203,9 @@ export default function EdaPage() {
                 <div className="space-y-1.5 text-xs">
                   {report.multicollinearity.map((v) => (
                     <div key={v.feature} className="flex items-center justify-between rounded-lg bg-panel2 px-3 py-2">
-                      <span className="font-semibold text-ink">{v.feature}</span>
+                      <span className="font-semibold text-ink" title={v.feature}>
+                        {fmt.label(v.feature)}
+                      </span>
                       <span className={
                         v.verdict === 'OK' ? 'text-teal'
                           : v.verdict === 'Moderate' ? 'text-amber' : 'text-rose'

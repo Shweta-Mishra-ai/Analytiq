@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Wrench, Undo2, Download } from 'lucide-react'
+import { Wrench, Undo2, Download, ShieldCheck } from 'lucide-react'
 import { apiGet, apiPost, type TableData } from '../api/client'
 import { useApp } from '../store/app'
 import DataTable from '../components/DataTable'
-import { Btn, ErrorBox, NeedData, PageHeader, Panel, Spinner } from '../components/Ui'
+import {
+  Btn,
+  EmptyState,
+  ErrorBox,
+  NeedData,
+  PageHeader,
+  Panel,
+  Spinner,
+} from '../components/Ui'
+import * as fmt from '../lib/format'
 
 interface ColumnProfile {
   name: string
@@ -145,6 +154,52 @@ export default function QualityPage() {
     }
   }
 
+  // Built once; shown inline when something is wrong and behind a
+  // disclosure when nothing is.
+  const columnTable = profile ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="text-mute">
+                      <th className="px-2 py-2">Column</th>
+                      <th className="px-2 py-2">Type</th>
+                      <th className="px-2 py-2">Score</th>
+                      <th className="px-2 py-2">Missing</th>
+                      <th className="px-2 py-2">Unique</th>
+                      <th className="px-2 py-2">Recommendations</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {profile.column_profiles.map((c) => (
+                      <tr key={c.name} className="border-t border-edge/60">
+                        <td
+                          className="px-2 py-2 font-semibold text-ink"
+                          title={c.name}
+                        >
+                          {fmt.label(c.name)}
+                        </td>
+                        <td className="px-2 py-2 text-mute">{c.inferred_type}</td>
+                        <td
+                          className={`px-2 py-2 font-bold ${scoreColor(c.quality_score)}`}
+                        >
+                          {Math.round(c.quality_score)}
+                        </td>
+                        <td className="px-2 py-2 text-mute">
+                          {c.missing_pct.toFixed(1)}%
+                        </td>
+                        <td className="px-2 py-2 text-mute">
+                          {c.unique_count.toLocaleString()}
+                        </td>
+                        <td className="max-w-md px-2 py-2 text-mute">
+                          {c.quality_issues?.join(' · ') || '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+  ) : null
+
   return (
     <div className="p-8">
       <PageHeader
@@ -192,7 +247,7 @@ export default function QualityPage() {
               {readiness.blockers.map((b, i) => (
                 <div key={i} className="rounded-lg bg-panel2 px-3 py-2 text-xs">
                   <div className="font-semibold text-ink">
-                    {b.column} — {b.issue}
+                    {fmt.label(b.column)} — {b.issue}
                   </div>
                   <div className="mt-0.5 text-mute">{b.consequence}</div>
                   <div className="mt-1 text-teal">Fix: {b.fix}</div>
@@ -209,7 +264,7 @@ export default function QualityPage() {
               <div className="mt-2 space-y-1">
                 {readiness.advisories.map((a, i) => (
                   <div key={i} className="text-xs text-mute">
-                    <b className="text-ink">{a.column}</b> — {a.issue}. {a.fix}
+                    <b className="text-ink">{fmt.label(a.column)}</b> — {a.issue}. {a.fix}
                   </div>
                 ))}
               </div>
@@ -256,46 +311,43 @@ export default function QualityPage() {
             </Panel>
           </div>
 
-          <Panel title="Column health">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="text-mute">
-                    <th className="px-2 py-2">Column</th>
-                    <th className="px-2 py-2">Type</th>
-                    <th className="px-2 py-2">Score</th>
-                    <th className="px-2 py-2">Missing</th>
-                    <th className="px-2 py-2">Unique</th>
-                    <th className="px-2 py-2">Recommendations</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {profile.column_profiles.map((c) => (
-                    <tr key={c.name} className="border-t border-edge/60">
-                      <td className="px-2 py-2 font-semibold text-ink">
-                        {c.name}
-                      </td>
-                      <td className="px-2 py-2 text-mute">{c.inferred_type}</td>
-                      <td
-                        className={`px-2 py-2 font-bold ${scoreColor(c.quality_score)}`}
-                      >
-                        {Math.round(c.quality_score)}
-                      </td>
-                      <td className="px-2 py-2 text-mute">
-                        {c.missing_pct.toFixed(1)}%
-                      </td>
-                      <td className="px-2 py-2 text-mute">
-                        {c.unique_count.toLocaleString()}
-                      </td>
-                      <td className="max-w-md px-2 py-2 text-mute">
-                        {c.quality_issues?.join(' · ') || '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Panel>
+          {/* Rendered once and placed either inline or behind a
+              disclosure, depending on whether anything is wrong. */}
+          {/* On a clean file every row read "100" and "—": a page that
+              ran correctly and said nothing, which looks like a broken
+              feature rather than a clean bill of health. */}
+          {(() => {
+            const flagged = profile.column_profiles.filter(
+              (c) => c.quality_score < 95 || (c.quality_issues?.length ?? 0) > 0,
+            )
+            if (flagged.length === 0) {
+              return (
+                <Panel title="Column health">
+                  <EmptyState
+                    icon={<ShieldCheck className="h-6 w-6" />}
+                    tone="good"
+                    title="Every column passed"
+                    hint={`All ${profile.column_profiles.length} columns are complete, consistently typed, and free of the value patterns that need correcting before analysis. Nothing here needs your attention — the detail is below if you want to check it.`}
+                  />
+                  <details className="mt-4">
+                    <summary className="cursor-pointer text-xs text-mute transition hover:text-ink2">
+                      Show all {profile.column_profiles.length} columns
+                    </summary>
+                    <div className="mt-3">{columnTable}</div>
+                  </details>
+                </Panel>
+              )
+            }
+            return (
+              <Panel
+                title="Column health"
+                subtitle={`${flagged.length} of ${profile.column_profiles.length} columns need attention`}
+              >
+                {columnTable}
+              </Panel>
+            )
+          })()}
+
         </>
       )}
 
@@ -309,7 +361,7 @@ export default function QualityPage() {
                 <div key={i} className="rounded-lg bg-panel2 px-3 py-2 text-xs">
                   <div className="flex items-start justify-between gap-3">
                     <div className="text-mute">
-                      <b className="text-ink">{a.column}</b> — {a.issue} →{' '}
+                      <b className="text-ink">{fmt.label(a.column)}</b> — {a.issue} →{' '}
                       <span className="text-teal">{a.action}</span>
                       {a.rows_affected > 0 && (
                         <span className="ml-1 opacity-70">

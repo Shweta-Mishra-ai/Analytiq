@@ -155,21 +155,45 @@ export function NeedData() {
   )
 }
 
-/** Neutral empty state for a section that ran fine but found nothing. */
+/**
+ * Empty state for a section that ran fine and found nothing.
+ *
+ * A table of thirteen rows all reading "100" and "—" is a page that ran
+ * correctly and said nothing, and it reads as a broken feature rather
+ * than as a clean bill of health. `tone="good"` is for the second case:
+ * the emptiness IS the result.
+ */
 export function EmptyState({
   title,
   hint,
   icon,
+  tone = 'neutral',
+  action,
 }: {
   title: string
   hint?: string
   icon?: ReactNode
+  tone?: 'neutral' | 'good'
+  action?: ReactNode
 }) {
   return (
-    <div className="flex flex-col items-center justify-center px-6 py-10 text-center">
-      {icon && <div className="mb-3 text-faint">{icon}</div>}
+    <div
+      className={`flex flex-col items-center justify-center rounded-xl border border-dashed px-6 py-10 text-center ${
+        tone === 'good'
+          ? 'border-teal/25 bg-teal/[0.04]'
+          : 'border-edge bg-panel2/30'
+      }`}
+    >
+      {icon && (
+        <div className={`mb-3 ${tone === 'good' ? 'text-teal' : 'text-faint'}`}>
+          {icon}
+        </div>
+      )}
       <p className="text-sm font-medium text-ink2">{title}</p>
-      {hint && <p className="mt-1 max-w-sm text-xs leading-relaxed text-mute">{hint}</p>}
+      {hint && (
+        <p className="mt-1 max-w-md text-xs leading-relaxed text-mute">{hint}</p>
+      )}
+      {action && <div className="mt-4">{action}</div>}
     </div>
   )
 }
