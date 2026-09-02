@@ -16,6 +16,11 @@ from app.services.stat_guards import apply_fdr, chi2_association
 
 logger = logging.getLogger(__name__)
 
+from app.engines.domains.base import is_id_column
+from app.engines.present import label as _L, num as _N, value as _V
+from app.engines.statistics import (clamp_p, cohens_d,
+                                    effect_label, format_p)
+
 
 # ══════════════════════════════════════════════════════════
 #  DATA CLASSES
@@ -223,16 +228,21 @@ def analyze_root_cause(
             except Exception:
                 p = 1.0
 
-            if p < 0.05 and diff_pct > 5:
-                direction = "higher" if diff > 0 else "lower"
-                impact    = min(diff_pct / 100, 1.0)   # normalize to 0-1
-
+            # A shortfall is expressed against the group that has more,
+            # so it stays inside 0-100%. Measured the other way round it
+            # produced "129.6% lower", which is not a thing.
+            shortfall = (abs(diff) / abs(high_mean) * 100
+                         if high_mean else 0.0)
+            effect = cohens_d(low_vals, high_vals)
+            if (p < 0.05 and shortfall > 5
+                    and effect_label(effect or 0) != "negligible"):
+                impact = min(shortfall / 100, 1.0)
                 detail = (
-                    "Low performers have {:.1f}% {} '{}' "
-                    "({:.2f} vs {:.2f}, p={:.4f})".format(
-                        diff_pct, direction if diff < 0 else
-                        "lower" if direction == "higher" else "higher",
-                        col, low_mean, high_mean, p)
+                    "The low group averages {} against {} for the high "
+                    "group on {} — {:.0f}% {}, {} ({} difference)".format(
+                        _N(low_mean), _N(high_mean), _L(col), shortfall,
+                        "less" if diff > 0 else "more", format_p(p),
+                        effect_label(effect or 0))
                 )
                 drivers.append({
                     "factor":    col,
@@ -240,8 +250,9 @@ def analyze_root_cause(
                     "direction": "negative" if diff > 0 else "positive",
                     "low_mean":  round(low_mean, 4),
                     "high_mean": round(high_mean, 4),
-                    "diff_pct":  round(diff_pct, 1),
-                    "p_value":   round(p, 4),
+                    "diff_pct":  round(shortfall, 1),
+                    "effect":    round(abs(effect or 0.0), 3),
+                    "p_value":   clamp_p(p),
                     "detail":    detail,
                     "dtype":     "numeric",
                 })
@@ -284,12 +295,12 @@ def analyze_root_cause(
             diff_pct = abs(low_pct_cat - high_pct_cat)
 
             detail = (
-                "In low performers, '{}' = '{}' in {:.0f}% of cases "
-                "vs {:.0f}% in high performers "
-                "(chi-square p={:.4f}, Cramér's V={:.2f} — {} association, "
-                "n={:,})".format(
-                    col, worst_cat, low_pct_cat, high_pct_cat, p,
-                    assoc["cramers_v"], assoc["effect_label"], assoc["n"])
+                "{} = {} in {:.0f}% of the low group against {:.0f}% of "
+                "the high group (chi-square {}, Cramér's V {:.2f} — {} "
+                "association, n={:,})".format(
+                    _L(col), _V(worst_cat), low_pct_cat, high_pct_cat,
+                    format_p(p), assoc["cramers_v"], assoc["effect_label"],
+                    assoc["n"])
             )
             drivers.append({
                 "factor":      col,
@@ -774,42 +785,62 @@ def _generate_key_insights(
                     p.value_col, p.group_col,
                     20, p.top_groups_share)
             )
-        else:
-            insights.append(
-                "Value in '{}' is evenly distributed across '{}' segments — "
-                "no single group dominates.".format(p.value_col, p.group_col)
-            )
+        # No concentration is the absence of a finding, not a finding.
+        # Listing "Age is evenly distributed across Department" as a key
+        # insight fills the section with things that are not news.
 
     # Root cause insights
     for rc in report.root_causes:
-        if rc.drivers:
+        if not rc.drivers:
+            continue
+        lead = rc.drivers[0]
+        gap = lead.get("diff_pct") or 0
+        if gap:
             insights.append(
-                "Root cause of low '{}': '{}' is the top driver "
-                "({:.0f}% difference between low and high performers).".format(
-                    rc.target_col, rc.top_driver,
-                    rc.drivers[0]["diff_pct"] if rc.drivers[0].get("diff_pct") else 0)
-            )
+                "What separates the low {} group from the high one most is "
+                "{}: {:.0f}% apart.".format(
+                    _L(rc.target_col), _L(rc.top_driver), gap))
+        else:
+            # A categorical driver has no percentage gap, and printing a
+            # zero read as "the top driver makes no difference".
+            insights.append(
+                "What separates the low {} group from the high one most is "
+                "{}.".format(_L(rc.target_col), _L(rc.top_driver)))
 
     # Cohort insights
-    sig_cohorts = [c for c in report.cohorts if c.is_significant]
+    # Significant and 1.9% apart is not a segmentation worth naming. On
+    # 1,470 rows almost any split clears p<0.05.
+    sig_cohorts = [c for c in report.cohorts
+                   if c.is_significant and c.gap_pct >= 10]
     for c in sig_cohorts[:2]:
         insights.append(
-            "'{}' significantly segments '{}': best cohort '{}' "
-            "outperforms worst '{}' by {:.1f}%.".format(
-                c.cohort_col, c.metric_col,
-                c.best_cohort, c.worst_cohort, c.gap_pct)
+            "{} splits {}: {} averages {:.1f}% more than {}.".format(
+                _L(c.cohort_col), _L(c.metric_col), _V(c.best_cohort),
+                c.gap_pct, _V(c.worst_cohort))
         )
 
     # Segment health insights
-    if report.segments:
+    if len(report.segments) >= 2:
         best = report.segments[0]
         worst = report.segments[-1]
-        insights.append(
-            "Healthiest segment: '{}' (score={:.0f}/100). "
-            "Needs most attention: '{}' (score={:.0f}/100).".format(
-                best.segment_name, best.health_score,
-                worst.segment_name, worst.health_score)
-        )
+        spread = best.health_score - worst.health_score
+        # A "healthiest" segment scoring 50 and a "needs most attention"
+        # scoring 48 is a two-point gap dressed as a finding. Ranking
+        # always produces a first and a last; only a real spread between
+        # them is news.
+        if spread >= 10:
+            insights.append(
+                "{} is the healthiest segment at {:.0f} of 100; {} is the "
+                "weakest at {:.0f}, a {:.0f}-point spread.".format(
+                    _V(best.segment_name), best.health_score,
+                    _V(worst.segment_name), worst.health_score, spread))
+        else:
+            insights.append(
+                "The {} segments score within {:.0f} points of each other "
+                "on health ({:.0f} to {:.0f}), so none stands out as "
+                "needing attention before the others.".format(
+                    len(report.segments), spread, worst.health_score,
+                    best.health_score))
 
     # Executive brief
     brief = "Business Intelligence analysis completed. "
@@ -829,6 +860,37 @@ def _generate_key_insights(
 #  MAIN ENTRY POINT
 # ══════════════════════════════════════════════════════════
 
+# Words that name something a business tries to move. Root-cause
+# analysis asks "why is this low", which is only a question for a metric
+# where low is worse — not for an age, a headcount or a postcode.
+_PERFORMANCE_TOKENS = {
+    "revenue", "sales", "profit", "margin", "income", "salary", "pay",
+    "value", "spend", "cost", "price", "amount", "units", "volume",
+    "quantity", "orders", "conversion", "rate", "score", "rating",
+    "satisfaction", "engagement", "performance", "productivity",
+    "efficiency", "utilisation", "utilization", "throughput", "output",
+    "retention", "growth", "mrr", "arr", "ltv", "aov", "nps", "csat",
+    "quality", "yield", "uptime", "accuracy",
+}
+
+# Facts about a row rather than a result it produced.
+_DEMOGRAPHIC_TOKENS = {
+    "age", "gender", "sex", "birth", "dob", "tenure", "years", "year",
+    "month", "day", "date", "distance", "count", "number", "id", "code",
+    "zip", "postcode", "level", "band", "grade",
+}
+
+
+def _is_performance_metric(col) -> bool:
+    """True when "low {col}" describes underperformance."""
+    import re as _re
+    spaced = _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(col)).lower()
+    tokens = {t for t in _re.split(r"[^a-z0-9]+", spaced) if t}
+    if tokens & _PERFORMANCE_TOKENS:
+        return True
+    return not (tokens & _DEMOGRAPHIC_TOKENS)
+
+
 def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
     """
     Full BI pipeline.
@@ -837,7 +899,14 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
     if len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
 
-    num_cols = df.select_dtypes(include="number").columns.tolist()
+    # An identifier is not a metric. The report opened with "Root cause —
+    # low EmployeeNumber: 368 low performers (25.0%)", which analyses a
+    # row number as underperformance, and listed it as an insight.
+    all_numeric = df.select_dtypes(include="number").columns.tolist()
+    num_cols = [c for c in all_numeric if not is_id_column(c, df[c])]
+    if len(num_cols) < len(all_numeric):
+        logger.info("BI: excluded identifier column(s) %s",
+                    ", ".join(c for c in all_numeric if c not in num_cols))
     cat_cols = [c for c in text_columns(df)
                 if 2 <= df[c].nunique() <= 25]
 
@@ -851,8 +920,16 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
             logger.debug("run_bi: suppressed exception", exc_info=True)
             continue
 
-    # 2. Root cause — top numeric as target
-    for col in num_cols[:2]:
+    # 2. Root cause — on metrics that can meaningfully be "low"
+    #
+    # "Root cause of low Age: 368 low performers" treats a demographic
+    # fact as underperformance. Root-cause analysis only means something
+    # against a metric where more is better (or worse) by definition.
+    performance_cols = [c for c in num_cols if _is_performance_metric(c)]
+    if not performance_cols:
+        logger.info("BI: no performance metric to run root cause against "
+                    "among %s", ", ".join(num_cols))
+    for col in performance_cols[:2]:
         try:
             report.root_causes.append(
                 analyze_root_cause(df, col, threshold_pct=25))
