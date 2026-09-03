@@ -235,3 +235,56 @@ class TestLeakagePolicy:
             report = run_ml_pipeline(df, "target")
         assert report.score_without_suspects is not None, report.warnings
         assert report.score_without_suspects < report.best_model.test_score
+
+
+# ══════════════════════════════════════════════════════════
+#  A date is not something to predict
+# ══════════════════════════════════════════════════════════
+
+def _frame_with_a_date():
+    import random
+    import pandas as pd
+    random.seed(7)
+    n = 300
+    return pd.DataFrame({
+        "employee_id": range(n),
+        "department": [random.choice(["Sales", "Eng", "HR"]) for _ in range(n)],
+        "order_date": pd.to_datetime(
+            [f"2024-{random.randint(1, 12):02d}-{random.randint(1, 28):02d}"
+             for _ in range(n)]),
+        "monthly_income": [random.randint(2, 20) * 1000 for _ in range(n)],
+        "attrition": [random.choice(["Yes", "No"]) for _ in range(n)],
+    })
+
+
+def test_a_dataset_with_a_date_column_can_still_suggest_targets():
+    """The bug this covers: a datetime column fell through to the
+    "continuous numeric" branch, and the caller then divided a Timestamp
+    standard deviation by a Timestamp mean. That crashed the target
+    endpoint outright for any dataset containing a date — which is most
+    business data. The whole feature was unreachable and no test noticed
+    because every fixture happened to be dateless."""
+    from app.engines.ml_engine import suggest_targets
+
+    targets = suggest_targets(_frame_with_a_date())
+    assert targets, "a frame with an obvious outcome must still offer targets"
+    assert "order_date" not in [t["column"] for t in targets]
+    assert "attrition" in [t["column"] for t in targets]
+
+
+def test_a_date_is_not_reported_as_a_regression_target():
+    from app.engines.ml_engine import detect_task
+    task, reason = detect_task(_frame_with_a_date()["order_date"])
+    assert task == "unsupported"
+    assert "predicted" in reason
+
+
+def test_training_on_a_date_refuses_with_a_reason():
+    """Named at the point of refusal rather than surfacing as a type
+    error from inside a scaler."""
+    import pytest
+    from app.engines.ml_engine import run_ml_pipeline
+
+    with pytest.raises(ValueError) as excinfo:
+        run_ml_pipeline(_frame_with_a_date(), target_col="order_date")
+    assert "order_date" in str(excinfo.value)

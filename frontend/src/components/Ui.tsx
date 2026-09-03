@@ -99,28 +99,7 @@ export function Spinner({ label = 'Working…' }: { label?: string }) {
 }
 
 /** Shaped placeholder for content that is loading. Reads as "on its way";
- *  a lone spinner on an empty page reads as "broken". */
-export function Skeleton({
-  rows = 3,
-  className = '',
-}: {
-  rows?: number
-  className?: string
-}) {
-  return (
-    <div className={`space-y-2.5 ${className}`}>
-      {Array.from({ length: rows }).map((_, i) => (
-        <div
-          key={i}
-          className="skeleton h-3.5"
-          style={{ width: `${100 - i * 12}%` }}
-        />
-      ))}
-    </div>
-  )
-}
-
-export function ErrorBox({ message }: { message: string }) {
+ *  a lone spinner on an empty page reads as "broken". */export function ErrorBox({ message }: { message: string }) {
   return (
     <div className="flex items-start gap-2.5 rounded-xl border border-rose/30 bg-rose/8 px-4 py-3 text-sm text-rose">
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />

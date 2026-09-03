@@ -315,11 +315,6 @@ class LLMClient:
             "any_available": bool(resolve_chain()),
         }
 
-    @staticmethod
-    def _load_secret(key: str) -> str:
-        return os.environ.get(key, "").strip()
-
-
 # ─────────────────────────────────────────────────────────
 #  SINGLETON
 # ─────────────────────────────────────────────────────────

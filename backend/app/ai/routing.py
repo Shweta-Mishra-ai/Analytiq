@@ -31,12 +31,12 @@ what anyone assigned.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from app.ai import providers, tasks
 from app.ai.capabilities import describe_gap, names
-from app.ai.model_catalogue import ModelSpec, catalogue, split_id
+from app.ai.model_catalogue import ModelSpec, catalogue
 from app.config import config
 
 logger = logging.getLogger(__name__)

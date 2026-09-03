@@ -77,18 +77,48 @@ def test_every_added_parameter_is_optional():
             f"{name} was added without a default — existing callers break"
 
 
-@pytest.mark.parametrize("name", [
-    "THEMES", "HR_BENCHMARKS", "_SQL_COLS", "_wrap_sql_line", "_sql_escape",
-    "_build_cover", "_styles", "_domain_theme", "_domain_label",
-    "_benchmark_section", "_exec_summary", "_top_insights", "_appendix",
-])
-def test_shim_still_exports_what_callers_import(name):
-    """The API, the domain registry and the test suite import these from
-    pdf_builder. The shim exists so they keep working."""
+def test_the_shim_exports_exactly_what_callers_import():
+    """Derived from the codebase, not from a hand-written list.
+
+    The list this replaces was written when the shim was created and
+    asserted a dozen names, several of which nothing had ever imported
+    from here — so it locked in a surface that was wrong the day it was
+    written and would have gone on being wrong. Reading the imports
+    instead means the shim can shrink as callers move to the package,
+    and cannot silently stop exporting something that is still in use.
+    """
+    import re
+    from pathlib import Path
+
     import app.engines.pdf_builder as shim
-    assert hasattr(shim, name), f"pdf_builder no longer exports {name}"
 
+    root = Path(__file__).resolve().parent.parent
+    wanted = set()
+    pattern = re.compile(
+        r"from\s+app\.engines\.pdf_builder\s+import\s+([^\n(]+)")
+    for path in list((root / "app").rglob("*.py")) + list((root / "tests").rglob("*.py")):
+        if path.name == "pdf_builder.py":
+            continue
+        for names in pattern.findall(path.read_text(encoding="utf-8")):
+            for name in names.split(","):
+                name = name.strip().split(" as ")[0].strip()
+                if name:
+                    wanted.add(name)
 
+    assert wanted, "no caller imports from the shim — it can be deleted"
+    missing = sorted(n for n in wanted if not hasattr(shim, n))
+    assert not missing, f"the shim no longer exports: {', '.join(missing)}"
+
+    # And nothing beyond that: a shim that forwards everything is a
+    # second public API by accident.
+    import types
+    exported = {n for n in vars(shim)
+                if not n.startswith("__")
+                and not isinstance(getattr(shim, n), types.ModuleType)}
+    extra = sorted(exported - wanted)
+    assert not extra, (
+        "the shim re-exports names nothing imports from it: "
+        + ", ".join(extra))
 def test_report_still_builds_end_to_end():
     from app.engines.pdf_builder import build_pdf
     from pypdf import PdfReader

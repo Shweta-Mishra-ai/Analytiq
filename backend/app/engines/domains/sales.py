@@ -6,12 +6,11 @@ from __future__ import annotations
 import logging
 from typing import Dict, List
 
-import numpy as np
 import pandas as pd
 
-from app.engines.domains.base import Insight, build_insight, col_stats
+from app.engines.domains.base import build_insight
 from app.engines.domains.sales_performance import run_sales_performance
-from app.engines.industry_benchmarks import lookup_benchmark, format_benchmark_context
+from app.engines.industry_benchmarks import lookup_benchmark
 
 logger = logging.getLogger(__name__)
 

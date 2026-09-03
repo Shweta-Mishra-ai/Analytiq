@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import List, Optional
+from typing import List
 
 from app.config import config
 from app.rag.extractors import IMAGE_EXTS, VIDEO_EXTS, extract

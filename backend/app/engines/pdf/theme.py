@@ -10,19 +10,12 @@ import io
 import os
 from datetime import datetime
 
-import numpy as np
-import pandas as pd
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.lib.colors import HexColor, white, black
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
+from reportlab.lib.colors import HexColor
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 from reportlab.lib.styles import ParagraphStyle
-from reportlab.platypus import (
-    BaseDocTemplate, Frame, PageTemplate,
-    Paragraph, Spacer, Table, TableStyle,
-    Image, HRFlowable, PageBreak, KeepTogether,
-)
 from reportlab.pdfgen import canvas as CV
 
 logger = logging.getLogger(__name__)

@@ -429,28 +429,6 @@ def _build_chart_prompt(ctype: str, stats: dict, domain: str) -> str:
 
     return ""
 
-
-def _build_exec_prompt(df: pd.DataFrame, domain: str) -> str:
-    """Build the executive-summary prompt for this domain.
-
-    Resolved through prompt_builder.executive_prompt_for so a newly
-    registered domain gets its own prompt, and an unknown one gets the
-    general prompt rather than HR's — the old `.get(domain, HR_...)`
-    default put "employees" and "attrition" into finance and marketing
-    summaries. No ImportError guard: prompt_builder is a sibling module,
-    and when its constants went missing the guard turned every summary
-    in every report into an unprompted call without surfacing anything.
-    """
-    from app.ai.prompt_builder import executive_prompt_for
-    template = executive_prompt_for(domain)
-
-    summary = _build_raw_summary(df, domain)
-    try:
-        return template.format(raw_data_summary=summary)
-    except Exception:
-        return ""
-
-
 def _build_raw_summary(df: pd.DataFrame, domain: str) -> str:
     """Rich pre-computed stats for executive prompt injection."""
     num_cols = df.select_dtypes(include="number").columns.tolist()

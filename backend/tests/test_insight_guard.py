@@ -18,7 +18,6 @@ one.
 """
 from __future__ import annotations
 
-import pytest
 
 from app.engines.insight_guard import guard_insights, withheld_note
 

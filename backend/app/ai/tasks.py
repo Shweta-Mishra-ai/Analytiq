@@ -30,7 +30,7 @@ deterministic answer to fall back on — the sentence says so plainly.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from app.ai.capabilities import Capability as C

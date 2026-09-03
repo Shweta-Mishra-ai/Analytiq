@@ -6,30 +6,22 @@ context and the attrition page. These read as prose; the tabular
 counterparts live in data_sections.py.
 """
 import logging
-import io
-import os
-from datetime import datetime
 
-import numpy as np
 import pandas as pd
 
-from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.lib.colors import HexColor, white, black
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
+from reportlab.lib.colors import white
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import (
-    BaseDocTemplate, Frame, PageTemplate,
     Paragraph, Spacer, Table, TableStyle,
-    Image, HRFlowable, PageBreak, KeepTogether,
+    KeepTogether,
 )
-from reportlab.pdfgen import canvas as CV
 
 logger = logging.getLogger(__name__)
 
 from app.engines.pdf.theme import (
-    _c, W, H, CW_DEFAULT, FONT_BODY, FONT_BOLD, FONT_ITALIC,
-    FONT_SERIF, FONT_SERIF_BOLD,
+    _c, FONT_BODY, FONT_BOLD,
 )
 from app.engines.pdf.primitives import (
     _sec, _sec_flowables, _kpi_row, _narrative_box, _gtable, _insight_card,
@@ -37,8 +29,7 @@ from app.engines.pdf.primitives import (
 )
 from app.engines.industry_benchmarks import REPLACEMENT_COST_RANGE
 from app.engines.present import (label as _PL, num as _PN,
-                                 truncate as _PT, value as _PV)
-from app.engines.report_blueprints import blueprint_for
+                                 truncate as _PT)
 from app.services.dtypes import is_text_dtype, text_columns
 
 

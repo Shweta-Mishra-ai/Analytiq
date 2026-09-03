@@ -6,38 +6,30 @@ by the package split.
 """
 import logging
 import io
-import os
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.lib.colors import HexColor, white, black
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
-from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import (
     BaseDocTemplate, Frame, PageTemplate,
-    Paragraph, Spacer, Table, TableStyle,
-    Image, HRFlowable, PageBreak, KeepTogether,
+    PageBreak,
 )
-from reportlab.pdfgen import canvas as CV
 
 logger = logging.getLogger(__name__)
 
 from app.engines.present import truncate as _fit
 
 from app.engines.pdf.theme import (
-    THEMES, HR_BENCHMARKS, _domain_theme, _c, _styles, _ReportCanvas,
-    _build_cover, W, H, CW_DEFAULT,
+    THEMES, _domain_theme, _styles, _ReportCanvas,
+    _build_cover, W, H,
 )
 from app.engines.pdf.primitives import (
-    _sec, _kpi_row, _narrative_box, _gtable, _insight_card, _toc, _clean,
+    _sec, _toc,
 )
 from app.engines.pdf.narrative_sections import (
-    _exec_summary, _top_insights, _dq_note, _readiness_block,
-    _benchmark_section, _attrition_page, _domain_label,
+    _exec_summary, _top_insights, _dq_note, _benchmark_section, _attrition_page, _domain_label,
     _has_reference_ranges, _exec_dashboard, _forecast_section,
 )
 from app.engines.pdf.predictive_sections import _predictive_section
@@ -47,11 +39,10 @@ from app.engines.pdf.data_sections import (
     _recommendations,
 )
 from app.engines.pdf.domain_sections import (
-    APPENDIX_TITLE, _appendix, _prepared_by_line, _domain_deep_page,
+    APPENDIX_TITLE, _appendix, _domain_deep_page,
     has_deep_page,
 )
 from app.engines.report_blueprints import blueprint_for
-from app.services.dtypes import is_text_dtype, text_columns
 
 
 # ══════════════════════════════════════════════════════════

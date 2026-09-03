@@ -21,7 +21,7 @@ import pandas as pd
 import pytest
 
 from app.engines.rigour import (
-    LEAKAGE_AUC, MIN_USABLE_AUC, assess_classifier, assess_finding,
+    MIN_USABLE_AUC, assess_classifier, assess_finding,
     assess_regressor, detect_leakage,
 )
 

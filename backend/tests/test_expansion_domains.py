@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 
 from app.engines.domains.base import col_stats, correlations
-from app.engines.domains.registry import REGISTRY, detect_domain, run_insights
+from app.engines.domains.registry import REGISTRY, run_insights
 from app.engines.story_engine import generate_story
 
 

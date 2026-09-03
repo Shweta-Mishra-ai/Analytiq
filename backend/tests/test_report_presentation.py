@@ -19,8 +19,7 @@ from pypdf import PdfReader
 from reportlab.pdfbase import pdfmetrics
 
 from app.engines.pdf.theme import (
-    FONT_BODY, FONT_BOLD, FONT_ITALIC, FONT_SERIF_BOLD,
-    register_premium_fonts,
+    FONT_BODY, FONT_BOLD, register_premium_fonts,
 )
 from app.engines.pdf_builder import build_pdf
 

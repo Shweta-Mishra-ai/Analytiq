@@ -164,7 +164,6 @@ def test_high_severity_outranks_info_in_top_insights():
     """The ported engines emit "high"/"medium"/"low", which story_engine's
     original severity map didn't know — unmapped severities sorted to 99,
     pushing HIGH findings below INFO ones and off the top-6 list."""
-    from app.engines.story_engine import generate_story as gs
     from app.engines.domains.base import Insight
     import app.engines.story_engine as se
 

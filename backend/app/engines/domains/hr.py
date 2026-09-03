@@ -7,12 +7,11 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
 
-from app.engines.domains.base import (Insight, AttritionAnalysis, build_insight,
-                               col_stats, correlations, infer_scale_bounds)
+from app.engines.domains.base import (AttritionAnalysis, build_insight,
+                               infer_scale_bounds)
 from app.engines.industry_benchmarks import REPLACEMENT_COST_RANGE
 from app.engines import present as _P
 from app.engines.present import label as _L, num as _N, value as _V

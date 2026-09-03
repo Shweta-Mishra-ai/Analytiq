@@ -227,7 +227,6 @@ async def set_routing(body: RoutingAssignment):
     point of use would look exactly like the model never being called.
     """
     from fastapi import HTTPException
-    from app.ai import routing
     from app.ai.settings_store import RoutingRejected, settings_store
     try:
         settings_store.assign(body.task, body.model_id)
@@ -239,7 +238,6 @@ async def set_routing(body: RoutingAssignment):
 @app.delete("/api/admin/routing")
 async def clear_routing():
     """Back to whatever the environment says."""
-    from app.ai import routing
     from app.ai.settings_store import settings_store
     settings_store.clear()
     return _routing_payload()
@@ -254,7 +252,6 @@ async def declare_model(body: ModelDeclaration):
     else until someone who knows says otherwise. This is that saying.
     """
     from fastapi import HTTPException
-    from app.ai import routing
     from app.ai.model_catalogue import catalogue
     try:
         catalogue.declare(body.model_id, body.capabilities, label=body.label,
@@ -268,7 +265,6 @@ async def declare_model(body: ModelDeclaration):
 @app.delete("/api/admin/models/{model_id:path}")
 async def forget_model(model_id: str):
     from fastapi import HTTPException
-    from app.ai import routing
     from app.ai.model_catalogue import catalogue
     if not catalogue.forget(model_id):
         raise HTTPException(

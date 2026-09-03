@@ -6,11 +6,9 @@ from __future__ import annotations
 import logging
 from typing import Dict, List
 
-import numpy as np
 import pandas as pd
 
-from app.engines.domains.base import (Insight, build_insight, col_stats,
-                               infer_scale_bounds)
+from app.engines.domains.base import (build_insight, infer_scale_bounds)
 from app.engines.domains.customer_analytics import run_customer_analytics
 from app.engines.industry_benchmarks import lookup_benchmark
 

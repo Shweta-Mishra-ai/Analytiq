@@ -201,3 +201,272 @@ def test_the_report_shows_intervals_around_its_averages():
                      for p in PdfReader(io.BytesIO(pdf)).pages)
     assert "95% confidence interval" in text
     assert "not evidence of a change" in text
+
+
+# ══════════════════════════════════════════════════════════
+#  Group comparison picks a test the data actually supports
+# ══════════════════════════════════════════════════════════
+
+def test_unequal_variance_uses_welch_not_plain_anova():
+    """The bug this replaces: the code ran Levene's test for equal
+    variance, stored the answer, and then called one-way ANOVA
+    regardless. Testing an assumption and discarding the result is worse
+    than not testing it — it produces exactly the false positives the
+    check exists to prevent."""
+    import numpy as np
+    from app.engines.statistics import compare_groups
+
+    rng = np.random.default_rng(0)
+    groups = [rng.normal(50, 2, 40), rng.normal(50, 18, 8), rng.normal(50, 2, 40)]
+    _stat, p, name = compare_groups(groups, is_normal=True)
+
+    assert name == "Welch's ANOVA"
+    # Same data, same means. The old path reported p < 0.0001 here.
+    assert p > 0.05, "no group differs, so nothing significant may be reported"
+
+
+def test_equal_variance_still_uses_the_classic_test():
+    """Welch is the fallback for unequal spread, not a blanket
+    replacement — where the assumptions hold, the familiar test is
+    right and slightly more powerful."""
+    import numpy as np
+    from app.engines.statistics import compare_groups
+
+    rng = np.random.default_rng(1)
+    groups = [rng.normal(10, 2, 60) for _ in range(3)]
+    assert compare_groups(groups, is_normal=True)[2] == "One-Way ANOVA"
+
+
+def test_non_normal_data_is_compared_by_rank():
+    import numpy as np
+    from app.engines.statistics import compare_groups
+
+    rng = np.random.default_rng(2)
+    groups = [rng.exponential(3, 50) for _ in range(3)]
+    assert compare_groups(groups, is_normal=False)[2] == "Kruskal-Wallis"
+
+
+def test_a_real_difference_is_still_detected():
+    """A test that never reports significance is not a fix."""
+    import numpy as np
+    from app.engines.statistics import compare_groups
+
+    rng = np.random.default_rng(3)
+    groups = [rng.normal(50, 2, 40), rng.normal(70, 18, 20), rng.normal(50, 2, 40)]
+    _stat, p, name = compare_groups(groups, is_normal=True)
+    assert name == "Welch's ANOVA"
+    assert p < 0.05
+
+
+def test_every_fallback_assumes_less_than_the_test_it_replaces(monkeypatch):
+    """When Welch is unavailable the code must fall to Kruskal-Wallis,
+    never back to the plain ANOVA it just ruled out."""
+    import numpy as np
+    import app.engines.statistics as stats_mod
+
+    rng = np.random.default_rng(4)
+    groups = [rng.normal(50, 2, 40), rng.normal(50, 18, 8), rng.normal(50, 2, 40)]
+
+    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) \
+        else __builtins__.__import__
+
+    def _no_statsmodels(name, *args, **kwargs):
+        if name.startswith("statsmodels"):
+            raise ImportError("statsmodels is not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", _no_statsmodels)
+    assert stats_mod.compare_groups(groups, is_normal=True)[2] == "Kruskal-Wallis"
+
+
+# ══════════════════════════════════════════════════════════
+#  Distribution fitting: right answer, at any size
+# ══════════════════════════════════════════════════════════
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("truth,build", [
+    ("norm",    lambda rng, n: rng.normal(50, 12, n)),
+    ("lognorm", lambda rng, n: rng.lognormal(3, 0.6, n)),
+    ("expon",   lambda rng, n: rng.exponential(4, n)),
+    ("gamma",   lambda rng, n: rng.gamma(2.5, 3, n)),
+    ("uniform", lambda rng, n: rng.uniform(0, 100, n)),
+])
+def test_the_right_distribution_is_identified(truth, build):
+    """Two failures this covers, both of which the original had.
+
+    Ranking by goodness of fit alone favours whichever candidate has the
+    most parameters — a gamma imitates a normal well enough to win — so
+    textbook-normal data came back as "gamma". And exponential is gamma
+    with the shape fixed at 1, so a weak penalty picks gamma there too.
+    """
+    import numpy as np
+    import pandas as pd
+    from app.engines.eda_engine import _fit_distribution
+
+    rng = np.random.default_rng(0)
+    assert _fit_distribution(pd.Series(build(rng, 20_000)))[0] == truth
+
+
+def test_a_large_column_is_identified_correctly_not_defaulted():
+    """The bug this replaces: candidates were ranked by KS p-value, which
+    collapses to exactly 0.0 once the sample is large enough — real data
+    is never exactly lognormal. With every p at zero and the running best
+    initialised to zero, `p > best_p` was never true and the function
+    returned its own untried default of "norm" for clearly lognormal
+    data."""
+    import numpy as np
+    import pandas as pd
+    from app.engines.eda_engine import _fit_distribution
+
+    rng = np.random.default_rng(0)
+    base = rng.lognormal(9, 0.5, 97_000)
+    contamination = rng.normal(90_000, 5_000, 3_000)
+    realistic = pd.Series(np.round(np.concatenate([base, contamination])))
+
+    name, params = _fit_distribution(realistic)
+    assert name == "lognorm"
+    assert params.get("params"), "a named distribution must carry its fit"
+
+
+def test_a_column_no_standard_distribution_fits_says_so():
+    """Naming a distribution that does not fit is worse than admitting
+    none does — the shape decides which summaries and tests are
+    appropriate downstream."""
+    import numpy as np
+    import pandas as pd
+    from app.engines.eda_engine import _fit_distribution
+
+    rng = np.random.default_rng(1)
+    bimodal = pd.Series(np.concatenate([rng.normal(10, 1, 4000),
+                                        rng.normal(60, 1, 4000)]))
+    name, params = _fit_distribution(bimodal)
+    assert name == "none"
+    assert "bimodal" in params["note"]
+
+
+def test_fitting_is_bounded_by_sample_size_not_row_count():
+    """Fitting five distributions by numerical maximum likelihood over a
+    whole column took 2.9 seconds on 100,000 rows. The fitted parameters
+    are indistinguishable from a sample's."""
+    import time
+
+    import numpy as np
+    import pandas as pd
+    from app.engines.eda_engine import FIT_SAMPLE_SIZE, _fit_distribution
+
+    rng = np.random.default_rng(2)
+    small = pd.Series(rng.lognormal(3, 0.6, 3_000))
+    large = pd.Series(rng.lognormal(3, 0.6, 200_000))
+
+    _fit_distribution(small)                       # warm the lazy imports
+    t = time.perf_counter(); _fit_distribution(large)
+    elapsed = time.perf_counter() - t
+
+    assert FIT_SAMPLE_SIZE <= 5_000
+    assert elapsed < 1.0, f"200k rows took {elapsed:.1f}s — it is not sampling"
+
+
+def test_the_same_column_always_gets_the_same_answer():
+    """Sampling with a fixed seed: two runs of one analysis must not
+    disagree about the shape of the data."""
+    import numpy as np
+    import pandas as pd
+    from app.engines.eda_engine import _fit_distribution
+
+    rng = np.random.default_rng(3)
+    series = pd.Series(rng.gamma(2, 3, 50_000))
+    assert _fit_distribution(series)[0] == _fit_distribution(series)[0]
+
+
+def test_too_few_values_to_fit_is_admitted():
+    import pandas as pd
+    from app.engines.eda_engine import _fit_distribution
+    assert _fit_distribution(pd.Series([1.0, 2.0, 3.0]))[0] == "unknown"
+
+
+# ══════════════════════════════════════════════════════════
+#  VIF: the same numbers, without the cubic cost
+# ══════════════════════════════════════════════════════════
+
+def test_vif_matches_the_regression_definition():
+    """VIF is the diagonal of the inverted correlation matrix — the
+    replacement must agree with the definition it replaced, which fitted
+    one least-squares regression per column."""
+    import numpy as np
+    import pandas as pd
+    from sklearn.linear_model import LinearRegression
+
+    from app.engines.eda_engine import analyze_vif
+
+    rng = np.random.default_rng(0)
+    base = rng.normal(0, 1, (2_000, 3))
+    X = np.hstack([base, base @ rng.normal(0, 1, (3, 5)) + rng.normal(0, 0.5, (2_000, 5))])
+    df = pd.DataFrame(X, columns=[f"c{i}" for i in range(8)])
+
+    got = {r.feature: r.vif for r in analyze_vif(df)}
+    for col in df.columns:
+        y = df[col].values
+        rest = df.drop(columns=[col]).values
+        r2 = LinearRegression().fit(rest, y).score(rest, y)
+        expected = 1 / (1 - r2)
+        assert abs(got[col] - expected) < 0.05, f"{col}: {got[col]} vs {expected}"
+
+
+def test_vif_does_not_grow_cubically_with_column_count():
+    """One regression per column, each over every other column, is cubic
+    work. A 120-column dataset spent 14.7 seconds here."""
+    import time
+
+    import numpy as np
+    import pandas as pd
+    from app.engines.eda_engine import analyze_vif
+
+    rng = np.random.default_rng(1)
+    wide = pd.DataFrame(rng.normal(0, 1, (5_000, 60)),
+                        columns=[f"c{i}" for i in range(60)])
+    analyze_vif(wide.iloc[:100, :4])               # warm
+    t = time.perf_counter(); analyze_vif(wide)
+    assert time.perf_counter() - t < 1.0
+
+
+def test_a_duplicated_column_is_reported_as_unbounded():
+    """A pseudo-inverse does not blow up on a singular matrix — it hands
+    back a modest-looking number, so a literal copy of another column
+    was reported as VIF 14.5 ("High") when the true answer is infinite
+    and it is the worst case there is."""
+    import numpy as np
+    import pandas as pd
+    from app.engines.eda_engine import analyze_vif
+
+    rng = np.random.default_rng(2)
+    df = pd.DataFrame(rng.normal(0, 1, (1_000, 4)), columns=list("abcd"))
+    df["copy_of_a"] = df["a"] * 3
+
+    results = {r.feature: r for r in analyze_vif(df)}
+    assert results["copy_of_a"].vif == float("inf")
+    assert results["copy_of_a"].verdict == "Severe"
+    assert "copy" in results["copy_of_a"].interpretation.lower()
+
+
+def test_a_constant_column_does_not_poison_the_whole_matrix():
+    """Zero variance means undefined correlation, which would make every
+    other column's VIF nan."""
+    import numpy as np
+    import pandas as pd
+    from app.engines.eda_engine import analyze_vif
+
+    rng = np.random.default_rng(3)
+    df = pd.DataFrame(rng.normal(0, 1, (500, 4)), columns=list("abcd"))
+    df["always_7"] = 7
+
+    results = analyze_vif(df)
+    assert "always_7" not in [r.feature for r in results]
+    assert results and all(np.isfinite(r.vif) for r in results)
+
+
+def test_vif_needs_at_least_two_varying_columns():
+    import pandas as pd
+    from app.engines.eda_engine import analyze_vif
+    assert analyze_vif(pd.DataFrame({"a": [1, 2, 3], "b": [5, 5, 5]})) == []

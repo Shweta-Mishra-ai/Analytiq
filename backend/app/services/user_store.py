@@ -21,7 +21,7 @@ import os
 import secrets
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from app.config import config

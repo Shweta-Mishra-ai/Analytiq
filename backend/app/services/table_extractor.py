@@ -18,7 +18,6 @@ import tempfile
 
 import pandas as pd
 
-from app.config import config
 from app.services.dtypes import is_text_dtype
 
 logger = logging.getLogger(__name__)

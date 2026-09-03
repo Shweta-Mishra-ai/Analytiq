@@ -8,7 +8,6 @@ they can't disagree about which columns to describe for the same dataset.
 from __future__ import annotations
 
 import logging
-import re
 
 import pandas as pd
 

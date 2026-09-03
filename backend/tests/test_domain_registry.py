@@ -15,9 +15,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.engines.domains import registry
 from app.engines.domains.registry import (
-    DomainSpec, REGISTRY, detect_domain, score_domains, spec_for,
+    REGISTRY, detect_domain, score_domains, spec_for,
 )
 
 SAMPLE = "/home/user/dataforge-ai/sample_data"

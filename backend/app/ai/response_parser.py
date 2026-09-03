@@ -36,14 +36,3 @@ def parse_tool_call(raw: str) -> Optional[Dict[str, Any]]:
 
     return data
 
-
-def parse_insight_array(raw: str) -> list:
-    text  = re.sub(r"```(?:json)?", "", raw.strip())
-    text  = text.replace("```", "").strip()
-    match = re.search(r"\[.*\]", text, re.DOTALL)
-    if not match:
-        return []
-    try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return []

@@ -6,7 +6,7 @@ Single source of truth — import from here, never from story_engine directly.
 from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd

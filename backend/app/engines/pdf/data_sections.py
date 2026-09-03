@@ -6,23 +6,16 @@ statistics, BI, chart pages and recommendations.
 """
 import logging
 import io
-import os
-from datetime import datetime
 
-import numpy as np
-import pandas as pd
 
-from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.lib.colors import HexColor, white, black
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
+from reportlab.lib.colors import HexColor, white
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import (
-    BaseDocTemplate, Frame, PageTemplate,
     Paragraph, Spacer, Table, TableStyle,
-    Image, HRFlowable, PageBreak, KeepTogether,
+    Image, KeepTogether,
 )
-from reportlab.pdfgen import canvas as CV
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +24,13 @@ from app.engines.present import (label as _PL, num as _PN,
                                  truncate as _fit, value as _PV)
 
 from app.engines.pdf.theme import (
-    _c, W, H, CW_DEFAULT, FONT_BODY, FONT_BOLD, FONT_ITALIC,
-    FONT_SERIF, FONT_SERIF_BOLD,
+    _c, FONT_BODY, FONT_BOLD,
 )
 from app.engines.pdf.primitives import (
-    _sec, _kpi_row, _narrative_box, _gtable, _insight_card, _clean,
-    _exhibit, _exhibit_source, is_id_col, truncate_label,
+    _sec, _kpi_row, _narrative_box, _gtable, _clean,
+    _exhibit, _exhibit_source,
 )
-from app.services.dtypes import is_text_dtype, text_columns
+from app.services.dtypes import text_columns
 
 
 # ══════════════════════════════════════════════════════════

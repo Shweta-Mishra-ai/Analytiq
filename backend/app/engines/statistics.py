@@ -304,3 +304,58 @@ def is_worth_reporting(p_value: Optional[float], effect: Optional[float],
     if effect is None:
         return True
     return effect_label(effect, kind) != "negligible"
+
+
+def compare_groups(group_arrays: list, is_normal: bool):
+    """(statistic, p-value, test name) for k groups.
+
+    Three tests, chosen by what the data supports rather than by what is
+    familiar:
+
+    * **Kruskal-Wallis** when the values are not normal. It compares
+      ranks, so a skewed distribution or an outlier does not decide the
+      result.
+    * **Welch's ANOVA** when they are normal but the groups have
+      different spread — the common case with real business data, where
+      a small segment is almost always more variable than a large one.
+    * **One-way ANOVA** only when normality and equal variance both
+      hold, which is the only situation its assumptions are met.
+
+    Every fallback is downward, to a test that assumes less.
+    """
+    if not is_normal or len(group_arrays) < 2:
+        stat, p = scipy_stats.kruskal(*group_arrays)
+        return stat, p, "Kruskal-Wallis"
+
+    equal_var = True
+    try:
+        _, lev_p = scipy_stats.levene(*group_arrays)
+        equal_var = lev_p > 0.05
+    except Exception:
+        # Levene's own failure (a zero-variance group, say) is not
+        # evidence of equal variance, but assuming unequal is the safe
+        # direction: Welch is valid either way.
+        logger.debug("Levene's test failed; assuming unequal variances",
+                     exc_info=True)
+        equal_var = False
+
+    if not equal_var:
+        try:
+            from statsmodels.stats.oneway import anova_oneway
+            result = anova_oneway(group_arrays, use_var="unequal")
+            return float(result.statistic), float(result.pvalue), "Welch's ANOVA"
+        except Exception:
+            # No statsmodels, or it refused these groups. Kruskal-Wallis
+            # rather than plain ANOVA: it assumes less than the test we
+            # just ruled out, which is the whole point of having checked.
+            logger.debug("Welch's ANOVA unavailable; using Kruskal-Wallis",
+                         exc_info=True)
+            stat, p = scipy_stats.kruskal(*group_arrays)
+            return stat, p, "Kruskal-Wallis"
+
+    try:
+        stat, p = scipy_stats.f_oneway(*group_arrays)
+        return stat, p, "One-Way ANOVA"
+    except Exception:
+        stat, p = scipy_stats.kruskal(*group_arrays)
+        return stat, p, "Kruskal-Wallis"

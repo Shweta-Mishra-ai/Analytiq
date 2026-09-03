@@ -15,24 +15,18 @@ the data is either present or it is not.
 import io
 import logging
 
-import numpy as np
-import pandas as pd
 
 from reportlab.lib.units import mm
 from reportlab.lib.colors import white
-from reportlab.lib.enums import TA_CENTER
-from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import (
     Paragraph, Spacer, Table, TableStyle, Image, KeepTogether,
 )
 
 from app.engines.pdf.theme import (
-    _c, W, H, CW_DEFAULT, FONT_BODY, FONT_BOLD, FONT_ITALIC,
-    FONT_SERIF, FONT_SERIF_BOLD,
+    _c,
 )
 from app.engines.pdf.primitives import (
-    _sec, _kpi_row, _narrative_box, _gtable, _clean,
-    _exhibit, _exhibit_source,
+    _sec, _kpi_row, _narrative_box, _gtable, _exhibit, _exhibit_source,
 )
 
 logger = logging.getLogger(__name__)

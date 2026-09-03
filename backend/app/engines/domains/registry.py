@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Callable, Dict, Optional, Tuple
 
 import pandas as pd

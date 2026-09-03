@@ -113,14 +113,6 @@ export function pct(value: unknown, decimals = 1): string {
   if (!Number.isFinite(x)) return '—'
   return `${x.toFixed(Math.abs(x) >= 10 ? Math.min(decimals, 1) : decimals)}%`
 }
-
-/** A proportion on a 0-1 scale, rendered as a percentage. */
-export function rate(value: unknown, decimals = 1): string {
-  const x = Number(value)
-  if (!Number.isFinite(x)) return '—'
-  return pct(x * 100, decimals)
-}
-
 /**
  * A data value as the person who entered it would recognise it.
  *
@@ -145,17 +137,6 @@ export function money(v: unknown, symbol = ''): string {
   if (Math.abs(x) >= 1_000_000) return `${symbol}${(x / 1_000_000).toFixed(2)}m`
   return `${symbol}${Math.round(x).toLocaleString()}`
 }
-
-/** Shorten to fit, on a word boundary. A hard slice reads as a bug. */
-export function truncate(text: unknown, limit: number): string {
-  const s = String(text ?? '')
-  if (s.length <= limit) return s
-  const cut = s.slice(0, limit - 1)
-  const space = cut.lastIndexOf(' ')
-  const body = space >= Math.floor(limit * 0.45) ? cut.slice(0, space) : cut
-  return body.replace(/[\s,;:\-&]+$/, '') + '…'
-}
-
 /** `a, b and c`, with an honest count when the list runs long. */
 export function joinAnd(items: unknown[], limit = 3): string {
   const vals = items.map(String).filter((s) => s.trim())
@@ -168,17 +149,4 @@ export function joinAnd(items: unknown[], limit = 3): string {
   }
   if (vals.length === 1) return vals[0]
   return `${vals.slice(0, -1).join(', ')} and ${vals[vals.length - 1]}`
-}
-
-/** "a" or "an" for what follows, judged by sound rather than spelling. */
-export function article(text: unknown): string {
-  const word = String(text ?? '').trim().replace(/^[$£€]/, '')
-  if (!word) return 'a'
-  if (/^\d/.test(word)) return /^(8|11|18)/.test(word) ? 'an' : 'a'
-  return 'aeiou'.includes(word[0].toLowerCase()) ? 'an' : 'a'
-}
-
-/** Agree a noun or verb with its count. */
-export function plural(n: number, one: string, many?: string): string {
-  return Math.abs(n) === 1 ? one : many ?? one + 's'
 }

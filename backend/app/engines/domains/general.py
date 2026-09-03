@@ -10,7 +10,7 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
-from app.engines.domains.base import Insight, build_insight, col_stats, correlations
+from app.engines.domains.base import build_insight
 from app.engines.domains.general_depth import run_general_depth
 
 logger = logging.getLogger(__name__)

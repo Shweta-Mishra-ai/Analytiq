@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from app.engines.domains.sales_performance import (
     cycle_by_outcome,

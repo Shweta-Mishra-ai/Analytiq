@@ -543,19 +543,6 @@ RULES:
    {{"tool": "none", "params": {{}}, "explanation": "I could not find a matching analysis."}}
 """
 
-
-def get_df_summary(df: pd.DataFrame) -> str:
-    num_cols = df.select_dtypes(include="number").columns.tolist()
-    lines = [
-        f"Rows: {len(df):,}",
-        f"Columns: {list(df.columns)}",
-        f"Missing: {df.isnull().sum().sum():,}",
-    ]
-    if num_cols:
-        lines.append(df[num_cols].describe().round(2).to_string())
-    return "\n".join(lines)
-
-
 # ══════════════════════════════════════════════════════════
 #  GENERAL + EXPANSION-DOMAIN PROMPTS
 #
@@ -788,8 +775,3 @@ def executive_prompt_for(domain: str) -> str:
     return EXECUTIVE_PROMPTS.get(
         str(domain or "").strip().lower(), GENERAL_EXECUTIVE_PROMPT)
 
-
-def insight_prompt_for(domain: str) -> str:
-    """Deep-insight prompt for a domain. Same fallback rule as above."""
-    return INSIGHT_PROMPTS.get(
-        str(domain or "").strip().lower(), GENERAL_INSIGHT_PROMPT)

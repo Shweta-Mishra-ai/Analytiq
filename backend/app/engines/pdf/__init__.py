@@ -13,6 +13,10 @@ build_pdf, re-exported here and from app.engines.pdf_builder so existing
 imports keep working.
 """
 from app.engines.pdf.builder import build_pdf
-from app.engines.pdf.theme import THEMES, HR_BENCHMARKS, _domain_theme
+# _domain_theme is re-exported for the compatibility shim, which
+# forwards it for deck_builder; the redundant alias tells the
+# linter this is deliberate rather than a leftover.
+from app.engines.pdf.theme import THEMES, HR_BENCHMARKS
+from app.engines.pdf.theme import _domain_theme as _domain_theme
 
 __all__ = ["build_pdf", "THEMES", "HR_BENCHMARKS"]

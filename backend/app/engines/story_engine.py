@@ -15,13 +15,11 @@ replacing it.
 """
 import logging
 import pandas as pd
-import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
-from scipy import stats as scipy_stats
 
 from app.engines.domains.base import (
-    Insight, AttritionAnalysis, build_insight, col_stats, correlations,
+    Insight, AttritionAnalysis, col_stats, correlations,
 )
 from app.engines.domains.general   import _insights_general
 from app.engines.domains.registry import (

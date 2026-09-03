@@ -15,7 +15,6 @@ import logging
 import os
 from typing import List
 
-from app.config import config
 
 logger = logging.getLogger(__name__)
 

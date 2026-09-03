@@ -574,7 +574,7 @@ def compute_drivers(df: pd.DataFrame, target_col: str,
     """Fit a RandomForest to predict the target and return ranked drivers +
     model quality + the highest-risk profile. Returns None if not feasible."""
     try:
-        from sklearn.metrics import roc_auc_score, accuracy_score
+        from sklearn.metrics import accuracy_score
     except Exception:
         logger.warning("scikit-learn unavailable — predictive section skipped")
         return None

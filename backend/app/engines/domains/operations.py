@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 from typing import Dict, List
 
-import numpy as np
 import pandas as pd
 
 from app.engines.domains.base import Insight, build_insight

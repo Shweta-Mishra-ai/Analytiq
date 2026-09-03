@@ -7,10 +7,8 @@ Drop this file in core/ and import in 8_Reports.py
 
 from __future__ import annotations
 import logging
-import numpy as np
 import pandas as pd
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

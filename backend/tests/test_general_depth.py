@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from app.engines.domains.general_depth import (outlier_concentration,
                                                thin_segments,

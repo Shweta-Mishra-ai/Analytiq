@@ -5,24 +5,14 @@ Today: the appendix and the prepared-by line. Domain deep pages (finance
 P&L, and the per-domain equivalents) belong here as they land.
 """
 import logging
-import io
-import os
 from datetime import datetime
 
 import numpy as np
-import pandas as pd
 
-from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.lib.colors import HexColor, white, black
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
-from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import (
-    BaseDocTemplate, Frame, PageTemplate,
     Paragraph, Spacer, Table, TableStyle,
-    Image, HRFlowable, PageBreak, KeepTogether,
 )
-from reportlab.pdfgen import canvas as CV
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +24,12 @@ from app.engines.present import truncate as _fit
 APPENDIX_TITLE = "Appendix — Methodology, Sources & Glossary"
 
 from app.engines.pdf.theme import (
-    _c, W, H, CW_DEFAULT, FONT_BODY, FONT_BOLD, FONT_ITALIC,
-    FONT_SERIF, FONT_SERIF_BOLD,
+    _c, FONT_BOLD,
 )
 from app.engines.pdf.primitives import (
-    _sec, _kpi_row, _narrative_box, _gtable, _clean, truncate_label,
+    _sec, _gtable, _clean, truncate_label,
 )
 from app.engines.report_blueprints import blueprint_for
-from app.services.dtypes import is_text_dtype, text_columns
 
 
 # ══════════════════════════════════════════════════════════

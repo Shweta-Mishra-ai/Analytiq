@@ -112,3 +112,69 @@ class TestWording:
                 assert "spread" in line
             else:
                 assert "none stands out" in line
+
+
+# ══════════════════════════════════════════════════════════
+#  Cohort comparison tests its own assumptions
+# ══════════════════════════════════════════════════════════
+
+def _cohorts(spreads, means=(50, 50, 50), seed=0):
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame({
+        "cohort": ["A"] * 40 + ["B"] * 8 + ["C"] * 40,
+        "revenue": np.concatenate([
+            rng.normal(means[0], spreads[0], 40),
+            rng.normal(means[1], spreads[1], 8),
+            rng.normal(means[2], spreads[2], 40)]),
+    })
+
+
+def test_a_small_volatile_cohort_does_not_manufacture_significance():
+    """The bug this replaces: `ttest_ind`/`f_oneway` were called with
+    their defaults, which assume every cohort has the same spread. In
+    real data a small cohort is nearly always more variable than a large
+    one, so the p-values were optimistic and a difference that was not
+    there got reported as one."""
+    from app.engines.bi_engine import analyze_cohort
+
+    result = analyze_cohort(_cohorts([2, 18, 2]), "cohort", "revenue")
+    assert result.test_used == "Welch's ANOVA"
+    assert not result.is_significant, (
+        "all three cohorts have the same mean — nothing to report")
+
+
+def test_equal_spread_still_uses_the_classic_test():
+    from app.engines.bi_engine import analyze_cohort
+
+    result = analyze_cohort(_cohorts([2, 2, 2], seed=1), "cohort", "revenue")
+    assert result.test_used == "One-Way ANOVA"
+
+
+def test_a_cohort_that_really_differs_is_still_found():
+    from app.engines.bi_engine import analyze_cohort
+
+    result = analyze_cohort(_cohorts([2, 6, 2], means=(50, 72, 50), seed=2),
+                            "cohort", "revenue")
+    assert result.is_significant
+    assert result.p_value < 0.05
+
+
+def test_normality_is_judged_by_shape_not_by_an_overpowered_test():
+    """Shapiro-Wilk over 5,000 rows rejects normality on essentially any
+    real data, which made the parametric branch it guarded close to
+    dead. The shared helper judges by skew and kurtosis instead."""
+    import numpy as np
+    import pandas as pd
+    from app.engines.bi_engine import analyze_cohort
+
+    rng = np.random.default_rng(3)
+    big = pd.DataFrame({
+        "cohort": ["A"] * 3000 + ["B"] * 3000,
+        "revenue": np.concatenate([rng.normal(50, 5, 3000),
+                                   rng.normal(50, 5, 3000)]),
+    })
+    result = analyze_cohort(big, "cohort", "revenue")
+    assert result.test_used != "Kruskal-Wallis", (
+        "6,000 rows of textbook-normal data must not be judged non-normal")

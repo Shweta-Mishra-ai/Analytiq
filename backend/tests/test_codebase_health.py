@@ -91,14 +91,35 @@ def test_no_silent_except_app_wide():
     )
 
 
+def _is_only_declarations(src: str) -> bool:
+    """True for a module that declares shapes and does nothing else.
+
+    A file of dataclasses has no failure path, so requiring a logger in
+    it would be satisfying the letter of the rule below with a variable
+    that can never be used. The test is narrow on purpose: no module-level
+    functions and no exception handling anywhere. The moment such a module
+    grows either, it needs a logger like everything else.
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return False
+    if any(isinstance(n, (ast.Try, ast.ExceptHandler)) for n in ast.walk(tree)):
+        return False
+    return not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   for n in tree.body)
+
+
 def test_all_app_modules_with_code_have_a_logger():
     """Any module containing functions/classes must set up a module
     logger, so the log calls guarding its failure paths have somewhere
-    to go."""
+    to go. A module of pure declarations has no such paths."""
     missing = []
     for path in _iter_app_py_files():
         src = open(path, encoding="utf-8").read()
         if not _has_definitions(src):
+            continue
+        if _is_only_declarations(src):
             continue
         if "logger = logging.getLogger" not in src:
             missing.append(_rel(path))
@@ -191,3 +212,15 @@ def test_heavy_engines_return_populated_report(engine_import, fn_name, hr_df):
     populated = [k for k, v in vars(report).items()
                  if not k.startswith("_") and v not in (None, [], {}, "")]
     assert populated, f"{fn_name} returned an entirely empty report"
+
+
+def test_the_declarations_exemption_is_narrow():
+    """The exemption above must not become a way to skip the logger rule.
+    A module gains a failure path the moment it grows a function or an
+    except, and must need a logger again at that point."""
+    assert _is_only_declarations(
+        "from dataclasses import dataclass\n@dataclass\nclass A:\n    x: int\n")
+    assert not _is_only_declarations("def f():\n    return 1\n")
+    assert not _is_only_declarations(
+        "class A:\n    def m(self):\n        try:\n            pass\n"
+        "        except Exception:\n            pass\n")

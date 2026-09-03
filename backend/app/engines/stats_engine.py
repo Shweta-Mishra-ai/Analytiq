@@ -2,16 +2,13 @@ import logging
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
-from scipy import stats as scipy_stats
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 from app.engines.domains.base import is_id_column
 from app.engines.present import label as _L
-from app.engines.statistics import (assess_normality, clamp_p,
-                                    correlation_with_ci, format_p,
-                                    correlation_strength)
+from app.engines.statistics import (assess_normality, correlation_with_ci, format_p)
 
 
 from app.services.dtypes import text_columns

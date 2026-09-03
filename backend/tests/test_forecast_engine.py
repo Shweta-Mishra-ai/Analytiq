@@ -16,8 +16,7 @@ import pandas as pd
 import pytest
 
 from app.engines.forecast_engine import (
-    MIN_PERIODS, build_series, find_forecastable, forecast_series,
-    run_forecast,
+    MIN_PERIODS, build_series, find_forecastable, run_forecast,
 )
 
 
