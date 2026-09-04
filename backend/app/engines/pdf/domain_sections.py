@@ -52,7 +52,8 @@ def _prepared_by_line(config: dict) -> str:
 
 
 def _appendix(story, s, T, config, CW, domain: str = "general",
-              used_terms=None):
+              used_terms=None, cleaning_summary=None,
+              source_table="source_table"):
     _sec(story, s, T, APPENDIX_TITLE)
 
     # This section is what a reviewing analyst reads to decide whether to
@@ -145,6 +146,15 @@ def _appendix(story, s, T, config, CW, domain: str = "general",
     if _bp.reference_note:
         story.append(Paragraph(_bp.reference_note, s["note"]))
 
+    # D. The SQL lineage. It sat at pages five and six of the body, ahead
+    # of every finding; a reader who wants it will look for it here, and
+    # a reader who does not is no longer made to scroll past it.
+    if cleaning_summary:
+        story.append(Spacer(1, 4*mm))
+        from app.engines.pdf.lineage import _sql_lineage_block
+        _sql_lineage_block(story, s, T, cleaning_summary, CW,
+                           table=source_table)
+
     story.append(Spacer(1, 4*mm))
     disc = Table([[Paragraph(
         "<b>BASIS OF PREPARATION</b><br/>"
@@ -172,6 +182,10 @@ def _appendix(story, s, T, config, CW, domain: str = "general",
     story.append(disc)
 
 
+    story.append(Spacer(1, 4 * mm))
+    _glossary(story, s, T, CW, used_terms)
+
+
 # ══════════════════════════════════════════════════════════
 #  DOMAIN DEEP PAGES
 #
@@ -180,8 +194,6 @@ def _appendix(story, s, T, config, CW, domain: str = "general",
 #  one-file change; domains without one simply do not get the section.
 # ══════════════════════════════════════════════════════════
 
-    story.append(Spacer(1, 4 * mm))
-    _glossary(story, s, T, CW, used_terms)
 
 def _finance_page(story, s, T, df, config, CW, profile=None):
     """

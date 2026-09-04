@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 from scipy.stats import pearsonr, spearmanr
 
+from app.engines.plain_language import (correlation_plain,
+                                        group_difference_plain)
 from app.engines.eda.results import BivariateResult, GroupComparisonResult
 from app.engines.statistics import (compare_groups)
 
@@ -104,6 +106,8 @@ def analyze_bivariate_numeric(
         effect_label=effect_lbl,
         interpretation=interp,
         recommendation=rec,
+        plain=correlation_plain(col_a, col_b, float(r), sig,
+                                len(common)),
     )
 
 
@@ -208,8 +212,28 @@ def analyze_group_comparison(
         effect_label=eta_lbl,
         group_stats=group_stats,
         interpretation=interp,
+        plain=group_difference_plain(
+            numeric_col, group_col, n_groups, sig, eta_lbl,
+            best=_extreme_group(group_stats, highest=True),
+            worst=_extreme_group(group_stats, highest=False)),
         post_hoc=post_hoc,
     )
 
 
 # ══════════════════════════════════════════════════════════
+
+def _extreme_group(group_stats, highest: bool):
+    """The group with the largest or smallest mean, by name.
+
+    "the highest is 'Enterprise' and the lowest 'SMB'" is the part of a
+    group comparison a reader can act on; the eta-squared beside it is
+    the part that says how much to trust it.
+    """
+    means = {}
+    for name, stats in (group_stats or {}).items():
+        mean = stats.get("mean") if isinstance(stats, dict) else None
+        if mean is not None:
+            means[name] = mean
+    if not means:
+        return None
+    return (max if highest else min)(means, key=means.get)

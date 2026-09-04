@@ -565,7 +565,13 @@ def _exec_dashboard(story, s, T, df, profile, top_insights,
         sv = getattr(ins, "severity", "info")
         sev_counts[sv] = sev_counts.get(sv, 0) + 1
     total_f = sum(sev_counts.values())
-    if total_f:
+    # A proportional bar earns its place when the mix is worth seeing at
+    # a glance. With two findings it renders as two flat blocks reading
+    # "1 Critical" and "1 High" directly beneath a table that has just
+    # said so — decoration where a summary page can least afford it.
+    worth_charting = total_f >= 4 and len(
+        [k for k, c in sev_counts.items() if c]) >= 2
+    if total_f and worth_charting:
         story.append(Paragraph("Findings by Severity", s["h3"]))
         seg_defs = [("critical", "Critical", T["negative"]),
                     ("high", "High", T["warning"]),

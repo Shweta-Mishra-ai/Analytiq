@@ -20,6 +20,7 @@ interface Univariate {
   unique_count: number
   top_value?: string
   interpretation: string
+  plain?: string
 }
 
 interface Bivariate {
@@ -31,6 +32,7 @@ interface Bivariate {
   is_significant: boolean
   effect_label?: string
   interpretation: string
+  plain?: string
 }
 
 interface GroupComparison {
@@ -42,6 +44,7 @@ interface GroupComparison {
   is_significant: boolean
   effect_label?: string
   interpretation: string
+  plain?: string
   post_hoc: string[]
 }
 
@@ -50,6 +53,7 @@ interface Vif {
   vif: number
   verdict: string
   interpretation: string
+  plain?: string
 }
 
 interface TimeSeries {
@@ -59,6 +63,7 @@ interface TimeSeries {
   trend?: string
   seasonality?: string
   interpretation: string
+  plain?: string
 }
 
 interface EdaReport {
@@ -70,6 +75,7 @@ interface EdaReport {
   multicollinearity: Vif[]
   time_series: TimeSeries[]
   key_findings: string[]
+  plain_findings: string[]
   warnings: string[]
 }
 
@@ -79,6 +85,12 @@ export default function EdaPage() {
   const dataset = useApp((s) => s.dataset)
   const [report, setReport] = useState<EdaReport | null>(null)
   const [error, setError] = useState('')
+  // Deep EDA is a technical page and stays one — every statistic it
+  // computed is still on it. What changed is that the headline findings
+  // can be read without knowing what a variance inflation factor is,
+  // which is the difference between a page a director can use and a page
+  // they forward to someone else.
+  const [plainWording, setPlainWording] = useState(true)
   const ds = dataset?.dataset_id
 
   useEffect(() => {
@@ -94,9 +106,18 @@ export default function EdaPage() {
 
   return (
     <div className="p-8">
+      {/* The first line a reader sees. "Statistical tests, distributions,
+          VIF, group comparisons and time series" describes the page to
+          someone who already knows what is on it; the plain subtitle
+          describes what they can learn from it. The analysis behind both
+          is identical. */}
       <PageHeader
         title="Deep EDA"
-        subtitle="Statistical tests, distributions, VIF, group comparisons and time series"
+        subtitle={
+          plainWording
+            ? 'How each column behaves, which ones move together, and what that means for the numbers you quote'
+            : 'Statistical tests, distributions, VIF, group comparisons and time series'
+        }
       />
       {error && <ErrorBox message={error} />}
       {!report && !error && (
@@ -105,10 +126,41 @@ export default function EdaPage() {
 
       {report && (
         <div className="space-y-5">
-          {report.key_findings.length > 0 && (
-            <Panel title="Key findings">
-              <ul className="space-y-1.5 text-sm text-mute">
-                {report.key_findings.map((f, i) => (
+          {(report.plain_findings?.length || report.key_findings.length) > 0 && (
+            <Panel
+              title="Key findings"
+              subtitle={
+                plainWording
+                  ? 'What the analysis found, and what follows from it'
+                  : 'The tests behind those findings, with their statistics'
+              }
+              right={
+                <div className="flex rounded-md border border-edge text-[11px]">
+                  {[
+                    ['In plain terms', true],
+                    ['Statistical', false],
+                  ].map(([label, plain]) => (
+                    <button
+                      key={String(label)}
+                      type="button"
+                      onClick={() => setPlainWording(plain as boolean)}
+                      className={`px-2.5 py-1 ${
+                        plainWording === plain
+                          ? 'bg-accent/15 text-accent'
+                          : 'text-mute hover:text-ink'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              }
+            >
+              <ul className="space-y-2 text-sm text-mute">
+                {(plainWording && report.plain_findings?.length
+                  ? report.plain_findings
+                  : report.key_findings
+                ).map((f, i) => (
                   <li key={i} className="flex gap-2">
                     <span className="text-accent">▸</span> {f}
                   </li>
@@ -146,7 +198,9 @@ export default function EdaPage() {
                         ) : ('0')}
                       </td>
                       <td className="px-2 py-2">{u.best_fit_dist ?? '—'}</td>
-                      <td className="max-w-xs px-2 py-2">{u.interpretation}</td>
+                      <td className="max-w-xs px-2 py-2">
+                        {(plainWording && u.plain) || u.interpretation}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -166,7 +220,9 @@ export default function EdaPage() {
                         {c.effect_label && ` · ${c.effect_label} effect`}
                       </span>
                     </div>
-                    <div className="mt-0.5 text-mute">{c.interpretation}</div>
+                    <div className="mt-0.5 text-mute">
+                      {(plainWording && c.plain) || c.interpretation}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -187,7 +243,9 @@ export default function EdaPage() {
                         ) : ('not significant')}
                       </span>
                     </div>
-                    <div className="mt-0.5 text-mute">{g.interpretation}</div>
+                    <div className="mt-0.5 text-mute">
+                      {(plainWording && g.plain) || g.interpretation}
+                    </div>
                     {g.post_hoc.length > 0 && (
                       <div className="mt-1 text-mute">{g.post_hoc.join(' · ')}</div>
                     )}
@@ -202,16 +260,26 @@ export default function EdaPage() {
               <Panel title="Multicollinearity (VIF)">
                 <div className="space-y-1.5 text-xs">
                   {report.multicollinearity.map((v) => (
-                    <div key={v.feature} className="flex items-center justify-between rounded-lg bg-panel2 px-3 py-2">
-                      <span className="font-semibold text-ink" title={v.feature}>
-                        {fmt.label(v.feature)}
-                      </span>
-                      <span className={
-                        v.verdict === 'OK' ? 'text-teal'
-                          : v.verdict === 'Moderate' ? 'text-amber' : 'text-rose'
-                      }>
-                        VIF {v.vif.toFixed(1)} — {v.verdict}
-                      </span>
+                    <div key={v.feature} className="rounded-lg bg-panel2 px-3 py-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-ink" title={v.feature}>
+                          {fmt.label(v.feature)}
+                        </span>
+                        <span className={
+                          v.verdict === 'OK' ? 'text-teal'
+                            : v.verdict === 'Moderate' ? 'text-amber' : 'text-rose'
+                        }>
+                          VIF {v.vif.toFixed(1)} — {v.verdict}
+                        </span>
+                      </div>
+                      {/* "VIF 14.0 — High" was the whole of this panel. It
+                          is the most jargon-dense thing on the page and it
+                          carried no explanation at all. */}
+                      {((plainWording && v.plain) || v.interpretation) && (
+                        <p className="mt-1 text-mute">
+                          {(plainWording && v.plain) || v.interpretation}
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -223,13 +291,18 @@ export default function EdaPage() {
                   {report.time_series.map((t, i) => (
                     <div key={i} className="rounded-lg bg-panel2 px-3 py-2">
                       <div className="font-semibold text-ink">
-                        {t.column} <span className="font-normal text-mute">over {t.date_col}</span>
+                        {fmt.label(t.column)}{' '}
+                        <span className="font-normal text-mute">
+                          over {fmt.label(t.date_col)}
+                        </span>
                       </div>
                       <div className="mt-0.5 text-mute">
                         Trend: {t.trend ?? '—'} · Stationary: {t.is_stationary === null ? '—' : t.is_stationary ? 'yes' : 'no'}
                         {t.seasonality && ` · ${t.seasonality}`}
                       </div>
-                      <div className="mt-0.5 text-mute">{t.interpretation}</div>
+                      <div className="mt-0.5 text-mute">
+                        {(plainWording && t.plain) || t.interpretation}
+                      </div>
                     </div>
                   ))}
                 </div>

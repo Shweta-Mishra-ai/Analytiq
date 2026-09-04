@@ -75,6 +75,10 @@ class UnivariateResult:
     top_pct:         Optional[float] = None
     entropy:         Optional[float] = None   # information entropy
     interpretation:  str = ""
+    # The same result in words a reader without the vocabulary can act
+    # on. Always alongside `interpretation`, never instead of it: the
+    # analyst who wants the skew coefficient still gets it.
+    plain:           str = ""
 
 
 @dataclass
@@ -89,6 +93,7 @@ class BivariateResult:
     effect_label:    Optional[str]   = None   # small/medium/large
     interpretation:  str = ""
     recommendation:  str = ""
+    plain:           str = ""
 
 
 @dataclass
@@ -104,6 +109,7 @@ class GroupComparisonResult:
     effect_label:    Optional[str]   = None
     group_stats:     Dict = field(default_factory=dict)
     interpretation:  str = ""
+    plain:           str = ""
     post_hoc:        List[str] = field(default_factory=list)
 
 
@@ -113,6 +119,7 @@ class MulticollinearityResult:
     vif:             float
     verdict:         str   # "OK", "Moderate", "High", "Severe"
     interpretation:  str
+    plain:           str = ""
 
 
 @dataclass
@@ -126,6 +133,7 @@ class TimeSeriesResult:
     trend_slope:     Optional[float] = None
     seasonality:     Optional[str]   = None
     interpretation:  str = ""
+    plain:           str = ""
 
 
 @dataclass
@@ -143,6 +151,9 @@ class EDAReport:
     identifier_cols: List[str] = field(default_factory=list)
     time_series:     List[TimeSeriesResult]      = field(default_factory=list)
     key_findings:    List[str]                   = field(default_factory=list)
+    # The same headlines without the vocabulary. Both lists ship; the UI
+    # and the report choose which to lead with for their reader.
+    plain_findings:  List[str]                   = field(default_factory=list)
     warnings:        List[str]                   = field(default_factory=list)
 
 

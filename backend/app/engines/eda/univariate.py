@@ -23,6 +23,9 @@ from typing import Dict, Tuple
 from scipy.stats import (anderson, kstest, normaltest,
                          shapiro)
 
+from app.engines.plain_language import (entropy_plain, kurtosis_plain,
+                                        normality_plain,
+                                        outliers_plain, skew_plain)
 from app.engines.eda.results import UnivariateResult
 from app.engines.statistics import assess_normality, clamp_p
 
@@ -186,6 +189,12 @@ def analyze_univariate(series: pd.Series) -> UnivariateResult:
                 "Entropy={:.2f} (higher = more diverse).".format(
                     clean.nunique(), result.top_value,
                     result.top_pct or 0, result.entropy or 0))
+        # Entropy is a number about balance; the plain reading says
+        # balance. A reader deciding whether to split a KPI by this
+        # column needs to know one group carries most of the records.
+        result.plain = entropy_plain(
+            result.column, result.entropy, clean.nunique(),
+            result.top_value, result.top_pct)
         return result
 
     # ── Numeric ───────────────────────────────────────────
@@ -343,6 +352,17 @@ def analyze_univariate(series: pd.Series) -> UnivariateResult:
         result.kurtosis_label + ".",
         outlier_note
     ).strip()
+
+    # The same column described without the vocabulary. Sentences that
+    # would say nothing for this column are dropped rather than padded.
+    result.plain = " ".join(part for part in (
+        skew_plain(result.column, result.skewness,
+                   result.mean, result.median),
+        normality_plain(result.column, result.is_normal),
+        kurtosis_plain(result.column, result.kurtosis),
+        outliers_plain(result.column, result.outlier_pct,
+                       result.outliers_iqr),
+    ) if part).strip()
 
     return result
 

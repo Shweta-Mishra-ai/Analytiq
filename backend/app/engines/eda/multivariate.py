@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 from typing import List, Tuple
 
+from app.engines.plain_language import trend_plain, vif_plain
 from app.engines.eda.results import MulticollinearityResult, TimeSeriesResult
 from app.services.dtypes import MONTH_END
 
@@ -101,7 +102,8 @@ def analyze_vif(df: pd.DataFrame) -> List[MulticollinearityResult]:
         verdict, interp = _vif_verdict(vif)
         results.append(MulticollinearityResult(
             feature=col, vif=round(vif, 2) if np.isfinite(vif) else vif,
-            verdict=verdict, interpretation=interp))
+            verdict=verdict, interpretation=interp,
+            plain=vif_plain(col, vif, verdict)))
 
     return sorted(results, key=lambda r: r.vif, reverse=True)
 
@@ -153,6 +155,14 @@ def analyze_time_series(
         )
 
         result.interpretation = "{} | {}".format(result.trend, stat_note)
+        # "Non-stationary (ADF p=0.0001) — differencing required before
+        # ARIMA modeling" is the right sentence for an analyst and no
+        # sentence at all for the person deciding what to do next.
+        result.plain = trend_plain(
+            value_col,
+            {"Upward trend": "upward",
+             "Downward trend": "downward"}.get(result.trend, "flat"),
+            result.is_stationary)
 
     except Exception as e:
         result.interpretation = "Time series analysis failed: {}".format(str(e))

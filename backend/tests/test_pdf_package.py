@@ -20,6 +20,7 @@ MODULES = [
     "app.engines.pdf.primitives",
     "app.engines.pdf.narrative_sections",
     "app.engines.pdf.data_sections",
+    "app.engines.pdf.lineage",
     "app.engines.pdf.domain_sections",
     "app.engines.pdf.predictive_sections",
     "app.engines.pdf.builder",

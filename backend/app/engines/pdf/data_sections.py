@@ -30,144 +30,8 @@ from app.engines.pdf.primitives import (
     _sec, _kpi_row, _narrative_box, _gtable, _clean,
     _exhibit, _exhibit_source,
 )
+from app.engines.plain_language import skew_plain
 from app.services.dtypes import text_columns
-
-
-# ══════════════════════════════════════════════════════════
-#  DATA PREPARATION  (what was changed, and the SQL for it)
-# ══════════════════════════════════════════════════════════
-
-def _data_prep_section(story, s, T, cleaning_summary, CW, table="source_table"):
-    """Every transformation applied before analysis, with its SQL.
-
-    A reader who cannot see what was changed between the file they sent
-    and the numbers they are reading has to take the whole report on
-    trust. Listing each step — and the statement that reproduces it in
-    their own warehouse — is what makes the rest checkable.
-    """
-    if not cleaning_summary:
-        return
-    actions = cleaning_summary.get("actions")
-    if not actions:
-        # Older cached summaries carry only the display groups. Flattening
-        # them loses execution order, so the SQL block is suppressed rather
-        # than printed in an order that would not reproduce the table.
-        groups = cleaning_summary.get("groups") or {}
-        actions = [a for g in groups.values() for a in g]
-        ordered = False
-    else:
-        ordered = True
-    if not actions:
-        return
-
-    _sec(story, s, T, "Data Preparation",
-         "Every change made to the source data before any figure was computed")
-
-    story.append(Paragraph(
-        "The source file contained {:,} rows across {} columns. After the "
-        "steps below, {:,} rows and {} columns were carried into the "
-        "analysis. Nothing else was altered.".format(
-            cleaning_summary.get("original_rows", 0),
-            cleaning_summary.get("original_cols", 0),
-            cleaning_summary.get("cleaned_rows", 0),
-            cleaning_summary.get("cleaned_cols", 0)),
-        s["body"]))
-    story.append(Spacer(1, 2*mm))
-
-    rows = []
-    for a in actions[:18]:
-        rows.append([
-            getattr(a, "column", ""),
-            getattr(a, "issue", ""),
-            getattr(a, "action", ""),
-            "{:,}".format(getattr(a, "rows_affected", 0) or 0),
-        ])
-    _gtable(story, T, ["Column", "Observed", "Treatment", "Rows"],
-            rows, [CW*x for x in [0.18, 0.30, 0.42, 0.10]])
-    if len(actions) > 18:
-        story.append(Paragraph(
-            "{} further steps of the same kinds are listed in the "
-            "accompanying SQL script.".format(len(actions) - 18), s["note"]))
-
-    # ── The same steps as SQL ──────────────────────────────
-    sql_actions = [a for a in actions if getattr(a, "sql", "")] if ordered else []
-    if not sql_actions:
-        return
-    story.append(Spacer(1, 3*mm))
-    story.append(Paragraph("Equivalent SQL", s["h3"]))
-    story.append(Paragraph(
-        "The analysis itself was performed in pandas. These statements "
-        "express the same treatment against <b>{}</b> so your data team can "
-        "verify each step, or apply it upstream and stop the issue "
-        "recurring. Order matters: deduplicating after imputing does not "
-        "give the same table. None of it has been executed.".format(table),
-        s["body"]))
-    story.append(Spacer(1, 1.5*mm))
-
-    mono = ParagraphStyle(
-        "sqlmono", fontName="Courier", fontSize=7.2, leading=9.6,
-        textColor=_c(T["text"]), leftIndent=4, spaceAfter=0)
-    lines = []
-    for a in sql_actions[:14]:
-        stmt = a.sql.replace("{table}", '"{}"'.format(table))
-        for raw in stmt.splitlines():
-            lines.extend(_wrap_sql_line(raw))
-        lines.append("")
-    block = [[Paragraph(_sql_escape(ln) or "&nbsp;", mono)] for ln in lines[:70]]
-    tbl = Table(block, colWidths=[CW])
-    tbl.setStyle(TableStyle([
-        ("BACKGROUND",   (0,0), (-1,-1), _c(T["bg_light"])),
-        ("BOX",          (0,0), (-1,-1), 0.5, _c(T["border"])),
-        ("LEFTPADDING",  (0,0), (-1,-1), 6),
-        ("RIGHTPADDING", (0,0), (-1,-1), 6),
-        ("TOPPADDING",   (0,0), (-1,-1), 0),
-        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
-    ]))
-    story.append(tbl)
-    if len(lines) > 70:
-        story.append(Paragraph(
-            "Truncated for length — the full script is available from the "
-            "Data Quality screen.", s["note"]))
-
-
-_SQL_COLS = 96   # fits Courier 7.2pt across the content frame
-
-
-def _wrap_sql_line(line: str) -> list:
-    """Break one SQL line to the page width, at a space where possible.
-
-    A `GROUP BY` over thirty columns is a single line in the script. Left
-    to itself the Paragraph cannot break it (every space is
-    non-breaking), so it runs off the page and the reader loses the tail
-    of the statement without any sign that it happened. Continuations are
-    indented so the break is visibly a wrap, not a new statement.
-    """
-    line = line.rstrip()
-    if len(line) <= _SQL_COLS:
-        return [line]
-    indent = len(line) - len(line.lstrip())
-    out, rest = [], line
-    while len(rest) > _SQL_COLS:
-        cut = rest.rfind(" ", indent + 1, _SQL_COLS)
-        if cut <= indent:
-            cut = _SQL_COLS
-        out.append(rest[:cut].rstrip())
-        rest = " " * (indent + 4) + rest[cut:].lstrip()
-    out.append(rest)
-    return out
-
-
-def _sql_escape(text: str) -> str:
-    """Escape SQL for ReportLab's mini-HTML parser.
-
-    `WHERE "x" < 108 OR "x" > 877` is a legal comparison and an illegal
-    tag; unescaped, ReportLab swallows the rest of the line. Spaces become
-    non-breaking so indentation survives — the wrapping is done by
-    `_wrap_sql_line` beforehand, where the break points can be chosen.
-    """
-    return (str(text).replace("&", "&amp;")
-            .replace("<", "&lt;").replace(">", "&gt;")
-            .replace(" ", "&nbsp;") if text else "")
 
 
 # ══════════════════════════════════════════════════════════
@@ -282,13 +146,19 @@ def _stats_section(story, s, T, stats_report, CW):
     _sec(story, s, T, "Statistical Analysis",
          "Distribution, normality, correlations")
 
-    # Correlation honest-warning box
+    # How to read this section. It used to be a warning box shouting in
+    # capitals — "NOT causation, NOT magnitude of effect" — which reads
+    # as a tool defending itself rather than a document explaining
+    # itself, and told a reader without the vocabulary nothing at all.
     warn_t = Table([[Paragraph(
-        "<b>⚠ Analyst Note:</b> "
-        "Correlation r does NOT mean 'Variable A changes Variable B by r%.' "
-        "That is a dangerous misread. r = -0.35 means the two variables share "
-        "12.3% of their variance (r² = 0.123). Association only — "
-        "NOT causation, NOT magnitude of effect.",
+        "<b>How to read the figures below.</b> "
+        "A correlation describes how closely two columns move together, "
+        "and nothing more. An r of -0.35 does not mean one column changes "
+        "the other by 35%: it means the two share about 12% of their "
+        "variation, and that they move in opposite directions when they "
+        "move. Neither the direction nor the strength says which one is "
+        "the cause — that question cannot be answered from this data "
+        "alone, and this report does not attempt it.",
         s["warn"])]],
         colWidths=["100%"])
     warn_t.setStyle(TableStyle([
@@ -305,14 +175,52 @@ def _stats_section(story, s, T, stats_report, CW):
     col_stats = getattr(stats_report, "column_stats", {})
     if col_stats:
         story.append(Paragraph("Distribution Summary", s["h3"]))
-        for col, cs in list(col_stats.items())[:8]:
-            if getattr(cs, "mean", None) is None: continue
+        story.append(Paragraph(
+            "Whether each column's values cluster around their average or "
+            "trail off to one side. It decides which figure is the fair "
+            "one to quote: where the values trail off, the average is "
+            "pulled away from what a typical record actually shows, and "
+            "the middle value is the honest summary.", s["body"]))
+        shown = 0
+        for col, cs in col_stats.items():
+            if shown >= 8:
+                break
+            if getattr(cs, "mean", None) is None:
+                continue
+            # A column holding one value has no distribution to describe.
+            # "Employee Count: Non-normal | approximately symmetric" is
+            # three statements about a column of 1s.
+            if getattr(cs, "std", None) == 0:
+                continue
+            shown += 1
             normal = "Normal" if getattr(cs, "is_normal", False) else "Non-normal"
             sk_lbl = getattr(cs, "skew_label", "") or ""
             outs   = getattr(cs, "outlier_count_iqr", 0)
             story.append(Paragraph(
-                "• '{}': {} | {} | Outliers: {}".format(col, normal, sk_lbl, outs),
+                "• <b>{}</b>: {} | {} | Outliers: {}".format(
+                    _PL(col), normal, sk_lbl, outs),
                 s["bl"]))
+            # The plain line earns its place only where it warns of
+            # something. Printing "Age is spread evenly around its
+            # average" under every ordinary column is padding, and
+            # padding is how a document loses the reader's attention for
+            # the lines that matter.
+            skew = getattr(cs, "skewness", None)
+            if skew is not None and abs(skew) >= 0.5:
+                story.append(Paragraph(
+                    skew_plain(col, skew, getattr(cs, "mean", None),
+                               getattr(cs, "median", None)),
+                    s["note"]))
+
+        even = sum(1 for c, cs in col_stats.items()
+                   if getattr(cs, "skewness", None) is not None
+                   and abs(cs.skewness) < 0.5
+                   and getattr(cs, "std", None) != 0)
+        if even:
+            story.append(Paragraph(
+                "The remaining {} numeric column{} sit evenly around their "
+                "averages, so the average is a fair summary of "
+                "each.".format(even, "" if even == 1 else "s"), s["note"]))
 
     # Correlations
     corrs = getattr(stats_report, "correlations", [])
@@ -321,16 +229,18 @@ def _stats_section(story, s, T, stats_report, CW):
              and abs(getattr(c, "pearson_r", 0)) >= 0.15]
     if sig:
         story.append(Spacer(1, 2*mm))
-        story.append(Paragraph("Significant Correlations (Correct Interpretation)", s["h3"]))
-        rows = [[c.col_a, c.col_b,
+        story.append(Paragraph("Relationships Between Columns", s["h3"]))
+        rows = [[_PL(c.col_a), _PL(c.col_b),
                  str(round(c.pearson_r, 4)),
                  str(round(getattr(c, "p_value", 0), 4)),
                  c.strength.title(),
-                 "r²={:.3f} — {:.1f}% variance shared. Association only.".format(
-                     c.pearson_r**2, c.pearson_r**2 * 100)]
+                 "Share {:.0f}% of their variation. They move {}; that is "
+                 "a pattern, not a cause.".format(
+                     c.pearson_r ** 2 * 100,
+                     "together" if c.pearson_r > 0 else "opposite ways")]
                 for c in sig[:6]]
         _gtable(story, T,
-                ["Col A", "Col B", "r", "p", "Strength", "Interpretation"],
+                ["Column", "Column", "r", "p", "Strength", "What it means"],
                 rows, [CW*x for x in [0.17, 0.17, 0.08, 0.08, 0.12, 0.38]])
 
 

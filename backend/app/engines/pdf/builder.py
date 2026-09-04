@@ -33,8 +33,9 @@ from app.engines.pdf.narrative_sections import (
     _has_reference_ranges, _exec_dashboard, _forecast_section,
 )
 from app.engines.pdf.predictive_sections import _predictive_section
+from app.engines.pdf.lineage import _data_prep_section
 from app.engines.pdf.data_sections import (
-    _data_prep_section, _dataset_overview, _estimates_block, _stats_section,
+    _dataset_overview, _estimates_block, _stats_section,
     _bi_section, _chart_page, _governance_section,
     _recommendations,
 )
@@ -374,7 +375,10 @@ def build_pdf(
                          insights=top_insights)
         story.append(PageBreak())
 
-        _appendix(story, s, T, config, CW, domain=domain)
+        _appendix(story, s, T, config, CW, domain=domain,
+                  cleaning_summary=cleaning_summary,
+                  source_table=config.get("source_table")
+                  or "source_table")
     # ── Build PDF ─────────────────────────────────────────
     # First pass discovers where each heading landed; it is thrown away.
     # Contents rows are a fixed height whether or not they carry a page

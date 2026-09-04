@@ -19,6 +19,7 @@ from app.engines.eda.bivariate import (analyze_bivariate_numeric,
                                        analyze_group_comparison)
 from app.engines.eda.multivariate import analyze_time_series, analyze_vif
 from app.engines.eda.findings import _generate_key_findings
+from app.engines.plain_language import plain_findings
 from app.engines.domains.base import is_id_column
 from app.services.dtypes import text_columns
 
@@ -139,6 +140,10 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
 
     # 7. Key findings
     report.key_findings = _generate_key_findings(report)
+    # Both readings ship together. The technical list is what an analyst
+    # checks the work against; the plain list is what everyone else can
+    # act on. Neither is a summary of the other.
+    report.plain_findings = plain_findings(report)
 
     return report
 

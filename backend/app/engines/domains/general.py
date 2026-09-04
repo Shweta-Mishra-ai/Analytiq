@@ -276,11 +276,88 @@ def _is_obvious_segment_pair(cat: str, num: str) -> bool:
                  "grade", "band", "seniority", "rank", "job")
     if any(m in n for m in compensation) and any(r in c for r in role_like):
         return True
-    # Metric grouped by a column whose name contains it (near-tautology).
-    stem = n.replace("_", "").replace(" ", "")[:6]
-    if len(stem) >= 4 and stem in c.replace("_", "").replace(" ", ""):
+    # Metric grouped by a column built out of it. This used to compare a
+    # six-character prefix and required it to be at least four characters
+    # long, so "Age" — three — never reached the test, and the report
+    # headlined "55+ and 18-25 differ on Age" as a HIGH finding. The
+    # AgeGroup column *is* Age, in buckets.
+    #
+    # Comparing word sets instead catches it without the length rule, and
+    # without matching on an accidental shared prefix.
+    # `cat`/`num`, not the lowercased `c`/`n`: lowercasing "AgeGroup"
+    # first destroys the case boundary the split relies on, leaving one
+    # word "agegroup" that contains "age" but does not equal it.
+    metric_words, group_words = _words(num), _words(cat)
+    if metric_words and metric_words <= (group_words - _BINNING_WORDS):
         return True
     return False
+
+
+# Words that turn a measure into a grouping of itself. "AgeGroup" is Age;
+# "SalaryBand" is Salary. They carry no meaning of their own, so they are
+# dropped before the two names are compared.
+_BINNING_WORDS = {
+    "group", "groups", "band", "bands", "bracket", "brackets", "bucket",
+    "buckets", "range", "ranges", "tier", "tiers", "slab", "slabs",
+    "category", "categories", "class", "classes", "segment", "segments",
+    "level", "levels", "bin", "bins", "quartile", "quintile", "decile",
+}
+
+
+def _words(name: str) -> set:
+    """The words in a column name, split on case and punctuation."""
+    import re as _re
+    spaced = _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(name)).lower()
+    return {w for w in _re.split(r"[^a-z0-9]+", spaced) if w}
+
+
+# How close consecutive bands must sit to read as a binning rather than
+# two separate populations. Bins tile a range, so the gap between them is
+# rounding; anything wider is a hole, and a hole is a finding.
+BIN_ADJACENCY = 0.02
+
+
+def _is_binned_from(df, cat: str, num: str) -> bool:
+    """True when the categories are simply ranges of the numeric column.
+
+    Names do not always give it away: `SalarySlab` is `MonthlyIncome` in
+    bands, and no comparison of the two names can know that. The data
+    says so plainly — every record in one band holds a value below every
+    record in the next, with no overlap.
+
+    Reporting that one band earns more than another is reporting the
+    definition of the bands.
+    """
+    try:
+        pair = df[[cat, num]].dropna()
+        if len(pair) < 30:
+            return False
+        bounds = pair.groupby(cat, observed=True)[num].agg(["min", "max"])
+        if len(bounds) < 2:
+            return False
+        bounds = bounds.sort_values("min")
+        lows, highs = bounds["min"].tolist(), bounds["max"].tolist()
+        # Non-overlapping is necessary and nowhere near sufficient. Two
+        # branches whose readings average 60 and 120 do not overlap
+        # either, and that is the most valuable finding in the file — an
+        # earlier version of this check suppressed exactly that.
+        #
+        # What separates a binning is that the bands *tile* the range:
+        # every value falls in some band, so consecutive bands touch.
+        # Two genuinely different populations leave a hole between them.
+        # Measured: a real two-group effect left a gap of 17% of the
+        # range; a four-band cut of income left 0.5%.
+        if any(lows[i + 1] < highs[i] for i in range(len(lows) - 1)):
+            return False
+        span = highs[-1] - lows[0]
+        if span <= 0:
+            return False
+        widest_gap = max((lows[i + 1] - highs[i]
+                          for i in range(len(lows) - 1)), default=0)
+        return widest_gap / span <= BIN_ADJACENCY
+    except Exception:
+        logger.debug("bin check failed for %s x %s", cat, num, exc_info=True)
+        return False
 
 
 def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
@@ -297,6 +374,8 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
     for cat in cat_cols[:5]:
         for num in num_cols[:6]:
             if _is_obvious_segment_pair(cat, num):
+                continue
+            if _is_binned_from(df, cat, num):
                 continue
             try:
                 sub = df[[cat, num]].dropna()

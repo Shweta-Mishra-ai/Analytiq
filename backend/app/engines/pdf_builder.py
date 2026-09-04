@@ -20,7 +20,9 @@ that something actually imports from here — checked, not assumed.
 from app.engines.pdf.builder import build_pdf                    # noqa: F401
 from app.engines.pdf.theme import THEMES, _domain_theme          # noqa: F401
 from app.engines.pdf.narrative_sections import _domain_label     # noqa: F401
-from app.engines.pdf.data_sections import (                      # noqa: F401
+# The SQL wrapping moved to `lineage` when the data-preparation section
+# and its script were split apart; the old path keeps working.
+from app.engines.pdf.lineage import (                            # noqa: F401
     _SQL_COLS, _wrap_sql_line,
 )
 
