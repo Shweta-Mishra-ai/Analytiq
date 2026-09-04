@@ -98,6 +98,11 @@ class DatasetStore:
         self._lock = threading.RLock()
         self._mem: Dict[str, Dict[str, Any]] = {}      # "owner/id" -> {raw, active, meta}
         self._caches: Dict[str, Dict[str, Any]] = {}   # "owner/id" -> {key -> (hash, obj)}
+        # "owner/id" -> (the exact frame object, its content hash). Hashing
+        # 40k rows costs ~30ms, which is fine once per change and wasteful
+        # on every cache lookup, so the result is held against the frame
+        # it describes and recomputed the moment a different object arrives.
+        self._hashes: Dict[str, Any] = {}
         self._sign_key = _cache_key(self.base_dir)
 
     # ── paths ────────────────────────────────────────────
@@ -215,6 +220,7 @@ class DatasetStore:
         with self._lock:
             self._mem.pop(mkey, None)
             self._caches.pop(mkey, None)
+            self._hashes.pop(mkey, None)
             d = self._dir(owner, ds_id)
             if os.path.isdir(d):
                 shutil.rmtree(d, ignore_errors=True)
@@ -282,8 +288,8 @@ class DatasetStore:
         df = self.get_df(owner, ds_id)
         if df is None:
             return None
-        h = self._hash_df(df)
         mkey = self._mkey(owner, ds_id)
+        h = self._frame_hash(mkey, df)
         with self._lock:
             entry = self._caches.get(mkey, {}).get(key)
             if entry and entry[0] == h:
@@ -310,8 +316,8 @@ class DatasetStore:
         df = self.get_df(owner, ds_id)
         if df is None:
             return
-        h = self._hash_df(df)
         mkey = self._mkey(owner, ds_id)
+        h = self._frame_hash(mkey, df)
         with self._lock:
             self._caches.setdefault(mkey, {})[key] = (h, obj)
         try:
@@ -341,6 +347,21 @@ class DatasetStore:
         return payload
 
     # ── internals ────────────────────────────────────────
+    def _frame_hash(self, mkey: str, df: pd.DataFrame) -> str:
+        """Content hash of `df`, remembered against that exact object.
+
+        `update_active` replaces the frame rather than mutating it, so an
+        identity check is enough to know the memo is stale, and it can
+        never report a changed frame as unchanged."""
+        with self._lock:
+            entry = self._hashes.get(mkey)
+            if entry is not None and entry[0] is df:
+                return entry[1]
+        h = self._content_hash(df)
+        with self._lock:
+            self._hashes[mkey] = (df, h)
+        return h
+
     @staticmethod
     def _safe_key(key: str) -> str:
         """Cache keys carry user-chosen text (``ml_{target}``), so they
@@ -383,12 +404,24 @@ class DatasetStore:
             if oldest == mkey:
                 break
             self._mem.pop(oldest)
+            # The hash memo holds a strong reference to the frame it
+            # describes, so leaving it behind here would keep in memory
+            # exactly the dataset this eviction is trying to release.
+            self._hashes.pop(oldest, None)
 
     @staticmethod
-    def _hash_df(df: pd.DataFrame) -> str:
-        sig = f"{df.shape}|{list(df.columns)}|{list(df.dtypes.astype(str))}"
-        sample = df.head(100).to_json(default_handler=str)
-        return hashlib.md5((sig + sample).encode()).hexdigest()
+    def _content_hash(df: pd.DataFrame) -> str:
+        """Every cell, not a sample of them.
+
+        This used to hash shape, dtypes and the first 100 rows. Cleaning
+        that only touched later rows — trimming whitespace, capping
+        outliers, imputing a gap that starts at row 500 — left that
+        signature identical, so `cache_get` returned the analysis of the
+        *uncleaned* frame. The EDA page then said a column held two
+        distinct values while the profile page, which recomputes, said
+        one. `frame_digest` reads the whole frame and has the fallback
+        for object columns holding unhashable cells."""
+        return integrity.frame_digest(df)
 
 
 store = DatasetStore()

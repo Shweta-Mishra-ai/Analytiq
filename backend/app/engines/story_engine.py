@@ -223,11 +223,21 @@ def _build_narrative_summary(
     if headline is None:
         mc = _first_meaningful_corr(corrs)
         if mc is not None:
+            # This is the first line of the report, and for many readers
+            # the only one. "Explaining 91% of shared variance — the
+            # clearest non-trivial structural pattern" says nothing to
+            # someone who does not already know what it means, and the
+            # people who do know can read r for themselves. Plain
+            # sentence first, the statistic in brackets after it.
+            move = ("move up and down together" if mc["direction"] == "positive"
+                    else "move in opposite directions")
             headline = (
-                f"'{mc['col_a']}' and '{mc['col_b']}' show a strong "
-                f"{mc['direction']} relationship (Spearman r={mc['r']:+.2f}), "
-                f"explaining {mc['r']**2*100:.0f}% of shared variance — the clearest "
-                f"non-trivial structural pattern in this dataset."
+                f"'{mc['col_a']}' and '{mc['col_b']}' {move} closely: knowing "
+                f"one tells you most of what you would know about the other "
+                f"({mc['r']**2*100:.0f}% of their variation is shared, "
+                f"Spearman r={mc['r']:+.2f}). It is the strongest relationship "
+                f"in this data that is not simply one column restating "
+                f"another. It does not show that either one causes the other."
             )
 
     if headline is None and miss > 15:
@@ -422,8 +432,22 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
             parts.append("Attrition: {:.1f}%.".format(attrition.rate))
         exec_s = " ".join(parts)
 
-    headline = ("CRITICAL: " + critical[0].title) if critical else (
-        deduped[0].title if deduped else "Analysis complete")
+    # "Analysis complete" is a status, not a headline: it sits in the
+    # slot a reader looks at first and tells them nothing about their
+    # data. When no single finding rises above the rest, say that — and
+    # say what the data does support — rather than announcing that the
+    # program finished running.
+    if critical:
+        headline = "CRITICAL: " + critical[0].title
+    elif deduped:
+        headline = deduped[0].title
+    elif exec_s:
+        headline = "No single finding dominates — the summary below is " \
+                   "what this data supports."
+    else:
+        headline = "{:,} rows × {} columns analysed; nothing in this data " \
+                   "met the threshold to report as a finding.".format(
+                       len(df), len(df.columns))
 
     # Quality
     avg_miss = sum(st.get("missing_pct",0) for st in all_stats.values()) / max(len(all_stats),1)

@@ -378,6 +378,10 @@ def health_summary(ds_id: str, owner: str = Depends(current_owner)):
     """Health score, grade and the niche insight cards as JSON — the same
     content the Health Report PDF renders, for previewing before download."""
     df = _df_or_404(owner, ds_id)
+    cached = store.cache_get(owner, ds_id, "health_summary")
+    if cached is not None:
+        return cached
+
     from app.engines.health_engine import build_report_payload, compute_health
     from app.engines.story_engine import detect_domain
 
@@ -393,8 +397,10 @@ def health_summary(ds_id: str, owner: str = Depends(current_owner)):
         logger.exception("health report payload failed")
         payload = {"executive_summary": "", "insights": [], "key_findings": [],
                    "risks": [], "opportunities": [], "actions": []}
-    return {"domain": domain_name, "health": to_jsonable(health),
-            **{k: to_jsonable(v) for k, v in payload.items()}}
+    summary = {"domain": domain_name, "health": to_jsonable(health),
+               **{k: to_jsonable(v) for k, v in payload.items()}}
+    store.cache_set(owner, ds_id, "health_summary", summary)
+    return summary
 
 
 @router.post("/{ds_id}/health-pdf")

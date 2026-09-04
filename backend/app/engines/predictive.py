@@ -22,8 +22,17 @@ logger = logging.getLogger(__name__)
 
 from app.engines import present as _present
 
-_BINARY_TARGET_NAMES = ("attrition", "left", "churn", "churned", "exited",
-                        "resigned", "terminated", "is_fraud", "default")
+# Which column names an outcome is one question, and `app.engines.ml.targets`
+# already answers it. This module kept a second, shorter list — attrition,
+# left, churn, exited, resigned, terminated, is_fraud, default — matched as
+# substrings. A sales extract with a 0/1 `returned` column was therefore
+# reported as having "no binary outcome column detected", and so was
+# anything named converted, cancelled, renewed, approved or readmitted.
+# The shared vocabulary covers those and matches on word boundaries, so
+# `leftover` no longer reads as a target named "left". A column genuinely
+# named for an outcome word it does not mean — `left_handed` — still
+# matches, in either vocabulary; that ambiguity is in the English, and
+# the caller can always name the target explicitly.
 
 
 @dataclass
@@ -314,9 +323,10 @@ class DriverResult:
 def find_binary_target(df: pd.DataFrame) -> Optional[str]:
     """A column suitable as a prediction target: named like a churn/attrition
     flag AND effectively binary (2 classes, both present, not degenerate)."""
+    from app.engines.ml.targets import _names_an_outcome
+
     for col in df.columns:
-        cl = col.lower().strip()
-        if not any(k in cl for k in _BINARY_TARGET_NAMES):
+        if not _names_an_outcome(col):
             continue
         s = df[col].dropna()
         if s.nunique() == 2 and 20 <= len(s):

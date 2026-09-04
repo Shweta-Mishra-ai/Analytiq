@@ -19,6 +19,7 @@ the drift the registry exists to prevent.
 """
 import logging
 import re
+import threading
 
 import numpy as np
 import pandas as pd
@@ -242,6 +243,30 @@ def _style(fig):
     return fig
 
 
+# `template="plotly_dark"` is a *name*: plotly.express resolves it to the
+# one Template object registered on the module, then walks that object's
+# prototype traces to decide the default colours. Those traces are shared
+# mutable state, and detaching a child's props on one thread while
+# another reads them raises "Invalid value" from deep inside plotly.
+#
+# It surfaced as a tile that failed to draw on the dashboard, roughly one
+# request in seventeen, because the dashboard builds five charts at once
+# and React's development double-mount makes that ten. A user saw one
+# broken tile among four good ones and no way to tell why.
+#
+# Building the figure is milliseconds — the aggregation before it is the
+# expensive part — so serialising construction costs nothing that anyone
+# can perceive, and it is the only fix that does not depend on plotly's
+# internals staying as they are.
+_FIGURE_LOCK = threading.Lock()
+
+
+def _build(make, *args, **kwargs):
+    """Construct a plotly figure and style it, one thread at a time."""
+    with _FIGURE_LOCK:
+        return _style(make(*args, **kwargs))
+
+
 def recommend_charts(df: pd.DataFrame, domain: str = "general"
                      ) -> List[Tuple[str, go.Figure]]:
     """Up to five charts chosen from column roles rather than column order.
@@ -269,10 +294,10 @@ def recommend_charts(df: pd.DataFrame, domain: str = "general"
         try:
             grouped = (df.groupby(dim)[metric].agg(agg)
                          .sort_values(ascending=False).head(20).reset_index())
-            fig = px.bar(grouped, x=dim, y=metric,
+            fig = _build(px.bar, grouped, x=dim, y=metric,
                          title=f"{label} {metric} by {dim}",
                          template=TEMPLATE, color_discrete_sequence=PALETTE)
-            charts.append((f"{metric} by {dim}", _style(fig)))
+            charts.append((f"{metric} by {dim}", fig))
         except Exception:
             logger.warning("bar chart failed", exc_info=True)
 
@@ -282,19 +307,19 @@ def recommend_charts(df: pd.DataFrame, domain: str = "general"
         try:
             d = cols["date_cols"][0]
             data = df[[d, metric]].dropna().sort_values(d)
-            fig = px.line(data, x=d, y=metric,
+            fig = _build(px.line, data, x=d, y=metric,
                           title=f"{metric} Over Time",
                           template=TEMPLATE, color_discrete_sequence=PALETTE)
-            charts.append((f"{metric} Over Time", _style(fig)))
+            charts.append((f"{metric} Over Time", fig))
         except Exception:
             logger.warning("line chart failed", exc_info=True)
 
     # 3. Distribution
     try:
-        fig = px.histogram(df, x=metric, nbins=40,
+        fig = _build(px.histogram, df, x=metric, nbins=40,
                            title=f"Distribution of {metric}",
                            template=TEMPLATE, color_discrete_sequence=PALETTE)
-        charts.append((f"Distribution: {metric}", _style(fig)))
+        charts.append((f"Distribution: {metric}", fig))
     except Exception:
         logger.warning("histogram failed", exc_info=True)
 
@@ -304,10 +329,10 @@ def recommend_charts(df: pd.DataFrame, domain: str = "general"
     if len(measures) >= 3:
         try:
             corr = df[measures].corr().round(2)
-            fig = px.imshow(corr, text_auto=True, title="Correlation Matrix",
+            fig = _build(px.imshow, corr, text_auto=True, title="Correlation Matrix",
                             template=TEMPLATE, color_continuous_scale="RdBu_r",
                             zmin=-1, zmax=1)
-            charts.append(("Correlation Matrix", _style(fig)))
+            charts.append(("Correlation Matrix", fig))
         except Exception:
             logger.warning("heatmap failed", exc_info=True)
 
@@ -315,10 +340,10 @@ def recommend_charts(df: pd.DataFrame, domain: str = "general"
     if dim and _is_pie_valid(metric) and 2 <= df[dim].nunique() <= 10:
         try:
             grouped = df.groupby(dim)[metric].sum().reset_index()
-            fig = px.pie(grouped, names=dim, values=metric,
+            fig = _build(px.pie, grouped, names=dim, values=metric,
                          title=f"{metric} Share by {dim}",
                          template=TEMPLATE, color_discrete_sequence=PALETTE)
-            charts.append((f"{metric} Share by {dim}", _style(fig)))
+            charts.append((f"{metric} Share by {dim}", fig))
         except Exception:
             logger.warning("pie chart failed", exc_info=True)
 
@@ -330,44 +355,44 @@ def make_bar(df, x, y, title=""):
              .reset_index()
              .sort_values(y, ascending=False)
              .head(25))
-    return _style(px.bar(agg, x=x, y=y,
+    return _build(px.bar, agg, x=x, y=y,
         title=title or f"{y} by {x}",
         template=TEMPLATE, color=y,
-        color_continuous_scale="Blues"))
+        color_continuous_scale="Blues")
 
 
 def make_line(df, x, y, title=""):
-    return _style(px.line(
+    return _build(px.line,
         df.sort_values(x), x=x, y=y,
         title=title or f"{y} over {x}",
         template=TEMPLATE,
-        color_discrete_sequence=PALETTE))
+        color_discrete_sequence=PALETTE)
 
 
 def make_scatter(df, x, y, color=None, title=""):
-    return _style(px.scatter(
+    return _build(px.scatter,
         df.head(3000), x=x, y=y, color=color,
         title=title or f"{x} vs {y}",
         template=TEMPLATE,
         color_discrete_sequence=PALETTE,
-        opacity=0.7))
+        opacity=0.7)
 
 
 def make_histogram(df, col, nbins=40, title=""):
-    return _style(px.histogram(
+    return _build(px.histogram,
         df, x=col, nbins=nbins, marginal="box",
         title=title or f"Distribution: {col}",
         template=TEMPLATE,
-        color_discrete_sequence=PALETTE))
+        color_discrete_sequence=PALETTE)
 
 
 def make_pie(df, names_col, values_col, title=""):
     agg = df.groupby(names_col)[values_col].sum().reset_index().head(10)
-    return _style(px.pie(
+    return _build(px.pie,
         agg, names=names_col, values=values_col,
         title=title or f"{values_col} by {names_col}",
         template=TEMPLATE,
-        color_discrete_sequence=PALETTE))
+        color_discrete_sequence=PALETTE)
 
 
 def make_heatmap(df):
@@ -379,9 +404,9 @@ def make_heatmap(df):
     if len(num_cols) < 2:
         num_cols = df.select_dtypes(include="number").columns.tolist()
     corr     = df[num_cols].corr().round(2)
-    return _style(px.imshow(
+    return _build(px.imshow, 
         corr, text_auto=True,
         title="Correlation Matrix",
         template=TEMPLATE,
         color_continuous_scale="RdBu_r",
-        zmin=-1, zmax=1))
+        zmin=-1, zmax=1)

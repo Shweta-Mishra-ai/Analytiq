@@ -32,6 +32,12 @@ async def lifespan(app: FastAPI):
     # Background sweep of datasets/RAG knowledge bases past DATA_TTL_DAYS.
     # Set DATA_TTL_DAYS=0 to disable. Runs once immediately, then on
     # CLEANUP_INTERVAL_HOURS. Cancelled cleanly on shutdown.
+    # Import the heavy engines (scikit-learn, statsmodels, ReportLab) off
+    # the request path. Without this the first user to open Predict waits
+    # ~5s for an endpoint whose actual work takes 70ms.
+    from app.services import warmup
+    warmup.start()
+
     task = asyncio.create_task(cleanup_loop())
     try:
         yield

@@ -49,6 +49,9 @@ class UnivariateResult:
     dagostino_stat:  Optional[float] = None
     dagostino_p:     Optional[float] = None
     anderson_stat:   Optional[float] = None
+    # The p-value on SciPy >= 1.17; the 5% critical value on older ones,
+    # which is all those versions can report.
+    anderson_p:        Optional[float] = None
     anderson_critical: Optional[float] = None
     is_normal:       Optional[bool]  = None
     # Whether the verdict came from the column's shape or from a

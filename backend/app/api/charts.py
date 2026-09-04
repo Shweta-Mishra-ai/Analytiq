@@ -153,6 +153,13 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
     except KeyError as e:
         raise HTTPException(422, f"Column not found: {e}")
     except Exception as e:
+        # A 500 that leaves nothing in the log cannot be diagnosed. This
+        # one reached a user's dashboard and the server had recorded only
+        # the status line, so the cause had to be guessed at from the
+        # outside. The traceback goes to the log; the client still gets
+        # the short message.
+        logger.exception("chart build failed: type=%s x=%r y=%r agg=%r",
+                         t, req.x, req.y, req.agg)
         raise HTTPException(500, f"Chart build failed: {e}")
 
     return {"figure": _fig_json(fig)}

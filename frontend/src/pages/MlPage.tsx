@@ -72,8 +72,16 @@ export default function MlPage() {
         if (r.targets[0]) setSelected(r.targets[0].column)
       })
       .catch((e) => setError(e.message))
-    // load a previously trained report if it exists
-    apiGet<MlReport>(`/api/ml/${ds}/report`).then(setReport).catch(() => {})
+    // Load a previously trained report if there is one. "Not trained
+    // yet" is an answer, not a failure — the endpoint returns
+    // { report: null } for it rather than a 404, so an ordinary first
+    // visit no longer logs an error in the user's console.
+    apiGet<MlReport | { report: null }>(`/api/ml/${ds}/report`)
+      .then((r) => {
+        if (r && 'report' in r && r.report === null) return
+        setReport(r as MlReport)
+      })
+      .catch(() => {})
   }, [ds])
 
   if (!dataset) return <NeedData />

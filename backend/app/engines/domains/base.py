@@ -80,6 +80,57 @@ def is_id_column(col: str, series=None) -> bool:
     return False
 
 
+# Words that name something you want less of. A metric's direction is not
+# guessable from its values — 40% is a good margin and a terrible defect
+# rate — so it has to come from the name, and where the name says nothing
+# the honest answer is that we do not know.
+_LOWER_IS_BETTER_TOKENS = {
+    "discount", "cost", "costs", "expense", "expenses", "spend", "loss",
+    "losses", "waste", "wastage", "defect", "defects", "error", "errors",
+    "fault", "faults", "failure", "failures", "downtime", "outage",
+    "delay", "delays", "late", "lateness", "backlog", "wait", "waiting",
+    "churn", "attrition", "cancellation", "cancellations", "refund",
+    "refunds", "return", "returns", "returned", "complaint", "complaints",
+    "escalation", "escalations", "incident", "incidents", "risk", "debt",
+    "overdue", "arrears", "absence", "absenteeism", "leakage",
+    "readmission", "readmissions", "mortality", "reject", "rejects",
+    "rejection", "rejections", "bounce", "unsubscribe", "unsubscribes",
+    "fraud", "breach", "breaches", "shrinkage", "downgrade", "downgrades",
+}
+
+_HIGHER_IS_BETTER_TOKENS = {
+    # "turnover" is deliberately in neither list: it means revenue in
+    # finance and staff attrition in HR, so on its own it says nothing.
+    "revenue", "sales", "profit", "margin", "income", "earnings",
+    "gmv", "bookings", "conversion",
+    "conversions", "retention", "satisfaction", "csat", "nps", "score",
+    "rating", "quality", "uptime", "availability", "productivity",
+    "throughput", "yield", "engagement", "adoption", "renewal",
+    "renewals", "win", "wins", "growth", "units", "volume", "orders",
+    "customers", "subscribers", "signups", "attendance",
+}
+
+
+def higher_is_better(col) -> Optional[bool]:
+    """True, False, or None when the column name does not say.
+
+    Returning None matters. A generic "bringing the weakest up to the
+    median would be an improvement" was printed for every numeric column,
+    which on a sales extract advised raising the discount rate by 107%
+    and called it an opportunity.
+    """
+    import re as _re
+    spaced = _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(col)).lower()
+    tokens = {t for t in _re.split(r"[^a-z0-9]+", spaced) if t}
+    down = bool(tokens & _LOWER_IS_BETTER_TOKENS)
+    up = bool(tokens & _HIGHER_IS_BETTER_TOKENS)
+    if down and not up:
+        return False
+    if up and not down:
+        return True
+    return None          # says nothing, or says both
+
+
 def infer_confidence(evidence: str, severity: str = "") -> str:
     """
     Grade how strongly the DATA supports an insight, from its evidence text.

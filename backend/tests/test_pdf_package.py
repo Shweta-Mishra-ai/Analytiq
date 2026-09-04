@@ -149,3 +149,113 @@ def test_theme_lookup_resolves_for_every_registered_domain():
     from app.engines.domains.registry import REGISTRY
     for key in REGISTRY:
         assert _domain_theme(key) in THEMES
+
+
+# ══════════════════════════════════════════════════════════
+#  A SECTION HEADING MUST NEVER BE ALONE ON A PAGE
+# ══════════════════════════════════════════════════════════
+
+def _story_pages(story):
+    """Render a story and return the text of each page."""
+    import io
+
+    import pypdf
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate
+
+    buf = io.BytesIO()
+    SimpleDocTemplate(buf, pagesize=A4).build(list(story))
+    reader = pypdf.PdfReader(io.BytesIO(buf.getvalue()))
+    return [(p.extract_text() or "").strip() for p in reader.pages]
+
+
+def _findings_block(words: int, nest_the_card: bool):
+    """The shape `_top_insights` builds: a section banner, a group
+    heading, and the first finding card, kept together."""
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (KeepTogether, PageBreak, Paragraph,
+                                    Spacer, Table)
+
+    from app.engines.pdf.primitives import KeepWholeIfItFits
+
+    st = getSampleStyleSheet()
+    hdr = Table([[Paragraph("CRITICAL", st["Normal"]),
+                  Paragraph("1. Satisfaction averages 43% of scale",
+                            st["Normal"])]], colWidths=[20 * mm, 150 * mm])
+    body = Table([[Paragraph(k, st["Normal"]), Paragraph("x " * words,
+                                                         st["Normal"])]
+                  for k in ("PROBLEM", "CAUSE", "EVIDENCE", "ACTION",
+                            "IMPACT")], colWidths=[26 * mm, 144 * mm])
+    parts = [hdr, body, Spacer(1, 4 * mm)]
+
+    banner = [Spacer(1, 3 * mm),
+              Paragraph("Workforce Analytics Review — Findings",
+                        st["Heading1"]),
+              Paragraph("Each finding: Problem → Cause → Evidence → "
+                        "Action → Impact", st["Normal"])]
+    head = [Spacer(1, 2 * mm),
+            Paragraph("Engagement & Satisfaction", st["Heading2"]),
+            Paragraph("What the survey and behavioural measures show.",
+                      st["Normal"])]
+    first = [KeepTogether(parts)] if nest_the_card else parts
+    return [Paragraph("the previous section", st["Normal"]), PageBreak(),
+            KeepWholeIfItFits(banner + head + first)]
+
+
+@pytest.mark.parametrize("words", [50, 200, 400, 440, 700, 1200, 2000])
+def test_the_findings_heading_is_never_stranded_alone_on_a_page(words):
+    """A reader of a generated report turned to a page carrying nothing
+    but "Workforce Analytics Review — Findings" and its subtitle; the
+    findings themselves were overleaf.
+
+    `KeepTogether` is unconditional. Once the banner, the group heading
+    and the first card together ran past one page, ReportLab dissolved
+    the outer block, placed the small heading flowables, then found the
+    card — atomic, because it was wrapped in a `KeepTogether` of its own
+    — too tall for what was left and pushed it to the next page. The
+    heading stayed behind on a page of its own.
+    """
+    pages = _story_pages(_findings_block(words, nest_the_card=False))
+    heading = next(i for i, t in enumerate(pages)
+                   if "Workforce Analytics Review" in t)
+    assert "PROBLEM" in pages[heading], (
+        "the section heading is alone on page {} — the first finding "
+        "landed on the next page".format(heading + 1))
+
+
+@pytest.mark.parametrize("words", [440, 700, 1200])
+def test_nesting_the_card_is_what_stranded_the_heading(words):
+    """Pins the cause, so a future refactor that re-wraps the first card
+    in its own `KeepTogether` fails here rather than in a client's PDF."""
+    pages = _story_pages(_findings_block(words, nest_the_card=True))
+    heading = next(i for i, t in enumerate(pages)
+                   if "Workforce Analytics Review" in t)
+    assert "PROBLEM" not in pages[heading]
+
+
+def test_a_card_that_fits_is_still_kept_whole():
+    """The fix must not cost the behaviour it replaced: a card small
+    enough for one page is never cut across a page break."""
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Spacer, Table
+
+    from app.engines.pdf.primitives import KeepWholeIfItFits
+
+    st = getSampleStyleSheet()
+    for filler in (430, 500, 600, 700):
+        hdr = Table([[Paragraph("HIGH", st["Normal"]),
+                      Paragraph("2. A finding", st["Normal"])]],
+                    colWidths=[20 * mm, 150 * mm])
+        body = Table([[Paragraph(k, st["Normal"]),
+                       Paragraph("x " * 120, st["Normal"])]
+                      for k in ("PROBLEM", "CAUSE", "EVIDENCE", "ACTION",
+                                "IMPACT")], colWidths=[26 * mm, 144 * mm])
+        pages = _story_pages([
+            Paragraph("filler " * filler, st["Normal"]),
+            KeepWholeIfItFits([hdr, body, Spacer(1, 4 * mm)])])
+        starts = [i for i, t in enumerate(pages) if "PROBLEM" in t]
+        ends = [i for i, t in enumerate(pages) if "IMPACT" in t]
+        assert starts == ends, (
+            "filler={}: the card was split across a page break".format(filler))

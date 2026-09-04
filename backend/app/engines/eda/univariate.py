@@ -250,10 +250,22 @@ def analyze_univariate(series: pd.Series) -> UnivariateResult:
     except Exception:
         logger.debug("analyze_univariate: suppressed exception", exc_info=True)
 
+    # SciPy 1.17 warns on every call that leaves `method` unset, and from
+    # 1.19 `critical_values` is gone entirely — at which point this block
+    # would have raised into the bare `except` below and the statistic
+    # would have quietly stopped appearing, with nothing to say why.
+    # Asking for the p-value directly is the supported form and is the
+    # number a reader can actually use; the 5% critical value it replaces
+    # was written to the result and never read by anything.
     try:
-        ad_result = anderson(sample, dist="norm")
-        result.anderson_stat     = round(float(ad_result.statistic), 6)
-        result.anderson_critical = round(float(ad_result.critical_values[2]), 6)
+        try:
+            ad_result = anderson(sample, dist="norm", method="interpolate")
+            result.anderson_p = round(float(ad_result.pvalue), 6)
+        except TypeError:       # SciPy < 1.17 has no `method` argument
+            ad_result = anderson(sample, dist="norm")
+            result.anderson_critical = round(
+                float(ad_result.critical_values[2]), 6)
+        result.anderson_stat = round(float(ad_result.statistic), 6)
     except Exception:
         logger.debug("analyze_univariate: suppressed exception", exc_info=True)
 

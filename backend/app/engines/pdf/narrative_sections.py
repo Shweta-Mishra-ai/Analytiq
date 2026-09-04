@@ -25,7 +25,8 @@ from app.engines.pdf.theme import (
 )
 from app.engines.pdf.primitives import (
     _sec, _sec_flowables, _kpi_row, _narrative_box, _gtable, _insight_card,
-    _clean, _exhibit, _exhibit_source,
+    _clean, _exhibit, _exhibit_source, KeepWholeIfItFits,
+    _insight_card_flowables,
 )
 from app.engines.industry_benchmarks import REPLACEMENT_COST_RANGE
 from app.engines.present import (label as _PL, num as _PN,
@@ -118,9 +119,12 @@ def _top_insights(story, s, T, insights, CW, domain: str = "general"):
         head = [Spacer(1, 2 * mm),
                 Paragraph(section.title, s["h3"]),
                 Paragraph(section.purpose, s["sm"])]
-        first: list = []
-        _insight_card(first, s, T, items[0], CW, num=num + 1)
-        story.append(KeepTogether(banner + head + first))
+        # The first card goes in unwrapped. Nested inside an outer
+        # keep-together it is atomic, so when the combined block runs
+        # past a page the heading stays behind and the card jumps —
+        # which is exactly the stranded "… — Findings" page.
+        first = _insight_card_flowables(s, T, items[0], CW, num=num + 1)
+        story.append(KeepWholeIfItFits(banner + head + first))
         banner = []
         num += 1
 

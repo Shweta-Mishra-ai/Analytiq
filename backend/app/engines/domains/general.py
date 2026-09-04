@@ -10,7 +10,7 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
-from app.engines.domains.base import build_insight
+from app.engines.domains.base import higher_is_better, build_insight
 from app.engines.domains.general_depth import run_general_depth
 
 logger = logging.getLogger(__name__)
@@ -134,16 +134,44 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
             mean_v = float(s.mean())
             cv   = s.std() / abs(mean_v) * 100 if mean_v != 0 else 0
 
-            # Uplift opportunity: large spread between P10 and P90
+            # A wide spread between the weakest tenth and the strongest
+            # tenth. Whether closing it is an improvement depends on
+            # which way the metric runs: this printed "bringing the
+            # bottom up to the middle would be a 107% improvement" for a
+            # discount rate, which is advice to discount harder. The p10
+            # was also described as "the bottom quartile", which is the
+            # wrong quarter of the wrong scale.
             if p50 > 0 and p90 / p50 >= 2.0 and cv > 40:
                 uplift_pct = (p90 - p50) / p50 * 100
-                opps.append(
-                    f"{_L(col)}: the top decile ({_N(p90)}) is "
-                    f"{p90/p50:.1f}x the median ({_N(p50)}). Bringing the "
-                    f"bottom quartile (currently {_N(p10)}) to the median "
-                    f"would be a {uplift_pct:.0f}% improvement. Identify what "
-                    f"the high performers have in common."
-                )
+                direction = higher_is_better(col)
+                if direction is True:
+                    opps.append(
+                        f"{_L(col)}: the strongest 10% of records reach "
+                        f"{_N(p90)}, {p90/p50:.1f} times the typical "
+                        f"{_N(p50)}. Lifting the weakest 10% (now "
+                        f"{_N(p10)}) to the typical figure would be a "
+                        f"{uplift_pct:.0f}% gain. Find what the strongest "
+                        f"records have in common."
+                    )
+                elif direction is False:
+                    reduction = (p90 - p50) / p90 * 100
+                    risks.append(
+                        f"{_L(col)}: the worst 10% of records reach "
+                        f"{_N(p90)}, {p90/p50:.1f} times the typical "
+                        f"{_N(p50)}. Bringing that tail back to the "
+                        f"typical figure would cut it by "
+                        f"{reduction:.0f}%. This is a cost, so the spread "
+                        f"is the problem, not the opportunity."
+                    )
+                else:
+                    findings.append(
+                        f"{_L(col)}: values are spread wide — the top 10% "
+                        f"({_N(p90)}) is {p90/p50:.1f} times the typical "
+                        f"{_N(p50)}, and the bottom 10% is {_N(p10)}. "
+                        f"Whether the high or the low end is the good one "
+                        f"depends on what this column measures, which the "
+                        f"name does not say."
+                    )
             # High concentration risk: >50% in one value for numeric col
             top_val_pct = float(s.value_counts(normalize=True).iloc[0]) * 100
             if top_val_pct > 60 and s.nunique() > 3:

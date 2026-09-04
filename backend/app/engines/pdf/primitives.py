@@ -198,8 +198,44 @@ def _gtable(story: list, T: dict, headers: list,
     story.append(Spacer(1, 2*mm))
 
 
-def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
+class KeepWholeIfItFits(KeepTogether):
+    """Keep a block whole — unless it is taller than the page.
+
+    `KeepTogether` is unconditional: when its content cannot fit in the
+    space that is left it moves the whole block to a fresh page, and when
+    the content cannot fit on a *page* it still moves it, then overflows.
+    That is what stranded a section heading. `Workforce Analytics Review
+    — Findings` was kept together with the first finding card; the card
+    ran longer than one page, so it jumped to the next page as an
+    indivisible unit while the heading and its subtitle — small enough to
+    fit — stayed behind. The reader turned to a page carrying a title and
+    nothing else, and the report looked like it had failed to generate.
+
+    A block that cannot fit on any page has no business being atomic, so
+    this dissolves it and lets the tables inside split by row. Everything
+    that does fit keeps the original behaviour exactly.
     """
+
+    def split(self, aW, aH):
+        if getattr(self, "_wrapInfo", None) != (aW, aH):
+            self.wrap(aW, aH)
+        frame = getattr(self, "_frame", None)
+        page = getattr(frame, "_height", None)
+        if page and self._H > page:
+            return self._content[:]
+        return super().split(aW, aH)
+
+
+def _insight_card_flowables(s: dict, T: dict, ins, CW: float, num=None) -> list:
+    """The card as a plain list of flowables.
+
+    Callers that need the card glued to a heading above it must be able
+    to put the pieces into *their* block. Handing back a pre-wrapped
+    `KeepTogether` made that impossible: an atomic card nested inside an
+    outer keep-together is the one thing the outer block cannot place
+    next to its heading, which is how a section title ended up alone on
+    a page.
+
     Works with both:
       - Dataclass objects (has .severity, .title, .problem …)
       - Plain dicts (keys: severity, title, problem …)
@@ -269,7 +305,13 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
         ("BOX",       (0,0), (-1,-1), 0.5, _c(T["border"])),
         ("INNERGRID", (0,0), (-1,-1), 0.3, _c(T["border"])),
     ]))
-    story.append(KeepTogether([hdr, body, Spacer(1, 4*mm)]))
+    return [hdr, body, Spacer(1, 4*mm)]
+
+
+def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
+    """Append one finding card, whole unless it is taller than a page."""
+    story.append(KeepWholeIfItFits(
+        _insight_card_flowables(s, T, ins, CW, num=num)))
 
 
 # ══════════════════════════════════════════════════════════

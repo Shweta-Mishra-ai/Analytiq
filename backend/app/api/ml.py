@@ -89,11 +89,21 @@ def train(ds_id: str, req: TrainRequest, owner: str = Depends(current_owner)):
 @router.get("/{ds_id}/report")
 def last_report(ds_id: str, target: Optional[str] = None,
                  owner: str = Depends(current_owner)):
+    """The last trained model for this dataset, or nothing.
+
+    "Has a model been trained yet?" is a question with a legitimate
+    answer of "no", and the ML page asks it on every visit before the
+    user has trained anything. Answering 404 turned that ordinary state
+    into an error in every user's browser console, on a page that was
+    working exactly as designed. `/what-if` still answers 404, because
+    there the caller asked for a prediction and there is no model to
+    make it with — that request really did fail."""
     _df_or_404(owner, ds_id)
     key = f"ml_{target}" if target else "ml_last"
     report = store.cache_get(owner, ds_id, key)
     if report is None:
-        raise HTTPException(404, "No trained model yet — call /train first")
+        return {"report": None,
+                "reason": "No model has been trained for this dataset yet."}
     return _serialize_report(report)
 
 

@@ -68,7 +68,8 @@ function stubApi(report: unknown | null) {
   vi.spyOn(client, 'apiGet').mockImplementation(async (path: string) => {
     if (path.endsWith('/targets')) return targets
     if (path.endsWith('/report')) {
-      if (report === null) throw new Error('No trained model yet')
+      // "not trained yet" comes back as a normal answer, not a 404
+      if (report === null) return { report: null, reason: 'No model yet' }
       return report
     }
     throw new Error(`unexpected ${path}`)

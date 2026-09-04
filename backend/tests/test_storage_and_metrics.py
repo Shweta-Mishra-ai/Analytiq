@@ -160,7 +160,7 @@ def test_an_unsigned_cache_file_is_never_unpickled(store, hr_df):
 
     with open(path, "wb") as fh:
         fh.write(b"\x00" * 32)  # a signature this server did not produce
-        fh.write(pickle.dumps((store._hash_df(hr_df), Boom())))
+        fh.write(pickle.dumps((store._content_hash(hr_df), Boom())))
 
     assert store.cache_get("acme", meta.dataset_id, "stats") is None
     assert detonated == [], "an unsigned cache entry was executed"
@@ -366,3 +366,77 @@ def test_a_skipped_report_section_is_counted_as_an_engine_failure():
     failures = reports.metrics.snapshot()["failures"]
     assert failures["engine.forecast"]["count"] == 1
     assert failures["engine.stats"]["count"] == 1
+
+
+def test_a_change_below_row_100_invalidates_the_analysis_cache(tmp_path):
+    """The cache key used to be shape, dtypes and the first 100 rows.
+
+    Cleaning that only touches later rows — trimming whitespace, capping
+    outliers, filling a gap that starts at row 500 — left that signature
+    identical, so the EDA page kept serving the analysis of the
+    *uncleaned* frame while the profile page, which recomputes on every
+    call, reported the cleaned one. Two pages of the same app disagreed
+    about the same column.
+    """
+    import pandas as pd
+
+    store = DatasetStore(base_dir=str(tmp_path))
+    region = ["north"] * 3000
+    region[500:1500] = ["  north  "] * 1000  # whitespace only, well past row 100
+    df = pd.DataFrame({"region": region, "spend": range(3000)})
+    meta = store.create("acme", df, "ws.csv", 0.1)
+
+    store.cache_set("acme", meta.dataset_id, "eda", {"unique_regions": 2})
+    assert store.cache_get("acme", meta.dataset_id, "eda") == {"unique_regions": 2}
+
+    cleaned = df.copy()
+    cleaned["region"] = cleaned["region"].str.strip()
+    assert cleaned.shape == df.shape
+    assert list(cleaned.dtypes) == list(df.dtypes)
+    assert cleaned.head(100).equals(df.head(100))  # the old key saw no change
+
+    store.update_active("acme", meta.dataset_id, cleaned)
+    assert store.cache_get("acme", meta.dataset_id, "eda") is None
+
+
+def test_the_content_hash_is_computed_once_per_frame(tmp_path, hr_df):
+    """Reading every cell costs ~30ms at 40k rows. Paying that on every
+    cache lookup would make the caching pointless, so the hash is held
+    against the frame object it describes."""
+    store = DatasetStore(base_dir=str(tmp_path))
+    meta = store.create("acme", hr_df, "hr.csv", 0.4)
+    df = store.get_df("acme", meta.dataset_id)
+
+    calls = []
+    original = DatasetStore._content_hash
+    DatasetStore._content_hash = staticmethod(
+        lambda frame: calls.append(1) or original(frame))
+    try:
+        for _ in range(5):
+            store.cache_get("acme", meta.dataset_id, "eda")
+        assert len(calls) == 1, "the content hash was recomputed per lookup"
+
+        store.update_active("acme", meta.dataset_id, df.assign(extra=1))
+        store.cache_get("acme", meta.dataset_id, "eda")
+        assert len(calls) == 2, "a replaced frame was not rehashed"
+    finally:
+        DatasetStore._content_hash = staticmethod(original)
+
+
+def test_evicting_a_dataset_releases_its_cached_hash(tmp_path):
+    """The hash memo holds the frame it describes. Left behind on
+    eviction it would pin in memory the very dataset the eviction exists
+    to release."""
+    import pandas as pd
+
+    store = DatasetStore(base_dir=str(tmp_path))
+    ids = []
+    for i in range(store._MEM_LIMIT + 3):
+        df = pd.DataFrame({"a": range(50), "b": [i] * 50})
+        meta = store.create("acme", df, f"f{i}.csv", 0.1)
+        ids.append(meta.dataset_id)
+        store.cache_get("acme", meta.dataset_id, "eda")   # populates the memo
+
+    assert len(store._mem) <= store._MEM_LIMIT
+    assert len(store._hashes) <= store._MEM_LIMIT, (
+        "the hash memo outgrew the frame cache it shadows")

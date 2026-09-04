@@ -256,7 +256,11 @@ def readiness(ds_id: str, owner: str = Depends(current_owner)):
     df = store.get_df(owner, ds_id)
     if df is None:
         raise HTTPException(404, "Dataset not found")
-    return to_jsonable(readiness_payload(assess_readiness(df)))
+    cached = store.cache_get(owner, ds_id, "readiness")
+    if cached is None:
+        cached = to_jsonable(readiness_payload(assess_readiness(df)))
+        store.cache_set(owner, ds_id, "readiness", cached)
+    return cached
 
 
 @router.post("/{ds_id}/clean")
