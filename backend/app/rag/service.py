@@ -144,7 +144,53 @@ def _context_block(hits: List[dict]) -> str:
     lines = []
     for i, h in enumerate(hits, 1):
         lines.append(f"[{i}] ({h['source']}, {h['locator']})\n{h['text']}")
-    return "\n\n---\n\n".join(lines)
+    block = "\n\n---\n\n".join(lines)
+    note = _coverage_note(hits)
+    return block + note
+
+
+def _coverage_note(hits: List[dict]) -> str:
+    """Say how much of each table the context actually contains.
+
+    Search returns the handful of passages closest to the question. For
+    prose that is the whole point. For a table it means six batches of
+    forty rows out of a five-thousand-row file, and a question like "how
+    many incidents were high severity" has an exact answer that cannot
+    be computed from what is in front of the model. Counting the visible
+    rows and presenting the result as the total is the worst failure
+    available here: precise, confident and wrong.
+
+    Naming the shortfall lets the answer be honest about it.
+    """
+    import re
+    seen = {}
+    for h in hits:
+        # The batch header reads "Rows 1–40 of incidents.csv (5,000
+        # total)", so the count sits in the parenthesis.
+        m = re.search(r"\(([\d,]+) total\)", h.get("text", "") or "")
+        if not m:
+            continue
+        rows = re.search(r"rows ([\d,]+)-([\d,]+)", h.get("locator", "") or "")
+        shown = 0
+        if rows:
+            shown = (int(rows.group(2).replace(",", ""))
+                     - int(rows.group(1).replace(",", "")) + 1)
+        source = h.get("source", "")
+        total = int(m.group(1).replace(",", ""))
+        entry = seen.setdefault(source, {"shown": 0, "total": total})
+        entry["shown"] += shown
+
+    partial = [(src, v) for src, v in seen.items() if v["shown"] < v["total"]]
+    if not partial:
+        return ""
+    lines = ["\n\n---\n\nCOVERAGE OF TABLES IN THIS CONTEXT:"]
+    for src, v in partial:
+        lines.append(
+            "- {}: {:,} of {:,} rows are shown above. Any count, total, "
+            "average or \"how many\" answer computed from these rows would "
+            "describe only the rows shown, not the table.".format(
+                src, v["shown"], v["total"]))
+    return "\n".join(lines)
 
 
 QA_SYSTEM = """You are a senior data analyst answering questions strictly \
@@ -161,6 +207,13 @@ Rules:
   Every factual claim needs a citation.
 - Quote exact numbers from the context, never invent, round or estimate
   values.
+- Table rows in the context are the passages that matched the question,
+  not the whole table. If a COVERAGE note says only part of a table is
+  shown, do not state a count, total or average for that table: say what
+  the visible rows show, say how many rows they are out of how many
+  exist, and say that the full figure cannot be read off this context.
+  A precise number computed from a fraction of the rows is the most
+  damaging answer available here.
 - Be concise and analytical."""
 
 

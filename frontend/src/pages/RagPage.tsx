@@ -297,8 +297,10 @@ export default function RagPage() {
               </li>
             </ul>
             <p className="mt-4 border-t border-edge pt-3 text-xs text-faint">
-              Accepts PDF, Word, text, Markdown, CSV and TSV files, images
-              (PNG, JPG, WebP) and video (MP4, MOV, WebM).
+              Accepts PDF, Word, Excel, text, Markdown, CSV and TSV files,
+              images (PNG, JPG, WebP) and video (MP4, MOV, WebM). Tables and
+              spreadsheets are indexed in full — every row is searchable, not
+              a sample.
             </p>
           </Panel>
         ) : (
@@ -315,7 +317,7 @@ export default function RagPage() {
                   type="file"
                   multiple
                   className="hidden"
-                  accept=".pdf,.docx,.txt,.md,.csv,.tsv,.png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm"
+                  accept=".pdf,.docx,.txt,.md,.log,.csv,.tsv,.xlsx,.xlsm,.xls,.png,.jpg,.jpeg,.webp,.gif,.bmp,.mp4,.mov,.webm,.avi,.mkv"
                   onChange={(e) => upload(e.target.files)}
                 />
               </div>
