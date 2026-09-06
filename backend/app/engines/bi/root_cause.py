@@ -22,7 +22,8 @@ from app.engines.statistics import (clamp_p, cohens_d,
 
 
 from app.services.dtypes import text_columns
-from app.services.stat_guards import apply_fdr, chi2_association
+from app.services.stat_guards import (apply_fdr, chi2_association,
+                                      is_binned_from, is_restatement)
 
 from app.engines.bi.results import RootCauseResult
 
@@ -52,9 +53,26 @@ def analyze_root_cause(
 
     drivers = []
 
-    # Numeric features — compare means
-    num_cols = [c for c in df.select_dtypes(include="number").columns
-                if c != target_col]
+    # Numeric features — compare means.
+    #
+    # A column that restates the target — the same money in thousands, an
+    # exact copy under another name, its log or its rank — separates the
+    # two groups perfectly, wins the impact ranking, and turns the
+    # headline into a tautology: "low revenue is driven by low revenue_k,
+    # bring revenue_k up to 0.62". It is excluded before any test is run,
+    # because a driver that is the target restated explains nothing.
+    num_cols = []
+    restated = []
+    for c in df.select_dtypes(include="number").columns:
+        if c == target_col:
+            continue
+        if is_restatement(df[c], df[target_col]):
+            restated.append(c)
+            continue
+        num_cols.append(c)
+    if restated:
+        logger.info("root cause: excluded %s — restatement(s) of '%s'",
+                    ", ".join(restated), target_col)
     for col in num_cols[:15]:
         try:
             low_vals  = low_df[col].dropna()
@@ -106,9 +124,17 @@ def analyze_root_cause(
             logger.debug("analyze_root_cause: suppressed exception", exc_info=True)
             continue
 
-    # Categorical features — compare distributions
+    # Categorical features — compare distributions.
+    #
+    # The categorical equivalent of the exclusion above: a band column
+    # cut from the target sorts the low and high groups perfectly, so
+    # chi-square finds a crushing association and the report announces
+    # "what separates the low Revenue group from the high one most is
+    # Revenue Band". It separates them because that is how the bands
+    # were drawn.
     cat_cols = [c for c in text_columns(df)
-                if 2 <= df[c].nunique() <= 20]
+                if 2 <= df[c].nunique() <= 20
+                and not is_binned_from(df, c, target_col)]
     for col in cat_cols[:8]:
         try:
             # Chi-square with its assumptions verified. The raw

@@ -143,6 +143,37 @@ describe('the health panel', () => {
     expect(screen.queryByText(/0 opportunities/)).toBeNull()
   })
 
+  /**
+   * When one ruinous fault caps the grade, the score and the grade
+   * disagree on purpose — a D printed beside 71/100. Showing both with
+   * no explanation asks the reader to pick one.
+   */
+  it('says why the grade is capped when it has been', async () => {
+    vi.spyOn(client, 'apiGet').mockResolvedValue({
+      ...health,
+      health: {
+        ...health.health,
+        score: 71,
+        grade: 'D',
+        label: 'Poor',
+        blocking_defect:
+          '98% of the rows are exact duplicates — this file describes 50 distinct records, not 2,000.',
+      },
+    })
+    render(<ReportsPage />)
+    expect(await screen.findByText(/Grade D — Poor/)).toBeInTheDocument()
+    expect(screen.getByText(/Why the grade is capped/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/98% of the rows are exact duplicates/),
+    ).toBeInTheDocument()
+  })
+
+  it('shows no such banner on data with nothing ruinous about it', async () => {
+    render(<ReportsPage />)
+    await screen.findByText(/Grade B/)
+    expect(screen.queryByText(/Why the grade is capped/)).toBeNull()
+  })
+
   it('stays usable when the health call fails', async () => {
     vi.spyOn(client, 'apiGet').mockRejectedValue(new Error('down'))
     render(<ReportsPage />)

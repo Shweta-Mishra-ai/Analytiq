@@ -408,6 +408,19 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     story.append(kpi_tbl)
     story.append(Spacer(1, 5*mm))
 
+    # When one fault caps the grade, the score and the grade disagree by
+    # design — 71/100 shown beside a D. Print the reason immediately below
+    # the box, or the reader is left to guess which of the two to believe.
+    blocking = health.get("blocking_defect") or ""
+    if blocking:
+        story.append(Paragraph(
+            "<b>Why this grade is capped:</b> " + blocking.replace(
+                "&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"),
+            ParagraphStyle("blk", parent=ST["sm"], textColor=HexColor("#B91C1C"),
+                           backColor=HexColor("#FEF2F2"),
+                           borderPadding=6, leading=13)))
+        story.append(Spacer(1, 5*mm))
+
     # Dataset summary table
     story.append(Paragraph("Dataset Summary", ST["h3"]))
     num_cols_list = df.select_dtypes(include="number").columns.tolist()

@@ -38,9 +38,21 @@ def _generate_key_insights(
         # insight fills the section with things that are not news.
 
     # Root cause insights
+    #
+    # A driver relationship is symmetric, so running root cause on both
+    # revenue and quantity yields the same fact twice, once each way
+    # round: "what separates the low Revenue group most is Quantity"
+    # followed by "what separates the low Quantity group most is
+    # Revenue". Two lines, one finding — and the second reads as a
+    # separate discovery. The pair is emitted once.
+    seen_pairs = set()
     for rc in report.root_causes:
         if not rc.drivers:
             continue
+        pair = frozenset((rc.target_col, rc.top_driver))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
         lead = rc.drivers[0]
         gap = lead.get("diff_pct") or 0
         if gap:
@@ -58,8 +70,14 @@ def _generate_key_insights(
     # Cohort insights
     # Significant and 1.9% apart is not a segmentation worth naming. On
     # 1,470 rows almost any split clears p<0.05.
+    #
+    # And a cohort built out of the metric is excluded outright, however
+    # large the gap: "Revenue Band splits Revenue — 700+ averages 594.6%
+    # more than 0-200" is the definition of the bands, and a gap that
+    # large would top this list every time such a column appeared.
     sig_cohorts = [c for c in report.cohorts
-                   if c.is_significant and c.gap_pct >= 10]
+                   if c.is_significant and c.gap_pct >= 10
+                   and not c.is_definitional]
     for c in sig_cohorts[:2]:
         insights.append(
             "{} splits {}: {} averages {:.1f}% more than {}.".format(
@@ -68,9 +86,16 @@ def _generate_key_insights(
         )
 
     # Segment health insights
-    if len(report.segments) >= 2:
-        best = report.segments[0]
-        worst = report.segments[-1]
+    #
+    # Only where health was actually scored. When no metric had a
+    # direction its name settles, every segment holds the placeholder
+    # 50 — and the "within 0 points of each other" branch below then
+    # reported that as a finding: "none stands out as needing attention
+    # before the others". Nothing was compared, so nothing is known.
+    scored_segments = [s for s in report.segments if getattr(s, "scored", True)]
+    if len(scored_segments) >= 2:
+        best = scored_segments[0]
+        worst = scored_segments[-1]
         spread = best.health_score - worst.health_score
         # A "healthiest" segment scoring 50 and a "needs most attention"
         # scoring 48 is a two-point gap dressed as a finding. Ranking
@@ -87,7 +112,7 @@ def _generate_key_insights(
                 "The {} segments score within {:.0f} points of each other "
                 "on health ({:.0f} to {:.0f}), so none stands out as "
                 "needing attention before the others.".format(
-                    len(report.segments), spread, worst.health_score,
+                    len(scored_segments), spread, worst.health_score,
                     best.health_score))
 
     # Executive brief

@@ -14,11 +14,20 @@ logger = logging.getLogger(__name__)
 from typing import Optional
 
 from app.engines.bi.results import ScenarioResult
+from app.services.stat_guards import is_restatement
 
 
 
 # ══════════════════════════════════════════════════════════
-#  COHORT ANALYSIS
+#  SCENARIO PROJECTION
+# ══════════════════════════════════════════════════════════
+
+# How far past the observed edge a projection may go before it stops
+# being a forecast. A tenth of the observed span is a step beyond what
+# was seen; several times it is invention.
+OUTSIDE_RANGE_TOLERANCE = 0.10
+
+
 def analyze_scenario(
     df: pd.DataFrame,
     driver_col: str,
@@ -32,12 +41,20 @@ def analyze_scenario(
 
     This is a PROJECTION from an association, not a causal guarantee — the
     interpretation/caveat text is deliberately explicit about that, and the
-    `reliable` flag (r_squared >= 0.1 and p_value < 0.05) tells the caller
-    whether the relationship is strong enough to make the projection worth
-    showing at all. A weak or non-significant relationship still returns a
-    result (so the caller can show 'not reliable enough' rather than nothing),
-    but reliable=False should gate whether a report presents the number
-    as actionable.
+    `reliable` flag tells the caller whether the projection is worth showing
+    as actionable at all. It requires three things, not two:
+
+      * the relationship explains something (r_squared >= 0.1),
+      * it is statistically significant (p < 0.05), and
+      * the projection lands inside the range of the driver the data
+        actually covers.
+
+    The third used to be missing, and only the caveat text mentioned it.
+    A fitted line returns a value for any input, so asking for a 500%
+    increase in a discount rate never observed above 20% produced a 223%
+    discount and revenue of -1,665 — reported as reliable. A weak, an
+    insignificant or an out-of-range projection still returns a result,
+    so the caller can say why rather than showing nothing.
 
     Returns None if either column isn't usable (non-numeric, all-null, or
     fewer than 10 overlapping non-null rows — too little data to fit a
@@ -76,7 +93,30 @@ def analyze_scenario(
         if target_mean != 0 else 0.0
     )
 
-    reliable = bool(r_squared >= 0.1 and p_value < 0.05)
+    # Where the projection actually lands on the driver, and whether the
+    # data ever went there. A fitted line will happily return a value for
+    # any input; that it does so says nothing about whether the business
+    # has ever operated at that level. Asking for a 500% rise in a
+    # discount rate observed only between 0% and 20% projected a 223%
+    # discount and revenue of -1,665 — and reported it as reliable.
+    projected_driver = driver_mean + driver_delta
+    driver_min = float(paired[driver_col].min())
+    driver_max = float(paired[driver_col].max())
+    span = driver_max - driver_min
+    # A little beyond the edge is a forecast; far beyond it is fiction.
+    margin = span * OUTSIDE_RANGE_TOLERANCE
+    within_range = bool(driver_min - margin <= projected_driver
+                        <= driver_max + margin)
+
+    # A driver that restates the target is not a lever. Ask "what if
+    # revenue_k rose 10%?" against revenue and the fit is perfect, the
+    # p-value vanishing, and the projection exactly 10% — a flawless,
+    # meaningless result, and the most convincing-looking output the
+    # scenario engine can produce.
+    restates = is_restatement(paired[driver_col], paired[target_col])
+
+    reliable = bool(r_squared >= 0.1 and p_value < 0.05
+                    and within_range and not restates)
 
     direction = "increases" if change_pct > 0 else "decreases"
     interpretation = (
@@ -89,7 +129,25 @@ def analyze_scenario(
             projected_target, projected_change_pct,
             r_squared * 100, target_col, r_squared, p_value)
     )
-    if not reliable:
+    if restates:
+        interpretation += (
+            " But {} and {} are the same measurement recorded twice — one "
+            "is the other rescaled, copied or transformed, which is why the "
+            "fit is near-perfect. Moving one moves the other by definition, "
+            "so this projects nothing about the business. Pick a driver "
+            "that can be changed independently of {}.".format(
+                driver_col, target_col, target_col)
+        )
+    elif not within_range:
+        interpretation += (
+            " This projection puts {} at {:.2f}, which is outside the {:.2f} "
+            "to {:.2f} range the data actually covers. Nothing here records "
+            "what happens at that level, so the figure above is the fitted "
+            "line extended past the evidence, not a finding. Ask for a change "
+            "the data has seen.".format(
+                driver_col, projected_driver, driver_min, driver_max)
+        )
+    elif not reliable:
         interpretation += (
             " This relationship is too weak or not statistically significant "
             "to treat this projection as reliable — treat it as a rough "
@@ -117,4 +175,9 @@ def analyze_scenario(
         reliable=reliable,
         interpretation=interpretation,
         caveat=caveat,
+        projected_driver_value=round(float(projected_driver), 4),
+        driver_observed_min=round(driver_min, 4),
+        driver_observed_max=round(driver_max, 4),
+        within_observed_range=within_range,
+        driver_restates_target=restates,
     )

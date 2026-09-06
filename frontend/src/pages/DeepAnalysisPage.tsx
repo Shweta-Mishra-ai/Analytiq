@@ -83,6 +83,11 @@ interface ScenarioResult {
   reliable: boolean
   interpretation: string
   caveat: string
+  projected_driver_value: number
+  driver_observed_min: number
+  driver_observed_max: number
+  within_observed_range: boolean
+  driver_restates_target: boolean
 }
 
 const num = (v: number, d = 2) =>
@@ -240,15 +245,39 @@ export default function DeepAnalysisPage() {
                   label={`${scenario.target_col} now`}
                   value={num(scenario.current_target_mean)}
                 />
+                {/* A projection to a driver value the data never reached
+                    is the fitted line extended past the evidence. Shown
+                    as a big coloured number it reads as a result, and the
+                    caveat underneath does not undo that. */}
                 <MiniStat
                   label="Projected"
-                  value={num(scenario.projected_target_mean)}
-                  tone={scenario.projected_change_pct >= 0 ? 'teal' : 'rose'}
+                  value={
+                    scenario.within_observed_range
+                      ? num(scenario.projected_target_mean)
+                      : 'out of range'
+                  }
+                  tone={
+                    !scenario.within_observed_range
+                      ? 'mute'
+                      : scenario.projected_change_pct >= 0
+                        ? 'teal'
+                        : 'rose'
+                  }
                 />
                 <MiniStat
                   label="Change"
-                  value={`${scenario.projected_change_pct >= 0 ? '+' : ''}${scenario.projected_change_pct.toFixed(1)}%`}
-                  tone={scenario.projected_change_pct >= 0 ? 'teal' : 'rose'}
+                  value={
+                    scenario.within_observed_range
+                      ? `${scenario.projected_change_pct >= 0 ? '+' : ''}${scenario.projected_change_pct.toFixed(1)}%`
+                      : '—'
+                  }
+                  tone={
+                    !scenario.within_observed_range
+                      ? 'mute'
+                      : scenario.projected_change_pct >= 0
+                        ? 'teal'
+                        : 'rose'
+                  }
                 />
                 <MiniStat
                   label="R² / p"
@@ -265,9 +294,21 @@ export default function DeepAnalysisPage() {
                 }`}
               >
                 <div className="mb-1 font-semibold">
+                  {/* "Too weak" is the wrong diagnosis for a request the
+                      data cannot answer: the relationship may be very
+                      strong, and the problem is that nothing was ever
+                      observed at the level being asked about. */}
+                  {/* A driver that restates the target produces the
+                      most convincing-looking result the engine can make —
+                      a perfect fit and a vanishing p-value — so it is
+                      named before either of the others. */}
                   {scenario.reliable
                     ? 'Relationship is strong enough to project'
-                    : 'Too weak to rely on'}
+                    : scenario.driver_restates_target
+                      ? `${scenario.driver_col} is ${scenario.target_col} rewritten, not a lever on it`
+                      : !scenario.within_observed_range
+                        ? `Outside what this data covers — ${scenario.driver_col} was only ever between ${num(scenario.driver_observed_min)} and ${num(scenario.driver_observed_max)}`
+                        : 'Too weak to rely on'}
                 </div>
                 {scenario.interpretation}
               </div>
@@ -512,13 +553,16 @@ function MiniStat({
 }: {
   label: string
   value: string
-  tone?: 'ink' | 'teal' | 'amber' | 'rose'
+  // `mute` is for a figure the data cannot support: shown, so the reader
+  // knows the slot exists, but never in a colour that reads as a result.
+  tone?: 'ink' | 'teal' | 'amber' | 'rose' | 'mute'
 }) {
   const tones = {
     ink: 'text-ink',
     teal: 'text-teal',
     amber: 'text-amber',
     rose: 'text-rose',
+    mute: 'text-mute',
   }
   return (
     <div className="rounded-lg border border-edge bg-panel2 px-3 py-2">

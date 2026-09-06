@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 from app.engines.statistics import (assess_normality, compare_groups)
 
 
+from app.services.stat_guards import is_binned_from
+
 from app.engines.bi.results import CohortResult
 
 
@@ -102,7 +104,22 @@ def analyze_cohort(
         logger.debug("cohort comparison failed", exc_info=True)
         stat, p_val, test_used = 0.0, 1.0, "N/A"
 
-    is_sig = p_val < 0.05
+    # bool(), not numpy's np.True_: this value is serialised into the
+    # API response and compared with `is True` by callers.
+    is_sig = bool(p_val < 0.05)
+
+    # Cohorts that are ranges of the very metric being compared. Group
+    # revenue by revenue_band and the highest band has the highest
+    # revenue — with a vanishing p-value and a huge gap, because that is
+    # the definition of the band, not a fact about the business. The
+    # engine used to answer this with "investigate what '700+' does
+    # differently to achieve 596.9% higher revenue".
+    #
+    # The numbers are still returned: the ranking of a binned column is a
+    # legitimate distribution summary, and callers chart it. What changes
+    # is that nothing is claimed about cause, and no recommendation
+    # invites anyone to act on it.
+    is_definitional = is_binned_from(df_filt, cohort_col, metric_col)
 
     interp = (
         "{} cohorts compared on '{}'. "
@@ -116,8 +133,24 @@ def analyze_cohort(
             test_used, p_val)
     )
 
+    if is_definitional:
+        interp += (
+            " These cohorts are ranges of {} itself, so the gap between "
+            "the top and bottom group restates how the ranges were drawn "
+            "rather than revealing anything about them. Read this as the "
+            "shape of the distribution, not as a difference to act on; "
+            "group by something measured independently — a region, a "
+            "channel, a plan — to compare like with like.".format(metric_col)
+        )
+
     recs = []
-    if is_sig:
+    if is_definitional:
+        recs.append(
+            "Compare '{}' across a column that is not derived from it — "
+            "'{}' is {} in bands, so the ranking is guaranteed.".format(
+                metric_col, cohort_col, metric_col)
+        )
+    elif is_sig:
         recs.append(
             "Significant difference confirmed — investigate what '{}' "
             "does differently to achieve {:.1f}% higher '{}'.".format(
@@ -146,6 +179,7 @@ def analyze_cohort(
         is_significant=is_sig, p_value=round(float(p_val), 6),
         test_used=test_used, interpretation=interp,
         recommendations=recs,
+        is_definitional=is_definitional,
     )
 
 

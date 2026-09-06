@@ -29,6 +29,47 @@ from app.engines.industry_benchmarks import REPLACEMENT_COST_RANGE
 logger = logging.getLogger(__name__)
 
 
+# Above this share of exact duplicate rows the file describes far fewer
+# records than it appears to, and no figure computed from it is about
+# the population it claims to cover.
+RUINOUS_DUPLICATE_PCT = 50.0
+
+
+def _blocking_defect(df, dup_pct: float) -> str:
+    """A single fault bad enough that no grade above the floor is honest.
+
+    Returns the reason in plain words, or "" when there is none.
+
+    Order matters. A file whose columns never vary also has ~100% duplicate
+    rows, so the duplicate test would fire first and report the symptom
+    ("98% of the rows are exact duplicates") instead of the cause ("no
+    column varies"). The narrower diagnosis is checked first so the reader
+    is told the thing that is actually wrong.
+    """
+    if len(df) == 0 or len(df.columns) == 0:
+        return ("This file has no data to assess — {:,} rows across {:,} "
+                "columns.".format(len(df), len(df.columns)))
+
+    varying = [c for c in df.columns if df[c].dropna().nunique() > 1]
+    if not varying:
+        return ("No column in this file varies — every row holds the same "
+                "values, or the columns are empty. There is nothing here "
+                "to compare, rank or model.")
+
+    if dup_pct > RUINOUS_DUPLICATE_PCT:
+        distinct = len(df) - int(df.duplicated().sum())
+        # `distinct` is always at least 2 here: one distinct row means every
+        # column is constant, and the no-variation check above has already
+        # returned by then. So the plural never needs a singular form.
+        return ("{:.0f}% of the rows are exact duplicates — this file "
+                "describes {:,} distinct records, not {:,}. Averages, "
+                "counts and correlations computed from it repeat those "
+                "records rather than measuring a population.".format(
+                    dup_pct, distinct, len(df)))
+
+    return ""
+
+
 def compute_health(df: pd.DataFrame) -> dict:
     rows, cols   = len(df), len(df.columns)
     missing_pct  = (df.isna().sum().sum() / max(df.size, 1)) * 100
@@ -79,7 +120,24 @@ def compute_health(df: pd.DataFrame) -> dict:
     grade, label, color = next(
         (g, ln, c) for thresh, g, ln, c in grade_map if score >= thresh)
 
+    # The score weights completeness at 60%, so a file that is almost
+    # entirely duplicate rows still scored 71 and was graded "B+ Good" on
+    # a client-facing report. It was not good: 1,950 of its 2,000 rows
+    # were exact copies, and every average, count and correlation drawn
+    # from it described the same fifty records over and over.
+    #
+    # The score itself is left alone — it is the same number the main
+    # report prints, and a second, different score for one dataset is the
+    # contradiction this function exists to avoid. What changes is the
+    # grade, which is a judgement, and judgements have floors. A single
+    # ruinous dimension caps the grade whatever the weighted average says,
+    # and the reason is returned so the two can be reconciled in words.
+    blocking = _blocking_defect(df, dup_pct)
+    if blocking:
+        grade, label, color = "D", "Poor", "#ef4444"
+
     return {
+        "blocking_defect": blocking,
         "score":       score,
         "grade":       grade,
         "label":       label,

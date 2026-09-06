@@ -467,7 +467,11 @@ def _generate_recommendations(
 
     # Positive finding
     good_cols = [p for p in profiles if p.quality_score >= 95]
-    if len(good_cols) >= len(profiles) * 0.7:
+    # `profiles` is empty for a file with no columns, where 0 >= 0 is True
+    # and the percentage below divides by zero. That crash reached
+    # health_engine, which swallowed it and reported a completeness-only
+    # score of 100 for a file containing nothing at all.
+    if profiles and len(good_cols) >= len(profiles) * 0.7:
         recs.append(
             "GOOD: {:.0f}% of columns ({}/{}) have high data quality scores (95+). "
             "Dataset is suitable for reliable analysis.".format(
@@ -529,6 +533,14 @@ def profile_dataset(df: pd.DataFrame) -> DatasetProfile:
     dedup_score  = (1 - dup_rows / max(len(df), 1)) * 100
     col_health   = sum(p.quality_score for p in col_profiles) / max(len(col_profiles), 1)
     overall      = round(completeness*0.60 + dedup_score*0.30 + col_health*0.10, 1)
+
+    # A file with no rows or no columns has nothing missing and nothing
+    # duplicated, so completeness and dedup both come out at a perfect 100
+    # and the file scores in the nineties — a grade A for a file that
+    # contains no data. Quality is a claim about data; with none, there is
+    # no claim to make, and 0 is the only honest answer.
+    if len(df) == 0 or len(df.columns) == 0:
+        overall = 0.0
 
     # ── Grade ─────────────────────────────────────────────
     if overall >= 90:

@@ -31,6 +31,10 @@ interface HealthSummary {
     outlier_pct: number
     rows: number
     cols: number
+    // Set when one fault is bad enough to cap the grade whatever the
+    // weighted score says. Without it the panel shows "D" beside a score
+    // of 71 and explains neither.
+    blocking_defect?: string
   }
   insights: HealthInsight[]
   executive_summary: string
@@ -270,6 +274,15 @@ export default function ReportsPage() {
                     </div>
                   </div>
                 </div>
+
+                {health.health.blocking_defect && (
+                  <p className="rounded-lg border border-rose/40 bg-rose/5 px-3 py-2.5 text-xs leading-relaxed text-ink2">
+                    <span className="font-semibold text-rose">
+                      Why the grade is capped:{' '}
+                    </span>
+                    {health.health.blocking_defect}
+                  </p>
+                )}
 
                 {health.executive_summary && (
                   <p className="rounded-lg border border-edge bg-panel2 px-3 py-2.5 text-xs leading-relaxed text-ink2">

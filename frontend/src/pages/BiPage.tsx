@@ -41,6 +41,7 @@ interface Segment {
   strengths: string[]
   weaknesses: string[]
   opportunity: string
+  scored: boolean
 }
 
 interface BiReport {
@@ -196,13 +197,19 @@ export default function BiPage() {
                   <div key={s.segment_name} className="rounded-lg bg-panel2 p-3 text-xs">
                     <div className="flex items-center justify-between">
                       <span className="font-semibold text-ink">{s.segment_name}</span>
+                      {/* A score of 50 rendered in amber reads as "an
+                          average segment". When no metric had a direction
+                          its name settles, nothing was judged at all —
+                          say so instead of inventing a middling verdict. */}
                       <span
                         className={`font-bold ${
-                          s.health_score >= 70 ? 'text-teal'
-                            : s.health_score >= 45 ? 'text-amber' : 'text-rose'
+                          !s.scored ? 'text-mute'
+                            : s.health_score >= 70 ? 'text-teal'
+                              : s.health_score >= 45 ? 'text-amber' : 'text-rose'
                         }`}
+                        title={s.scored ? undefined : 'Not scored — no metric here has a direction its name makes clear'}
                       >
-                        {Math.round(s.health_score)}
+                        {s.scored ? Math.round(s.health_score) : '—'}
                       </span>
                     </div>
                     <div className="mt-1 text-mute">n = {s.n.toLocaleString()}</div>

@@ -6,6 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { render } from '../test/render'
 import DeepAnalysisPage from './DeepAnalysisPage'
 import { useApp } from '../store/app'
@@ -233,6 +234,95 @@ describe('when a model could not be fitted', () => {
     // A missing model must not take the intervals down with it.
     expect(
       await screen.findByText('Headline measures, with uncertainty'),
+    ).toBeInTheDocument()
+  })
+})
+
+/**
+ * A projection the data cannot support must say which of the three
+ * reasons applies. All three look identical to a reader who sees only
+ * "not reliable", and the one that matters most — the driver being the
+ * target rewritten — produces the most convincing numbers on the page:
+ * a perfect fit, a vanishing p-value, and exactly the change requested.
+ */
+describe('a projection that cannot be supported', () => {
+  const baseScenario = {
+    driver_col: 'salary',
+    target_col: 'satisfaction',
+    change_pct: 10,
+    current_driver_mean: 60000,
+    current_target_mean: 3.2,
+    projected_target_mean: 3.5,
+    projected_change_pct: 9.4,
+    r_squared: 0.42,
+    p_value: 0.0001,
+    reliable: true,
+    interpretation: 'If salary increases by 10% …',
+    caveat: 'Association, not causation.',
+    projected_driver_value: 66000,
+    driver_observed_min: 30000,
+    driver_observed_max: 120000,
+    within_observed_range: true,
+    driver_restates_target: false,
+  }
+
+  function renderScenario(over: Record<string, unknown>) {
+    stub()
+    vi.spyOn(client, 'apiPost').mockResolvedValue({ ...baseScenario, ...over })
+    render(<DeepAnalysisPage />)
+  }
+
+  it('names a driver that is the target rewritten', async () => {
+    renderScenario({
+      driver_col: 'revenue_k',
+      target_col: 'revenue',
+      reliable: false,
+      driver_restates_target: true,
+      r_squared: 1,
+      p_value: 0,
+    })
+    const user = userEvent.setup()
+    await screen.findByRole('button', { name: /Project/ })
+    await user.click(screen.getByRole('button', { name: /Project/ }))
+
+    expect(
+      await screen.findByText(/revenue_k is revenue rewritten, not a lever on it/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Too weak to rely on')).toBeNull()
+  })
+
+  it('still says "outside what this data covers" when that is the reason', async () => {
+    renderScenario({
+      reliable: false,
+      within_observed_range: false,
+      projected_driver_value: 400000,
+    })
+    const user = userEvent.setup()
+    await screen.findByRole('button', { name: /Project/ })
+    await user.click(screen.getByRole('button', { name: /Project/ }))
+
+    expect(
+      await screen.findByText(/Outside what this data covers/),
+    ).toBeInTheDocument()
+  })
+
+  it('calls a genuinely weak relationship weak', async () => {
+    renderScenario({ reliable: false, r_squared: 0.02, p_value: 0.6 })
+    const user = userEvent.setup()
+    await screen.findByRole('button', { name: /Project/ })
+    await user.click(screen.getByRole('button', { name: /Project/ }))
+
+    expect(await screen.findByText('Too weak to rely on')).toBeInTheDocument()
+  })
+
+  it('leaves a sound projection alone', async () => {
+    renderScenario({})
+    const user = userEvent.setup()
+    await screen.findByRole('button', { name: /Project/ })
+    await user.click(screen.getByRole('button', { name: /Project/ }))
+
+    expect(
+      await screen.findByText('Relationship is strong enough to project'),
     ).toBeInTheDocument()
   })
 })

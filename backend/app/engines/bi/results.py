@@ -46,6 +46,20 @@ class ScenarioResult:
     reliable:        bool           # r_squared/p_value clear the reliability bar
     interpretation:  str
     caveat:          str
+    # Where the projection lands on the driver, and whether the data ever
+    # went there. Projecting to a value never observed is arithmetic on a
+    # fitted line, not evidence about the business — a 500% increase in a
+    # discount rate that never exceeded 20% produced a 223% discount and
+    # negative revenue, reported as reliable.
+    projected_driver_value: float = 0.0
+    driver_observed_min:    float = 0.0
+    driver_observed_max:    float = 0.0
+    within_observed_range:  bool  = True
+    # True when the driver is the target rewritten — the same money in
+    # thousands, a copy under another name, its log. The projection is
+    # then arithmetic, not a finding: raising revenue_k raises revenue
+    # because they are one column.
+    driver_restates_target: bool  = False
 
 
 @dataclass
@@ -74,6 +88,11 @@ class CohortResult:
     test_used:       str
     interpretation:  str
     recommendations: List[str]
+    # True when the cohorts are ranges of the metric being compared, so
+    # the gap restates how the ranges were drawn. The result is still
+    # returned — it is a fair distribution summary — but nothing
+    # downstream may quote it as a difference between groups.
+    is_definitional: bool = False
 
 
 @dataclass
@@ -98,6 +117,10 @@ class SegmentHealth:
     strengths:       List[str]
     weaknesses:      List[str]
     opportunity:     str
+    # False when no metric had a direction its name settles, so the score
+    # is a placeholder rather than a verdict. Rendering 50 as an amber
+    # "average" segment would be a judgement nothing supports.
+    scored:          bool = True
 
 
 @dataclass

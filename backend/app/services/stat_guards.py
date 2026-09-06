@@ -160,3 +160,133 @@ def filter_correlations(results: List[dict]) -> List[dict]:
             r["confidence"] = confidence_label(r["n"], q, r["r"])
             out.append(r)
     return out
+
+
+# ── Restatements of the target ────────────────────────────
+# A column computed from another one — the same figure in thousands, an
+# exact copy under a second name, a log or a rank of it — correlates with
+# its source almost perfectly. Every driver, cause and scenario engine in
+# the app ranks candidates by strength of association, so a restatement
+# wins every time and the app announces a tautology as its headline:
+#
+#     "Top driver: 'revenue_k' — the low group averages 0.14 against 0.62
+#      for the high group on Revenue K. Bring to high-performer level."
+#
+# Low revenue is not caused by low revenue. Naming is no way to catch this
+# ('units_sold' vs 'qty_shipped' share no words), so the test is on the
+# numbers: a near-perfect linear OR rank relationship means one column is
+# computed from the other, not that it explains it.
+#
+# The threshold is deliberately extreme. Genuine business drivers do not
+# reach |r| = 0.999 — at that point the two columns are the same
+# measurement — so the guard suppresses restatements without ever
+# suppressing a real finding.
+RESTATEMENT_R = 0.999
+RESTATEMENT_MIN_N = 20
+
+# Restatement is a structural property of two columns, not a statistical
+# estimate that needs every row: if one is the other rescaled, a slice
+# shows it just as plainly. Spearman ranks its input, so checking every
+# pair of 40 columns at 50,000 rows took a full BI run from 0.5s to 16s.
+# An evenly-spaced stride keeps the full range of the data (a head slice
+# would not, on a file sorted by one of the columns) and puts the check
+# back under a tenth of a second.
+RESTATEMENT_SAMPLE = 5_000
+
+
+def is_restatement(a, b) -> bool:
+    """True when two numeric series are the same measurement rewritten.
+
+    Catches unit changes and copies (near-perfect Pearson) and monotone
+    transforms such as a log or a rank (near-perfect Spearman). Returns
+    False whenever it cannot tell — too few paired values, no variation,
+    a failed computation — so an unclear case is reported, not hidden.
+    """
+    import pandas as pd
+
+    try:
+        paired = pd.concat([pd.Series(a).reset_index(drop=True),
+                            pd.Series(b).reset_index(drop=True)],
+                           axis=1).dropna()
+        if len(paired) < RESTATEMENT_MIN_N:
+            return False
+        if len(paired) > RESTATEMENT_SAMPLE:
+            paired = paired.iloc[::(len(paired) // RESTATEMENT_SAMPLE)]
+        x, y = paired.iloc[:, 0], paired.iloc[:, 1]
+        if x.nunique() < 2 or y.nunique() < 2:
+            return False
+        for method in ("pearson", "spearman"):
+            r = x.corr(y, method=method)
+            if r is not None and abs(float(r)) >= RESTATEMENT_R:
+                return True
+    except Exception:
+        logger.debug("is_restatement: suppressed exception", exc_info=True)
+    return False
+
+
+# ── Groupings of the measure being grouped ────────────────
+# Words that turn a measure into a grouping of itself. "AgeGroup" is Age;
+# "SalaryBand" is Salary. They carry no meaning of their own, so they are
+# dropped before the two names are compared.
+BINNING_WORDS = {
+    "group", "groups", "band", "bands", "bracket", "brackets", "bucket",
+    "buckets", "range", "ranges", "tier", "tiers", "slab", "slabs",
+    "category", "categories", "class", "classes", "segment", "segments",
+    "level", "levels", "bin", "bins", "quartile", "quintile", "decile",
+}
+
+
+def name_words(name: str) -> set:
+    """The words in a column name, split on case and punctuation."""
+    import re as _re
+    spaced = _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(name)).lower()
+    return {w for w in _re.split(r"[^a-z0-9]+", spaced) if w}
+
+
+# How close consecutive bands must sit to read as a binning rather than
+# two separate populations. Bins tile a range, so the gap between them is
+# rounding; anything wider is a hole, and a hole is a finding.
+BIN_ADJACENCY = 0.02
+
+
+def is_binned_from(df, cat: str, num: str) -> bool:
+    """True when the categories are simply ranges of the numeric column.
+
+    Names do not always give it away: `SalarySlab` is `MonthlyIncome` in
+    bands, and no comparison of the two names can know that. The data
+    says so plainly — every record in one band holds a value below every
+    record in the next, with no overlap.
+
+    Reporting that one band earns more than another is reporting the
+    definition of the bands.
+    """
+    try:
+        pair = df[[cat, num]].dropna()
+        if len(pair) < 30:
+            return False
+        bounds = pair.groupby(cat, observed=True)[num].agg(["min", "max"])
+        if len(bounds) < 2:
+            return False
+        bounds = bounds.sort_values("min")
+        lows, highs = bounds["min"].tolist(), bounds["max"].tolist()
+        # Non-overlapping is necessary and nowhere near sufficient. Two
+        # branches whose readings average 60 and 120 do not overlap
+        # either, and that is the most valuable finding in the file — an
+        # earlier version of this check suppressed exactly that.
+        #
+        # What separates a binning is that the bands *tile* the range:
+        # every value falls in some band, so consecutive bands touch.
+        # Two genuinely different populations leave a hole between them.
+        # Measured: a real two-group effect left a gap of 17% of the
+        # range; a four-band cut of income left 0.5%.
+        if any(lows[i + 1] < highs[i] for i in range(len(lows) - 1)):
+            return False
+        span = highs[-1] - lows[0]
+        if span <= 0:
+            return False
+        widest_gap = max((lows[i + 1] - highs[i]
+                          for i in range(len(lows) - 1)), default=0)
+        return widest_gap / span <= BIN_ADJACENCY
+    except Exception:
+        logger.debug("bin check failed for %s x %s", cat, num, exc_info=True)
+        return False

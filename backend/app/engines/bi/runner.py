@@ -13,6 +13,7 @@ from app.engines.domains.base import is_id_column
 
 
 from app.services.dtypes import text_columns
+from app.services.stat_guards import is_restatement
 
 from app.engines.bi.results import BIReport
 from app.engines.bi.benchmark import analyze_benchmark
@@ -58,6 +59,11 @@ def _is_performance_metric(col) -> bool:
     return not (tokens & _DEMOGRAPHIC_TOKENS)
 
 
+# How many distinct numeric columns the analyses below can consume.
+# Benchmarks take four; everything else takes two.
+_DEDUP_ENOUGH = 4
+
+
 def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
     """
     Full BI pipeline.
@@ -74,6 +80,33 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
     if len(num_cols) < len(all_numeric):
         logger.info("BI: excluded identifier column(s) %s",
                     ", ".join(c for c in all_numeric if c not in num_cols))
+
+    # Every analysis below takes the first two or four numeric columns.
+    # A file carrying both `revenue` and `revenue_k` spends two of those
+    # slots on one measurement and prints the finding twice — "Region
+    # splits Revenue: A averages 62.1% more than B" followed by "Region
+    # splits Revenue K: A averages 76.6% more than D" — while a column
+    # with something else to say never gets looked at. The first spelling
+    # of a measurement is kept; later ones are dropped.
+    #
+    # Nothing below looks past the fourth distinct column, so once that
+    # many are in hand the rest go through unchecked. That bound matters:
+    # checking every pair at full length took a 50,000-row, 40-column run
+    # from 0.5s to 16s.
+    deduped, dropped = [], []
+    for c in num_cols:
+        if len(deduped) >= _DEDUP_ENOUGH:
+            deduped.append(c)
+            continue
+        if any(is_restatement(df[c], df[kept]) for kept in deduped):
+            dropped.append(c)
+            continue
+        deduped.append(c)
+    if dropped:
+        logger.info("BI: %s restate a column already being analysed — "
+                    "dropped so the slots go to columns with something "
+                    "else to say", ", ".join(dropped))
+    num_cols = deduped
     cat_cols = [c for c in text_columns(df)
                 if 2 <= df[c].nunique() <= 25]
 
