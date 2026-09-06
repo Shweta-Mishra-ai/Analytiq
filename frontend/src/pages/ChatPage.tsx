@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Send, Trash2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
-import { apiPost, type TableData } from '../api/client'
+import { apiGet, apiPost, type Field, type TableData } from '../api/client'
 import type { Figure } from '../types'
 import { useApp } from '../store/app'
 import DataTable from '../components/DataTable'
 import PlotlyChart from '../components/PlotlyChart'
 import { NeedData, PageHeader } from '../components/Ui'
+import * as fmt from '../lib/format'
 
 interface Msg {
   role: 'user' | 'assistant'
@@ -15,24 +16,88 @@ interface Msg {
   table?: TableData | null
 }
 
-const SUGGESTIONS = [
-  'Show top 10 rows by the main numeric column',
-  'Plot the correlation heatmap',
-  'Which category has the highest average value?',
-  'Show the trend over time as a line chart',
-]
+/** Questions written against the columns actually in front of the user.
+ *
+ *  The four suggestions used to be fixed strings — "Show top 10 rows by
+ *  the main numeric column", "Which category has the highest average
+ *  value?" A person who does not already know their schema cannot tell
+ *  what either would do, and someone who does know it is being asked to
+ *  translate. An assistant that has read your file should ask about your
+ *  file: "Which region has the highest average revenue?"
+ */
+function suggestionsFor(fields: Field[]): string[] {
+  const usable = fields.filter((f) => f.missing_pct < 90)
+  const numeric = usable.filter((f) => f.kind === 'numeric')
+  const dates = usable.filter((f) => f.kind === 'datetime')
+  // A dimension people can act on: more than one group, few enough that
+  // the groups mean something. 40,000 order IDs are not a segmentation.
+  const dims = usable
+    .filter((f) => f.kind === 'categorical' && f.unique > 1 && f.unique <= 20)
+    .sort((a, b) => a.unique - b.unique)
+
+  // Taking numeric[0] means taking whichever measure happens to sit
+  // leftmost in the file — on a sales extract that is `units`, and the
+  // question a director wants asked is about revenue. Column order is
+  // not importance.
+  const HEADLINE = [
+    'revenue', 'sales', 'profit', 'margin', 'income', 'amount', 'value',
+    'spend', 'cost', 'total', 'price', 'score', 'rating', 'units',
+    'quantity', 'count',
+  ]
+  const rank = (name: string) => {
+    const flat = name.toLowerCase()
+    const hit = HEADLINE.findIndex((w) => flat.includes(w))
+    return hit === -1 ? HEADLINE.length : hit
+  }
+  const ranked = [...numeric].sort((a, b) => rank(a.name) - rank(b.name))
+  const metric = ranked[0]?.name
+  const dim = dims[0]?.name
+  const date = dates[0]?.name
+  const out: string[] = []
+
+  if (dim && metric)
+    out.push(`Which ${fmt.label(dim)} has the highest average ${fmt.label(metric)}?`)
+  if (date && metric)
+    out.push(`Show ${fmt.label(metric)} over ${fmt.label(date)} as a line chart`)
+  if (metric) out.push(`Show the 10 rows with the highest ${fmt.label(metric)}`)
+  if (dim && ranked[1])
+    out.push(`Compare ${fmt.label(ranked[1].name)} across ${fmt.label(dim)}`)
+  if (numeric.length >= 2) out.push('Which columns move together?')
+
+  // Falls back to the generic four only when the file is too thin to
+  // write a specific question about.
+  return out.length
+    ? out.slice(0, 4)
+    : [
+        'How many rows and columns are in this file?',
+        'Which columns have missing values?',
+        'Show me the first 10 rows',
+        'Summarise what is in this data',
+      ]
+}
 
 export default function ChatPage() {
   const dataset = useApp((s) => s.dataset)
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [suggestions, setSuggestions] = useState<string[]>([])
   const bottom = useRef<HTMLDivElement>(null)
   const ds = dataset?.dataset_id
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, busy])
+
+  useEffect(() => {
+    if (!ds) return
+    setSuggestions([])
+    apiGet<{ fields: Field[] }>(`/api/charts/${ds}/fields`)
+      .then((r) => setSuggestions(suggestionsFor(r.fields ?? [])))
+      // A failed lookup costs the tailored questions, not the page: the
+      // input still works and the user can type their own.
+      .catch(() => setSuggestions([]))
+  }, [ds])
 
   if (!dataset) return <NeedData />
 
@@ -71,7 +136,7 @@ export default function ChatPage() {
     <div className="flex h-full flex-col p-8">
       <PageHeader
         title="AI Chat"
-        subtitle={`Ask anything about ${dataset.filename} — safe tool-calling, no code execution`}
+        subtitle={`Ask a question about ${dataset.filename} in your own words. Answers come from running real analysis on your data, never from guesswork — and nothing you ask can change the file.`}
         right={
           messages.length > 0 ? (
             <button
@@ -87,7 +152,7 @@ export default function ChatPage() {
       <div className="flex-1 space-y-4 overflow-y-auto pb-4">
         {messages.length === 0 && (
           <div className="grid gap-2 sm:grid-cols-2">
-            {SUGGESTIONS.map((s) => (
+            {suggestions.map((s) => (
               <button
                 key={s}
                 onClick={() => send(s)}

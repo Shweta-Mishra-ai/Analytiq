@@ -12,3 +12,11 @@ beforeEach(() => {
   // selected dataset is still selected in the next.
   localStorage.clear()
 })
+
+// jsdom implements no layout, so it has no scrollIntoView. Any component
+// that keeps a view pinned to the bottom — the chat transcript — throws
+// on mount without this, which fails every test in the file for a reason
+// that has nothing to do with the component.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {}
+}

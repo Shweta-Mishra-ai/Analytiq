@@ -1,5 +1,6 @@
 /**
- * RAG Studio — knowledge bases of documents, tables, images and video.
+ * Ask Your Documents — sets of documents, tables, images and video,
+ * searched together and answered with a citation.
  * Upload anything → ask questions with citations → generate an executive report.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -174,14 +175,14 @@ export default function RagPage() {
       {/* KB list */}
       <div className="w-64 shrink-0 space-y-3 border-r border-edge p-4">
         <h2 className="flex items-center gap-2 text-sm font-bold text-ink">
-          <Layers className="h-4 w-4 text-accent" /> Knowledge bases
+          <Layers className="h-4 w-4 text-accent" /> Document sets
         </h2>
         <div className="flex gap-1.5">
           <input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && create()}
-            placeholder="New KB name…"
+            placeholder="Name a new set…"
             className="min-w-0 flex-1 rounded-lg border border-edge bg-panel px-2.5 py-1.5 text-xs text-ink placeholder:text-mute focus:border-accent focus:outline-none"
           />
           <button
@@ -222,7 +223,9 @@ export default function RagPage() {
             </div>
           ))}
           {!kbs.length && (
-            <p className="px-1 text-xs text-mute">Create a knowledge base to start.</p>
+            <p className="px-1 text-xs text-mute">
+              Name a set above to start — one per topic, client or project.
+            </p>
           )}
         </div>
       </div>
@@ -230,8 +233,8 @@ export default function RagPage() {
       {/* Main */}
       <div className="min-w-0 flex-1 overflow-y-auto p-6">
         <PageHeader
-          title="RAG Studio"
-          subtitle="Upload documents, spreadsheets, images and video — then ask questions or generate a report"
+          title="Ask Your Documents"
+          subtitle="Add contracts, reports, spreadsheets, photos or video, then ask questions in plain English and get answers that cite the page they came from"
           right={
             active ? (
               <div className="flex gap-2">
@@ -258,12 +261,44 @@ export default function RagPage() {
         )}
 
         {!active ? (
+          /* This was one paragraph listing file extensions and naming the
+             vendor's vision model, above four-fifths of an empty page. A
+             reader arriving here needs to know what the thing is for
+             before they need to know it accepts .webp. */
           <Panel>
-            <p className="text-sm text-mute">
-              Select or create a knowledge base on the left. Supported: PDF, DOCX, TXT/MD,
-              CSV/TSV, images (PNG/JPG/WebP) and video (MP4/MOV/WebM). Images and video are
-              analyzed with Gemini vision — charts get read, text gets transcribed, narration
-              gets summarized — and become searchable alongside your documents.
+            <p className="text-sm text-ink">
+              Put a pile of documents in one place and ask questions of all
+              of them at once.
+            </p>
+            <ul className="mt-4 space-y-3 text-sm text-mute">
+              <li className="flex gap-3">
+                <span className="text-accent">1</span>
+                <span>
+                  <span className="text-ink">Name a set</span> on the left —
+                  one per client, project or topic.
+                </span>
+              </li>
+              <li className="flex gap-3">
+                <span className="text-accent">2</span>
+                <span>
+                  <span className="text-ink">Add the files.</span> Contracts,
+                  board packs, invoices, spreadsheets — and photos or video of
+                  a whiteboard or dashboard, which are read for you.
+                </span>
+              </li>
+              <li className="flex gap-3">
+                <span className="text-accent">3</span>
+                <span>
+                  <span className="text-ink">Ask in plain English.</span>{' '}
+                  &ldquo;What notice period do these contracts require?&rdquo;
+                  Every answer names the file and page it came from, so you
+                  can check it.
+                </span>
+              </li>
+            </ul>
+            <p className="mt-4 border-t border-edge pt-3 text-xs text-faint">
+              Accepts PDF, Word, text, Markdown, CSV and TSV files, images
+              (PNG, JPG, WebP) and video (MP4, MOV, WebM).
             </p>
           </Panel>
         ) : (
@@ -300,7 +335,7 @@ export default function RagPage() {
             </Panel>
 
             {/* Q&A */}
-            <Panel title="Ask the knowledge base">
+            <Panel title="Ask a question">
               <div className="mb-3 flex gap-2">
                 <input
                   value={question}

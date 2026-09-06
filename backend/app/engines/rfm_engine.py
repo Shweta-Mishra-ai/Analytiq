@@ -16,6 +16,7 @@ framework coupling).
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -23,6 +24,8 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+from app.engines.domains.base import is_id_column
 
 
 # ══════════════════════════════════════════════════════════
@@ -392,3 +395,88 @@ def run_rfm(
         champions_count=champions_n,
         warnings=warnings_list,
     )
+
+
+def rfm_candidates(df: pd.DataFrame) -> Dict[str, List[Dict]]:
+    """Columns that could serve each RFM role, for a user to choose from.
+
+    Auto-detection reads column names, so it fails on a file that calls
+    its customer column `account` or `member`. The page then said "this
+    dataset doesn't look like transaction data" and stopped — a dead end,
+    on an endpoint that has always accepted explicit column overrides.
+
+    A customer column needs repeats: a column with one row per value
+    identifies a transaction, not a customer, and RFM on it gives every
+    customer a frequency of 1. A date column has to parse as a date. A
+    money column has to be numeric and non-negative.
+    """
+    n = len(df)
+    customers, dates, money = [], [], []
+
+    for col in df.columns:
+        series = df[col]
+        non_null = series.dropna()
+        if non_null.empty:
+            continue
+        distinct = int(non_null.nunique())
+
+        if pd.api.types.is_datetime64_any_dtype(series):
+            dates.append({"column": col, "note": "already a date"})
+        elif not pd.api.types.is_numeric_dtype(series):
+            # pandas warns when it has to fall back to dateutil per value,
+            # which it does for every ordinary text column here. The
+            # failure is the answer, not a problem worth printing.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                try:
+                    parsed = pd.to_datetime(non_null.head(200), errors="raise")
+                    if parsed.notna().all():
+                        dates.append({"column": col,
+                                      "note": "reads as a date"})
+                except Exception:
+                    logger.debug("%r does not parse as a date", col)
+
+        # Repeats are what make a customer column a customer column — but
+        # so does being an identifier rather than a measurement. `profit`
+        # repeats too, at 1.7 rows per value, and offering it as "who the
+        # customer is" would be worse than offering nothing.
+        identifier_shaped = (not pd.api.types.is_numeric_dtype(series)
+                             or pd.api.types.is_integer_dtype(series))
+        if identifier_shaped and 1 < distinct < n and n / distinct >= 1.5:
+            customers.append({
+                "column": col, "distinct": distinct,
+                "text": not pd.api.types.is_numeric_dtype(series),
+                "note": "{:,} distinct, {:.1f} rows each".format(
+                    distinct, n / distinct)})
+
+        if pd.api.types.is_numeric_dtype(series) and not is_id_column(col, series):
+            if float(non_null.min()) >= 0:
+                money.append({"column": col,
+                              "note": "totals {:,.0f}".format(
+                                  float(non_null.sum()))})
+
+    # Text before numbers, then most distinct values first. A customer
+    # column is nearly always a label; among labels, the one with the
+    # most distinct values is the one identifying individuals rather
+    # than grouping them.
+    customers.sort(key=lambda c: (not c["text"], -c["distinct"]))
+    # Money first, by name. Leaving these in column order made `units`
+    # the default answer to "what it was worth" on a file that has a
+    # `revenue` column, and the page then reported a total value that
+    # was a count of items.
+    money.sort(key=lambda m: _money_rank(m["column"]))
+    return {"customer": customers, "date": dates, "monetary": money}
+
+
+# Ordered most money-like first; a column matching none of these sorts
+# last but is still offered, because the user may know better.
+_MONEY_WORDS = ("revenue", "sales", "amount", "total", "value", "spend",
+                "price", "cost", "profit", "charge", "fee", "payment")
+
+
+def _money_rank(name: str) -> int:
+    flat = str(name).lower()
+    for i, word in enumerate(_MONEY_WORDS):
+        if word in flat:
+            return i
+    return len(_MONEY_WORDS)

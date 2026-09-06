@@ -60,7 +60,8 @@ const navGroups = [
     label: 'Deliver',
     items: [
       { to: '/chat', label: 'AI Chat', icon: MessageSquare },
-      { to: '/rag', label: 'RAG Studio', icon: Layers },
+      // "RAG" is the technique's name, not the user's word for it.
+      { to: '/rag', label: 'Documents', icon: Layers },
       { to: '/reports', label: 'Reports', icon: FileText },
       { to: '/system', label: 'System', icon: ServerCog },
     ],

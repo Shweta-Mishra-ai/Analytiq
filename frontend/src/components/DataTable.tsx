@@ -22,8 +22,14 @@ export default function DataTable({
         <thead className="sticky top-0 bg-panel2">
           <tr>
             {data.columns.map((c) => {
-              const numeric = isNumericCol(data.dtypes[c])
-              const isDate = data.dtypes[c]?.startsWith('datetime')
+              // `dtypes` only decides alignment and date formatting. A
+              // payload without it should give a plain table, not throw
+              // through the render and take the page with it — the line
+              // below already allowed for a missing entry, just not a
+              // missing map.
+              const dtype = data.dtypes?.[c]
+              const numeric = isNumericCol(dtype)
+              const isDate = dtype?.startsWith('datetime')
               return (
                 <th
                   key={c}
@@ -52,7 +58,7 @@ export default function DataTable({
           {data.records.map((row, i) => (
             <tr key={i} className="odd:bg-panel even:bg-panel2/40">
               {data.columns.map((c) => {
-                const numeric = isNumericCol(data.dtypes[c])
+                const numeric = isNumericCol(data.dtypes?.[c])
                 return (
                   <td
                     key={c}

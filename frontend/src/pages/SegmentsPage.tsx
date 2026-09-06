@@ -13,6 +13,18 @@ interface RfmColumns {
   price_col: string | null
 }
 
+interface Candidate {
+  column: string
+  note: string
+  distinct?: number
+}
+
+interface Candidates {
+  customer: Candidate[]
+  date: Candidate[]
+  monetary: Candidate[]
+}
+
 interface SegmentSummary {
   segment: string
   n_customers: number
@@ -49,6 +61,10 @@ export default function SegmentsPage() {
   const ds = dataset?.dataset_id
 
   const [detected, setDetected] = useState<RfmColumns | null>(null)
+  // What the user picked when detection came up empty. The endpoint has
+  // always accepted these; the page just never offered them.
+  const [candidates, setCandidates] = useState<Candidates | null>(null)
+  const [pick, setPick] = useState({ customer: '', date: '', monetary: '' })
   const [report, setReport] = useState<RfmReport | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -59,8 +75,24 @@ export default function SegmentsPage() {
     setReport(null)
     setError('')
     setChecked(false)
-    apiGet<{ detected: RfmColumns | null }>(`/api/analytics/${ds}/rfm/columns`)
-      .then((r) => setDetected(r.detected))
+    setPick({ customer: '', date: '', monetary: '' })
+    apiGet<{ detected: RfmColumns | null; candidates: Candidates }>(
+      `/api/analytics/${ds}/rfm/columns`,
+    )
+      .then((r) => {
+        setDetected(r.detected)
+        setCandidates(r.candidates)
+        if (!r.detected && r.candidates) {
+          // Lead with the most likely answer rather than three empty
+          // dropdowns: the point is to make the choice easy, not to
+          // hand the work back.
+          setPick({
+            customer: r.candidates.customer[0]?.column ?? '',
+            date: r.candidates.date[0]?.column ?? '',
+            monetary: r.candidates.monetary[0]?.column ?? '',
+          })
+        }
+      })
       .catch((e) => setError(e.message))
       .finally(() => setChecked(true))
   }, [ds])
@@ -70,13 +102,24 @@ export default function SegmentsPage() {
     setBusy(true)
     setError('')
     try {
-      setReport(await apiGet<RfmReport>(`/api/analytics/${ds}/rfm`))
+      const q = new URLSearchParams()
+      if (!detected) {
+        if (pick.customer) q.set('customer_col', pick.customer)
+        if (pick.date) q.set('date_col', pick.date)
+        if (pick.monetary) q.set('monetary_col', pick.monetary)
+      }
+      const qs = q.toString()
+      setReport(
+        await apiGet<RfmReport>(
+          `/api/analytics/${ds}/rfm${qs ? `?${qs}` : ''}`,
+        ),
+      )
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
-  }, [ds])
+  }, [ds, detected, pick])
 
   if (!dataset) return <NeedData />
 
@@ -89,9 +132,12 @@ export default function SegmentsPage() {
     <div className="p-8">
       <PageHeader
         title="Customer Segments"
-        subtitle="RFM analysis — who your best customers are, and who you're about to lose"
+        subtitle="Who your best customers are, who is slipping away, and what to do about each — ranked on how recently they bought, how often, and how much (RFM)"
         right={
-          <Btn onClick={run} disabled={busy || !detected}>
+          <Btn
+            onClick={run}
+            disabled={busy || (!detected && !(pick.customer && pick.date))}
+          >
             <span className="flex items-center gap-1.5">
               <Users className="h-4 w-4" /> Run segmentation
             </span>
@@ -105,13 +151,57 @@ export default function SegmentsPage() {
         </div>
       )}
 
-      {checked && !detected && (
-        <Panel>
-          <p className="text-sm text-mute">
-            This dataset doesn&apos;t look like transaction data. RFM needs a
-            customer/client ID column and a transaction date column — ideally
-            with an amount or revenue column too.
-          </p>
+      {/* Detection reads column names, so a file that calls its customer
+          column `account` or `member` used to end here — "this dataset
+          doesn't look like transaction data", and nothing to do about
+          it. The endpoint always accepted explicit columns; now the page
+          asks, with its best guess already filled in. */}
+      {checked && !detected && !report && (
+        <Panel
+          title="Which columns describe your customers?"
+          subtitle="We could not tell from the column names. Confirm these three and the analysis will run."
+        >
+          {candidates && candidates.customer.length > 0 &&
+          candidates.date.length > 0 ? (
+            <div className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-3">
+                <Picker
+                  label="Who the customer is"
+                  hint="The column that repeats once per customer"
+                  options={candidates.customer}
+                  value={pick.customer}
+                  onChange={(v) => setPick((p) => ({ ...p, customer: v }))}
+                />
+                <Picker
+                  label="When it happened"
+                  hint="The date of each purchase or event"
+                  options={candidates.date}
+                  value={pick.date}
+                  onChange={(v) => setPick((p) => ({ ...p, date: v }))}
+                />
+                <Picker
+                  label="What it was worth"
+                  hint="Optional — leave blank to rank on how often, not how much"
+                  options={candidates.monetary}
+                  value={pick.monetary}
+                  onChange={(v) => setPick((p) => ({ ...p, monetary: v }))}
+                  allowNone
+                />
+              </div>
+              <p className="text-xs text-faint">
+                Customers are then ranked on three things: how recently
+                they bought, how often, and how much. Each gets a segment
+                and an action.
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-mute">
+              This file has no column that repeats per customer and no
+              date column, so there is nothing to score. Customer
+              segmentation needs one row per purchase, with a customer
+              and a date on each.
+            </p>
+          )}
         </Panel>
       )}
 
@@ -250,6 +340,46 @@ export default function SegmentsPage() {
         </div>
       )}
     </div>
+  )
+}
+
+/** One column choice, with what the data says about each option so the
+ *  answer is checkable rather than a guess. */
+function Picker({
+  label,
+  hint,
+  options,
+  value,
+  onChange,
+  allowNone = false,
+}: {
+  label: string
+  hint: string
+  options: Candidate[]
+  value: string
+  onChange: (v: string) => void
+  allowNone?: boolean
+}) {
+  return (
+    <label className="block">
+      <span className="text-[11px] uppercase tracking-wide text-mute">
+        {label}
+      </span>
+      <select
+        aria-label={label}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-1 w-full rounded-md border border-edge bg-panel2 px-2 py-1.5 text-sm text-ink"
+      >
+        {allowNone && <option value="">— none —</option>}
+        {options.map((o) => (
+          <option key={o.column} value={o.column}>
+            {o.column} · {o.note}
+          </option>
+        ))}
+      </select>
+      <span className="mt-1 block text-xs text-faint">{hint}</span>
+    </label>
   )
 }
 

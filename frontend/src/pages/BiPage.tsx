@@ -73,7 +73,7 @@ export default function BiPage() {
     <div className="p-8">
       <PageHeader
         title="Business Intelligence"
-        subtitle="Root cause, cohorts, Pareto and segment health"
+        subtitle="What is driving your numbers, how groups compare, and where value is concentrated"
       />
       {error && <ErrorBox message={error} />}
       {!report && !error && <Spinner label="Running BI analysis…" />}

@@ -47,9 +47,15 @@ def rfm_columns(ds_id: str, owner: str = Depends(current_owner)):
     for a frontend column picker. Returns detected=null if this dataset
     doesn't look like transaction-level data at all."""
     df = _df_or_404(owner, ds_id)
-    from app.engines.rfm_engine import detect_rfm_columns
+    from app.engines.rfm_engine import detect_rfm_columns, rfm_candidates
     cols = detect_rfm_columns(df)
-    return {"detected": to_jsonable(cols) if cols else None}
+    # Detection reads column names, so it fails on a file that calls its
+    # customer column `account`. The page used to stop there — "this
+    # dataset doesn't look like transaction data" — on an endpoint that
+    # has always accepted explicit overrides. The candidates let the
+    # caller offer the choice instead of the dead end.
+    return {"detected": to_jsonable(cols) if cols else None,
+            "candidates": to_jsonable(rfm_candidates(df))}
 
 
 @router.get("/{ds_id}/rfm")
