@@ -218,14 +218,18 @@ class DatasetStore:
         import shutil
         mkey = self._mkey(owner, ds_id)
         with self._lock:
-            self._mem.pop(mkey, None)
+            had_memory = self._mem.pop(mkey, None) is not None
             self._caches.pop(mkey, None)
             self._hashes.pop(mkey, None)
             d = self._dir(owner, ds_id)
-            if os.path.isdir(d):
+            existed = os.path.isdir(d)
+            if existed:
                 shutil.rmtree(d, ignore_errors=True)
-                return True
-        return False
+        # The in-memory entry is dropped either way, so reporting False
+        # when only the directory was missing told the caller "not
+        # found" about a dataset it had just deleted — the API answered
+        # 404 and the row vanished from the list at the same time.
+        return bool(existed or had_memory)
 
     # ── dataframes ───────────────────────────────────────
     def get_df(self, owner: str, ds_id: str) -> Optional[pd.DataFrame]:

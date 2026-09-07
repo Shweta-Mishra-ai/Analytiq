@@ -239,10 +239,6 @@ def theme_for(domain: str) -> str:
     return spec_for(domain).pdf_theme
 
 
-def registered_domains() -> Tuple[str, ...]:
-    return tuple(REGISTRY.keys())
-
-
 def run_insights(domain: str, df, stats, corrs, attrition=None) -> dict:
     """Dispatch to the domain's insight engine.
 

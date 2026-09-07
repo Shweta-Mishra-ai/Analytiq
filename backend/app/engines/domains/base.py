@@ -43,10 +43,6 @@ _SEVERITY_RANK = {"critical": 0, "high": 1, "warning": 2, "medium": 2,
                   "info": 3, "low": 3, "positive": 4}
 
 
-def severity_display(sev: str) -> str:
-    return _SEVERITY_DISPLAY.get(str(sev).lower(), "INFO")
-
-
 _ID_NAME_TOKENS = ("id", "ids", "uuid", "guid", "index", "idx", "code",
                    "ref", "reference", "key", "number", "no", "sku", "rowid")
 
@@ -129,38 +125,6 @@ def higher_is_better(col) -> Optional[bool]:
     if up and not down:
         return True
     return None          # says nothing, or says both
-
-
-def infer_confidence(evidence: str, severity: str = "") -> str:
-    """
-    Grade how strongly the DATA supports an insight, from its evidence text.
-    Turns the significance work already computed (p-values, sample sizes,
-    'hypothesis', 'not significant') into a client-readable High/Medium/Low.
-    """
-    t = (evidence or "").lower()
-    # Explicitly weak evidence
-    if any(k in t for k in ("not statistically significant", "sampling noise",
-                            "sample too small", "not testable", "could not",
-                            "significance not")):
-        return "Low"
-    # Strong significance
-    import re
-    if ("p<0.001" in t.replace(" ", "")) or ("p < 0.001" in t):
-        return "High"
-    m = re.search(r'p\s*[=<]\s*([0-9.]+)', t)
-    if m:
-        try:
-            pval = float(m.group(1))
-            return "High" if pval < 0.01 else "Medium" if pval < 0.05 else "Low"
-        except (ValueError, TypeError):
-            logger.debug("confidence: unparseable p-value %r", m.group(1))
-    if "statistically significant" in t:
-        return "High"
-    # Hypotheses / association-only framing = medium at best
-    if any(k in t for k in ("hypothesis", "association only", "not causation",
-                            "consistent with", "may ")):
-        return "Medium"
-    return "Medium"
 
 
 @dataclass

@@ -20,8 +20,15 @@ from app.services import warehouse as W
 
 
 @pytest.fixture
-def db():
-    path = os.path.join(tempfile.mkdtemp(), "warehouse.db")
+def db(monkeypatch):
+    # SQLite is refused unless the deployment names a directory it is
+    # willing to expose — a path here is a path on the application
+    # server's own disk, and `sqlite:////etc/passwd` used to work. This
+    # fixture is the legitimate self-hosted case, so it opts in the way
+    # a self-hosted deployment does.
+    directory = tempfile.mkdtemp()
+    monkeypatch.setenv("WAREHOUSE_SQLITE_DIR", directory)
+    path = os.path.join(directory, "warehouse.db")
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE employees "
                  "(id INTEGER, department TEXT, salary INTEGER)")
@@ -178,7 +185,9 @@ def test_connection_test_reports_the_dialect(db):
 
 
 def test_connection_test_reports_a_failure_without_raising():
-    result = W.test_connection("sqlite:////nonexistent/dir/x.db")
+    result = W.test_connection("sqlite:///" + os.path.join(
+        os.environ.get("WAREHOUSE_SQLITE_DIR", tempfile.gettempdir()),
+        "nonexistent.db"))
     assert result["ok"] is False
     assert result["error"]
 

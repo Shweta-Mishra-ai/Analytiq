@@ -220,31 +220,6 @@ def correlation_strength(r: float) -> str:
     return "negligible"
 
 
-def mean_difference_ci(a, b, confidence: float = 0.95):
-    """(difference, low, high) for two independent group means.
-
-    Welch, so unequal variances and unequal group sizes are handled — the
-    common case when one department has 142 people and another has 701.
-    """
-    try:
-        x = pd.Series(a).dropna().astype(float)
-        y = pd.Series(b).dropna().astype(float)
-        if len(x) < 3 or len(y) < 3:
-            return None
-        diff = float(x.mean() - y.mean())
-        se = math.sqrt(x.var(ddof=1) / len(x) + y.var(ddof=1) / len(y))
-        if se == 0:
-            return None
-        dof = (x.var(ddof=1) / len(x) + y.var(ddof=1) / len(y)) ** 2 / (
-            (x.var(ddof=1) / len(x)) ** 2 / (len(x) - 1)
-            + (y.var(ddof=1) / len(y)) ** 2 / (len(y) - 1))
-        crit = float(scipy_stats.t.ppf(1 - (1 - confidence) / 2, dof))
-        return diff, diff - crit * se, diff + crit * se
-    except Exception:
-        logger.debug("mean difference interval failed", exc_info=True)
-        return None
-
-
 def cohens_d(a, b) -> Optional[float]:
     """Standardised difference between two group means (pooled SD)."""
     try:

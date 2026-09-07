@@ -464,32 +464,6 @@ RULES:
 """
 
 # ══════════════════════════════════════════════════════════
-#  FIX-033: VALIDATION FILTER PROMPT
-#  Run this before any output reaches the report
-# ══════════════════════════════════════════════════════════
-
-VALIDATION_PROMPT = """
-Review this analyst output and fix any of these issues:
-
-BLOCK AND REWRITE if you find:
-1. "nan%" or "nan" anywhere → replace with actual value or remove the sentence
-2. "0% gap requiring attention" → this is meaningless, rewrite as a positive finding
-3. "evenly distributed" as the only insight → explain what even distribution means for the business
-4. Any percentage above 9,999% → flag as "data selection error — review column choice"
-5. "Chart generated from dataset" → rewrite with actual insight
-6. Any AI platform or model name mentions → remove completely
-7. Generic filler: "this is an important metric", "data shows patterns" → rewrite with specific numbers
-8. HR language in ecommerce context or vice versa → fix to match domain
-
-DOMAIN: {domain}
-INPUT TEXT:
-{text}
-
-OUTPUT: The corrected text only. No explanation of changes.
-"""
-
-
-# ══════════════════════════════════════════════════════════
 #  CHAT SYSTEM PROMPT (Analytiq tool-dispatch schema)
 # ══════════════════════════════════════════════════════════
 
@@ -764,14 +738,4 @@ INSIGHT_PROMPTS = {
     "healthcare": HEALTHCARE_INSIGHT_PROMPT,
     "general":    GENERAL_INSIGHT_PROMPT,
 }
-
-
-def executive_prompt_for(domain: str) -> str:
-    """Executive-summary prompt for a domain.
-
-    Falls back to the general prompt, never to another domain's — a
-    finance report must not be written in HR vocabulary.
-    """
-    return EXECUTIVE_PROMPTS.get(
-        str(domain or "").strip().lower(), GENERAL_EXECUTIVE_PROMPT)
 

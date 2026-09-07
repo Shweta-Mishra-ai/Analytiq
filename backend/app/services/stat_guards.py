@@ -144,24 +144,6 @@ def apply_fdr(findings: List[dict], p_key: str = "p",
     return out
 
 
-def filter_correlations(results: List[dict]) -> List[dict]:
-    """Apply the full honesty pipeline to correlation dicts that carry
-    'r', 'p' and 'n'. Returns only findings that survive, each annotated
-    with 'q' (adjusted p) and 'confidence'."""
-    tested = [r for r in results if r.get("n", 0) >= MIN_N]
-    if not tested:
-        return []
-    qvals = bh_adjust([r["p"] for r in tested])
-    out = []
-    for r, q in zip(tested, qvals):
-        if q < FDR_Q and abs(r["r"]) >= EFFECT_FLOOR:
-            r = dict(r)
-            r["q"] = round(float(q), 5)
-            r["confidence"] = confidence_label(r["n"], q, r["r"])
-            out.append(r)
-    return out
-
-
 # ── Restatements of the target ────────────────────────────
 # A column computed from another one — the same figure in thousands, an
 # exact copy under a second name, a log or a rank of it — correlates with

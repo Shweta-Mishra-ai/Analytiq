@@ -37,12 +37,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# ── The hues, in fixed order ──────────────────────────────
-# Assign by slot, never cycle. A seventh series folds into "Other" or
-# becomes small multiples; a generated hue would be outside the checked
-# set and is not a colour this product uses.
-HUES = ("blue", "orange", "teal", "gold", "plum", "red")
-
 CATEGORICAL_LIGHT = ("#1F5FA8", "#C2622A", "#009176",
                      "#B58A1E", "#7A4A8C", "#B03A32")
 CATEGORICAL_DARK  = ("#4589DE", "#D9762F", "#12A07C",
@@ -127,14 +121,3 @@ def grade_color(grade: str, dark: bool = False) -> str:
     return table.get(str(grade).strip().upper(),
                      (STATUS_DARK if dark else STATUS_LIGHT)["neutral"])
 
-
-def series_colors(n: int, dark: bool = False) -> list:
-    """The first `n` categorical slots, in order.
-
-    Never cycles. Asking for more slots than exist returns every slot
-    and no more — the caller is expected to have folded the tail into
-    "Other" before it got here, and silently repeating hue 1 for series
-    7 would make two different things look like one.
-    """
-    palette = CATEGORICAL_DARK if dark else CATEGORICAL_LIGHT
-    return list(palette[:max(0, n)])

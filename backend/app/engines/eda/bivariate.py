@@ -24,18 +24,6 @@ from app.engines.eda.results import BivariateResult, GroupComparisonResult
 from app.engines.statistics import (compare_groups)
 
 
-#  BIVARIATE ANALYSIS
-# ══════════════════════════════════════════════════════════
-
-def _cohens_d(a: np.ndarray, b: np.ndarray) -> float:
-    """Cohen's d effect size for two groups."""
-    pooled_std = np.sqrt(
-        ((len(a) - 1) * a.std()**2 + (len(b) - 1) * b.std()**2)
-        / (len(a) + len(b) - 2)
-    )
-    return float(abs(a.mean() - b.mean()) / pooled_std) if pooled_std > 0 else 0.0
-
-
 def _effect_label(d: float) -> str:
     if d < 0.2:
         return "Negligible"

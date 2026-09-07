@@ -149,6 +149,64 @@ def _fit_distribution(s: pd.Series) -> Tuple[str, Dict]:
     return best_dist, best_params
 
 
+def _plain_span(days: int) -> str:
+    """A duration a person would say out loud."""
+    if days >= 730:
+        return "{:.1f} years".format(days / 365.25)
+    if days >= 60:
+        return "{:.0f} months".format(days / 30.44)
+    if days >= 14:
+        return "{:.0f} weeks".format(days / 7)
+    return "{:,} days".format(days)
+
+
+def _describe_period(clean, result):
+    """What a date column covers, and how densely.
+
+    Split out of analyze_univariate so the "too few values" guard can
+    let a date column through: three numbers are too few to describe a
+    distribution, and two dates are enough to state a range.
+    """
+    n = len(clean)
+    result.dtype = "datetime"
+    if n == 0:
+        result.interpretation = "No dates in this column."
+        result.plain = "This column has no dates in it."
+        return result
+
+    first, last = clean.min(), clean.max()
+    # Inclusive: 1 Jan to 2 Jan is two days of coverage, not one.
+    # The exclusive count read "375 of the 374 days".
+    span_days = int((last.normalize() - first.normalize()).days) + 1
+    result.min_val = float(first.timestamp())
+    result.max_val = float(last.timestamp())
+    result.range_val = float(span_days)
+    result.unique_count = int(clean.nunique())
+
+    # How densely the period is covered. A year of daily orders with
+    # 300 distinct days has holidays in it; one with 12 has monthly
+    # rollups, and no trend line drawn on it means what it appears to.
+    days_present = int(clean.dt.normalize().nunique())
+    density = days_present / span_days if span_days > 1 else 1.0
+    grain = ("about daily" if density >= 0.6 else
+             "about weekly" if density >= 0.12 else
+             "about monthly" if density >= 0.025 else
+             "sparse")
+
+    result.interpretation = (
+        "{} to {} — {:,} days, {:,} of them with records ({}).".format(
+            first.date(), last.date(), span_days, days_present, grain))
+    result.plain = (
+        "Runs from {} to {}, about {}. Records land on {:,} of the "
+        "{:,} days in that window, so the coverage is {}.".format(
+            first.strftime("%d %b %Y"), last.strftime("%d %b %Y"),
+            _plain_span(span_days), days_present, span_days, grain)
+        if span_days > 1 else
+        "Every record shares one date, {}.".format(
+            first.strftime("%d %b %Y")))
+    return result
+
+
 def analyze_univariate(series: pd.Series) -> UnivariateResult:
     """Full univariate analysis for one column."""
     name  = str(series.name)
@@ -161,6 +219,13 @@ def analyze_univariate(series: pd.Series) -> UnivariateResult:
         missing_pct=round(series.isna().mean() * 100, 2),
         unique_count=int(clean.nunique()),
     )
+
+    # Dates first. Three values are too few to describe a distribution
+    # and plenty to state a period — "runs from 1 Jan to 3 Mar" needs
+    # two — so a short date column answered "Too few values for
+    # analysis" when it had the one answer a reader wanted.
+    if n and pd.api.types.is_datetime64_any_dtype(clean):
+        return _describe_period(clean, result)
 
     if n < 3:
         result.interpretation = "Too few values for analysis."

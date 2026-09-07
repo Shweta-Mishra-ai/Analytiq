@@ -54,12 +54,27 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
 
     # 1. Univariate — every column that is a measure
     analysable = [c for c in df.columns if c not in id_cols]
+    dropped = []
     for col in analysable[:30]:
         try:
             report.univariate[col] = analyze_univariate(df[col])
         except Exception:
-            logger.debug("run_eda: suppressed exception", exc_info=True)
+            # This was a DEBUG line reading "suppressed exception", and
+            # it hid a real one: analyze_univariate had no datetime
+            # branch, so every date column raised here and vanished from
+            # the EDA with nothing on the page to say a column had been
+            # dropped. A column the analysis could not read is a fact
+            # about the analysis, so it is named at WARNING and carried
+            # into the report rather than left to a log nobody reads.
+            logger.warning("EDA: could not analyse column %r (%s)",
+                           col, df[col].dtype, exc_info=True)
+            dropped.append(col)
             continue
+
+    if dropped:
+        report.warnings.append(
+            "These columns could not be analysed and are missing from "
+            "the table below: {}.".format(", ".join(dropped[:8])))
 
     # 2. Correlations — numeric pairs
     normality = {
