@@ -52,6 +52,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import pandas as pd
 
+from app.config import config
+
 logger = logging.getLogger(__name__)
 
 MAX_ROWS = 1_000_000
@@ -116,6 +118,70 @@ _READ_ONLY_START = re.compile(r"^\s*(select|with)\b", re.IGNORECASE)
 # A second statement is how a read-only check gets walked around, so a
 # query carrying one is refused rather than split and partly run.
 _STATEMENT_SPLIT = re.compile(r";\s*\S")
+
+# The above two were the whole guard, and five things walked past them.
+# Measured, not imagined:
+#
+#   WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x
+#   WITH x AS (SELECT 1) DELETE FROM users
+#       PostgreSQL data-modifying CTEs. Both start with "with", so the
+#       start-anchor matched and the statement deleted rows.
+#   SELECT * INTO new_table FROM users
+#       PostgreSQL and SQL Server: a SELECT that creates a table.
+#   SELECT * FROM users INTO OUTFILE '/tmp/pwned.txt'
+#       MySQL writes a file on the database server. Not transactional,
+#       so the rollback below does not undo it.
+#   SELECT lo_import('/etc/passwd')
+#       PostgreSQL large-object import: reads a server-side file.
+#
+# The rollback was described as the second of two guards. It is a
+# genuine second guard against DML, and no guard at all against a file
+# write or a DDL statement that auto-commits — so the statement check
+# has to carry the weight it was assumed to share.
+_FORBIDDEN_IN_READ = (
+    (re.compile(r"\b(insert|update|delete|merge|truncate|drop|alter|create|"
+                r"grant|revoke|call|do|copy|vacuum|reindex|attach|detach|"
+                r"pragma|load_extension)\b", re.IGNORECASE),
+     "It contains a statement that changes data or schema ({}). This "
+     "tool only reads."),
+    (re.compile(r"\binto\s+(outfile|dumpfile)\b", re.IGNORECASE),
+     "It writes a file on the database server (INTO {})."),
+    (re.compile(r"\bselect\b[\s\S]*?\binto\s+(?!outfile|dumpfile)"
+                r"[a-z_\"\[]", re.IGNORECASE),
+     "SELECT ... INTO creates a table. Use a plain SELECT."),
+    (re.compile(r"\b(lo_import|lo_export|pg_read_file|pg_read_binary_file|"
+                r"pg_ls_dir|pg_sleep|dblink|readfile|load_file|"
+                r"sys_exec|sys_eval|xp_cmdshell|openrowset|opendatasource)\s*\(",
+     re.IGNORECASE),
+     "It calls {}, which reads server files, runs commands or holds "
+     "the connection open."),
+)
+
+
+# Which URL schemes may be dialled at all. SQLAlchemy will happily build
+# an engine for any dialect it can import, and `sqlite:////etc/passwd`
+# made every file on the APPLICATION server readable by any
+# authenticated client — other tenants' datasets, the user store with
+# its credential hashes, the environment file with the API keys. The
+# feature is "read from your warehouse", and a path on our own disk is
+# not that.
+_ALLOWED_SCHEMES = frozenset(
+    spec["prefix"].split("://")[0] for key, spec in BACKENDS.items()
+    if key != "sqlite"
+)
+
+# SQLite stays available for local and self-hosted use, but only inside
+# a directory the deployment names, and only when it names one. Off by
+# default: on a hosted install there is no such directory, and the
+# answer to "can a client read /etc/passwd" must not depend on nobody
+# trying.
+_SQLITE_SCHEME = "sqlite"
+
+
+def _sqlite_root() -> Optional[str]:
+    import os
+    root = (os.environ.get("WAREHOUSE_SQLITE_DIR") or "").strip()
+    return os.path.realpath(root) if root else None
 
 
 class WarehouseError(RuntimeError):
@@ -225,8 +291,121 @@ def assert_read_only(sql: str) -> None:
             "Send one statement at a time. A query containing a second "
             "statement after a semicolon is refused rather than split.")
 
+    # Starting with SELECT or WITH is necessary and, on its own, not
+    # close to sufficient — see the cases listed beside
+    # _FORBIDDEN_IN_READ, every one of which walked past the check
+    # above while starting with one of those two words.
+    for pattern, message in _FORBIDDEN_IN_READ:
+        found = pattern.search(sql)
+        if found:
+            offending = (found.group(1) if found.groups() else found.group(0))
+            raise WarehouseError(
+                "That query was refused. " + message.format(
+                    str(offending).strip().upper()))
+
+
+def assert_dialable(url: str) -> None:
+    """Refuse a connection URL before an engine is built for it.
+
+    Two separate risks, both of them the same shape — the SERVER makes a
+    connection to a host the CLIENT names:
+
+    * a scheme we never meant to support (``sqlite:////etc/passwd`` read
+      arbitrary files on the application server), and
+    * a host inside our own network (``127.0.0.1`` reaches services that
+      are not exposed; ``169.254.169.254`` is the cloud metadata
+      endpoint that hands out the instance's credentials).
+    """
+    import ipaddress
+    import os
+
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        raise WarehouseError("That connection URL could not be read.") from None
+
+    scheme = (parts.scheme or "").lower()
+    base = scheme.split("+")[0]
+    if not scheme:
+        raise WarehouseError(
+            "A connection URL needs to start with the database type, "
+            "for example postgresql+psycopg://")
+
+    if base == _SQLITE_SCHEME:
+        root = _sqlite_root()
+        if not root:
+            raise WarehouseError(
+                "SQLite files are not available on this server. A path "
+                "here is a path on the application's own disk rather "
+                "than a database you own, so it is refused unless the "
+                "deployment sets WAREHOUSE_SQLITE_DIR to a directory it "
+                "is willing to expose.")
+        # A SQLite URL is "sqlite://" + an empty netloc + the path, so
+        # sqlite:///rel.db is relative and sqlite:////abs.db is
+        # absolute. Stripping every leading slash turns the absolute
+        # form into a relative one and lands the check on the wrong
+        # file entirely.
+        rest = url.split("://", 1)[1]
+        raw = rest[1:] if rest.startswith("/") else rest
+        target = os.path.realpath(raw)
+        try:
+            shared = os.path.commonpath([target, root])
+        except ValueError:            # different drives / bad path
+            shared = ""
+        if shared != root:
+            raise WarehouseError(
+                "That SQLite file is outside the directory this server "
+                "allows database files to be read from.")
+        return
+
+    if scheme not in _ALLOWED_SCHEMES:
+        raise WarehouseError(
+            "'{}' is not a database type this server connects to. "
+            "Supported: {}.".format(
+                scheme, ", ".join(sorted(_ALLOWED_SCHEMES))))
+
+    host = (parts.hostname or "").strip()
+    if not host:
+        raise WarehouseError("That connection URL names no host.")
+
+    # A name that resolves to a blocked address is the same attack with
+    # a DNS record in front of it, so resolve before judging.
+    addresses = []
+    try:
+        ip = ipaddress.ip_address(host)
+        addresses = [ip]
+    except ValueError:
+        import socket
+        try:
+            for info in socket.getaddrinfo(host, None):
+                try:
+                    addresses.append(ipaddress.ip_address(info[4][0]))
+                except ValueError:
+                    continue
+        except OSError:
+            # Unresolvable is the database's problem to report, not a
+            # reason to refuse here — the connection will fail with a
+            # message about the host, which is what the user needs.
+            logger.debug("could not resolve warehouse host %r", host,
+                         exc_info=True)
+            return
+
+    allow_private = getattr(config, "warehouse_allow_private_hosts", True)
+    for ip in addresses:
+        if ip.is_loopback or ip.is_link_local or ip.is_multicast \
+                or ip.is_reserved or ip.is_unspecified:
+            raise WarehouseError(
+                "That address ({}) is on the application server's own "
+                "network rather than a database you own. Connections "
+                "there are refused.".format(ip))
+        if ip.is_private and not allow_private:
+            raise WarehouseError(
+                "That address ({}) is on a private network this server "
+                "does not connect out to.".format(ip))
+
 
 def _engine(url: str):
+    assert_dialable(url)
     if not sqlalchemy_available():
         raise WarehouseError(
             "SQLAlchemy is not installed on this server, so database "

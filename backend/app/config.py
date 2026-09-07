@@ -117,6 +117,17 @@ class AppConfig(BaseSettings):
     # everyone. These are per-owner and enforced at ingest with an error
     # that says which limit was hit, rather than by silent truncation.
     rag_max_kbs_per_owner: int = Field(default=25, alias="RAG_MAX_KBS")
+
+    # Warehouse connections are made by the SERVER to a host the CLIENT
+    # names, which is the shape of every SSRF. Loopback and link-local
+    # are refused always — nothing a client legitimately analyses lives
+    # on the app server's own loopback, and 169.254.169.254 is the cloud
+    # metadata endpoint that hands out instance credentials. Private
+    # ranges are allowed by default because a warehouse inside the
+    # deployment's own VPC is the normal case; set this false on a
+    # multi-tenant host where clients must reach public endpoints only.
+    warehouse_allow_private_hosts: bool = Field(
+        default=True, alias="WAREHOUSE_ALLOW_PRIVATE_HOSTS")
     rag_max_files_per_kb: int = Field(default=100, alias="RAG_MAX_FILES")
     rag_max_chunks_per_kb: int = Field(default=8000, alias="RAG_MAX_CHUNKS")
     max_rows_preview: int = 100_000

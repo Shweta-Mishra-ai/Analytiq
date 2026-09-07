@@ -16,6 +16,7 @@ from app.config import config
 from app.engines.data_cleaner import table_name_from_filename
 from app.services.auth import current_owner
 from app.services.dataset_store import store
+from app.services.spreadsheet_safety import safe_columns, safe_for_export
 from app.services.metrics import metrics
 from app.services.serialize import to_jsonable
 
@@ -62,8 +63,17 @@ def _df_or_404(owner: str, ds_id: str):
 @router.get("/{ds_id}/csv")
 def export_csv(ds_id: str, owner: str = Depends(current_owner)):
     df = _df_or_404(owner, ds_id)
-    store.record_event(owner, ds_id, "export", {"format": "csv", "rows": len(df)})
-    buf = io.BytesIO(df.to_csv(index=False).encode("utf-8-sig"))
+    # Every export here is aimed at Excel — this one even carries a BOM
+    # so Excel picks the right encoding — and Excel decides a cell is a
+    # formula from its first character. A value that arrived in an
+    # uploaded file as "=cmd|'/c calc'!A1" came out of this endpoint
+    # unchanged and became executable when the recipient opened it.
+    df, neutralised = safe_for_export(df)
+    store.record_event(owner, ds_id, "export",
+                       {"format": "csv", "rows": len(df),
+                        "formula_cells_neutralised": neutralised})
+    csv_text = df.to_csv(index=False)
+    buf = io.BytesIO(csv_text.encode("utf-8-sig"))
     return StreamingResponse(buf, media_type="text/csv", headers={
         "Content-Disposition": "attachment; filename=analytiq_cleaned_data.csv"})
 
@@ -71,10 +81,19 @@ def export_csv(ds_id: str, owner: str = Depends(current_owner)):
 @router.get("/{ds_id}/excel")
 def export_excel(ds_id: str, owner: str = Depends(current_owner)):
     df = _df_or_404(owner, ds_id)
-    store.record_event(owner, ds_id, "export", {"format": "xlsx", "rows": len(df)})
+    df, neutralised = safe_for_export(df)
+    store.record_event(owner, ds_id, "export",
+                       {"format": "xlsx", "rows": len(df),
+                        "formula_cells_neutralised": neutralised})
     buf = io.BytesIO()
     import pandas as pd
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        # strings_to_formulas=False stops xlsxwriter turning a leading
+        # "=" into a real formula object on the way in, which would put
+        # one back after we removed it.
+        writer.book.strings_to_formulas = False
+        writer.book.strings_to_urls = False
+        df.columns = safe_columns(df.columns)
         df.to_excel(writer, sheet_name="Data", index=False)
         num = df.select_dtypes(include="number")
         if not num.empty:
