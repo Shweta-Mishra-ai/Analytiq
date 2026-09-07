@@ -23,7 +23,8 @@ from app.engines.statistics import (clamp_p, cohens_d,
 
 from app.services.dtypes import text_columns
 from app.services.stat_guards import (apply_fdr, chi2_association,
-                                      is_binned_from, is_restatement)
+                                      is_binned_from, is_composed_of,
+                                      is_restatement)
 
 from app.engines.bi.results import RootCauseResult
 
@@ -67,6 +68,16 @@ def analyze_root_cause(
         if c == target_col:
             continue
         if is_restatement(df[c], df[target_col]):
+            restated.append(c)
+            continue
+        # And the next case out: a column BUILT from the target.
+        # revenue = quantity x unit_price correlates with quantity at
+        # r≈0.83 — a real association, nowhere near a restatement — so
+        # it survived the check above and the report announced "what
+        # separates the low quantity group from the high one most is
+        # revenue", then advised raising revenue to fix quantity.
+        # Revenue follows from quantity; that arrow points backwards.
+        if is_composed_of(df, c, target_col):
             restated.append(c)
             continue
         num_cols.append(c)
@@ -226,18 +237,27 @@ def analyze_root_cause(
         top = drivers[0]
         interp = (
             "{:.0f}% of records ({:,}) are in the bottom {:.0f}% of '{}'. "
-            "Top driver: '{}' — {}".format(
+            "Separates them most: '{}' — {}".format(
                 low_pct, n_low, threshold_pct, target_col,
                 top["factor"], top["detail"])
         )
         recs = []
         for d in drivers[:3]:
             if d["dtype"] == "numeric":
+                # "Bring revenue to 3,193" reads as an instruction, and
+                # this analysis has established an association, not a
+                # lever — the factor may well be something that follows
+                # from the target rather than something anyone sets.
+                # Say what was measured and what to check, not what to
+                # go and do.
                 recs.append(
-                    "Focus on '{}' — low performers show {:.1f}% difference. "
-                    "Bring to high-performer level ({:.2f}) from current {:.2f}.".format(
-                        d["factor"], d["diff_pct"],
-                        d["high_mean"], d["low_mean"])
+                    "Low and high {} differ most on {}: {} against {}, a "
+                    "{:.0f}% gap. Check whether {} is something you set "
+                    "or something that follows from {}; only the first "
+                    "is a lever.".format(
+                        _L(target_col), _L(d["factor"]),
+                        _N(d["low_mean"]), _N(d["high_mean"]), d["diff_pct"],
+                        _L(d["factor"]), _L(target_col))
                 )
             else:
                 recs.append(

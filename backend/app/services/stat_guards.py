@@ -290,3 +290,64 @@ def is_binned_from(df, cat: str, num: str) -> bool:
     except Exception:
         logger.debug("bin check failed for %s x %s", cat, num, exc_info=True)
         return False
+
+
+# ── Columns built out of the target ───────────────────────
+# The restatement check above catches a column that IS the target
+# rewritten. This catches the next case out: a column COMPOSED from it.
+# revenue = quantity x unit_price correlates with quantity at r≈0.83 —
+# a real association, nowhere near the restatement threshold — and the
+# root-cause engine duly reported "what separates the low quantity group
+# from the high one most is revenue", then recommended raising revenue
+# to fix quantity. Revenue is downstream of quantity; that is the arrow
+# pointing backwards.
+COMPOSITION_R = 0.999
+# Composition is structural, like restatement, so it needs a slice of
+# the rows rather than all of them — and it is O(columns) per candidate
+# on top of the O(candidates) loop that calls it, so on a 50,000-row,
+# 40-column frame the unsampled version took a BI run to 11s. Same
+# stride, same reason.
+COMPOSITION_SAMPLE = 4_000
+COMPOSITION_MAX_OTHERS = 12
+
+
+def is_composed_of(df, candidate: str, target: str) -> bool:
+    """True when `candidate` is the target combined with another column.
+
+    Tests the two ways a business metric is normally built — a product
+    (revenue = units x price) and a sum (total = base + tax) — against
+    every other numeric column. Exact by design: a near-miss is a real
+    relationship and belongs in the report.
+    """
+    import pandas as pd
+
+    try:
+        numeric = df.select_dtypes(include="number")
+        if candidate not in numeric.columns or target not in numeric.columns:
+            return False
+        if len(numeric) > COMPOSITION_SAMPLE:
+            numeric = numeric.iloc[::(len(numeric) // COMPOSITION_SAMPLE)]
+        c, t = numeric[candidate], numeric[target]
+        if c.nunique() < 2 or t.nunique() < 2:
+            return False
+
+        others = [col for col in numeric.columns
+                  if col not in (candidate, target)][:COMPOSITION_MAX_OTHERS]
+        for other in others:
+            x = numeric[other]
+            if x.nunique() < 2:
+                continue
+            for combined in (t * x, t + x):
+                try:
+                    r = c.corr(combined)
+                except Exception:
+                    logger.debug("composition corr failed for %s vs %s+%s",
+                                 candidate, target, other, exc_info=True)
+                    continue
+                if r is not None and abs(float(r)) >= COMPOSITION_R:
+                    logger.info("'%s' is '%s' combined with '%s'",
+                                candidate, target, other)
+                    return True
+    except Exception:
+        logger.debug("is_composed_of: suppressed exception", exc_info=True)
+    return False

@@ -419,3 +419,79 @@ def test_sampling_does_not_blunt_the_check(n):
     assert is_restatement(v, v / 1000) is True
     assert is_restatement(v, np.log(v + 1)) is True
     assert is_restatement(v, v + rng.normal(0, 120, n)) is False
+
+
+# ══════════════════════════════════════════════════════════
+#  Columns built out of the target
+# ══════════════════════════════════════════════════════════
+#
+# The restatement guard catches a column that IS the target rewritten.
+# One case out sits revenue = quantity x unit_price, which correlates
+# with quantity at r≈0.83 — a real association, nowhere near the
+# restatement threshold — so it sailed through, and the Business Intel
+# page headlined:
+#
+#     "What separates the low Quantity group from the high one most is
+#      Revenue: 77% apart."
+#     "Focus on 'revenue' — bring to high-performer level (3,193.45)
+#      from current 741.18."
+#
+# Revenue follows from quantity. Raising it is not a way to raise
+# quantity; that arrow points backwards.
+
+from app.services.stat_guards import is_composed_of
+
+
+@pytest.fixture(scope="module")
+def composed() -> pd.DataFrame:
+    rng = np.random.default_rng(7)
+    n = 800
+    price = rng.normal(100, 25, n)
+    promo = rng.uniform(0, 30, n)
+    # promo_spend genuinely drives quantity; revenue is built from it.
+    qty = (rng.integers(1, 40, n) + promo * 0.8).round().astype(int)
+    return pd.DataFrame({
+        "quantity":      qty,
+        "unit_price":    price.round(2),
+        "revenue":       (qty * price).round(2),
+        "promo_spend":   promo.round(1),
+        "delivery_days": rng.poisson(5, n) + 1,
+    })
+
+
+def test_a_product_of_the_target_is_recognised(composed):
+    assert is_composed_of(composed, "revenue", "quantity") is True
+    assert is_composed_of(composed, "revenue", "unit_price") is True
+
+
+def test_a_sum_containing_the_target_is_recognised():
+    rng = np.random.default_rng(3)
+    base = rng.normal(500, 90, 400)
+    tax = base * 0.2
+    df = pd.DataFrame({"base": base.round(2), "tax": tax.round(2),
+                       "total": (base + tax).round(2)})
+    assert is_composed_of(df, "total", "base") is True
+
+
+def test_an_unrelated_column_is_not_composed(composed):
+    assert is_composed_of(composed, "delivery_days", "quantity") is False
+    # And the arrow has a direction: quantity is not built from revenue.
+    assert is_composed_of(composed, "quantity", "revenue") is False
+
+
+def test_the_headline_driver_is_not_downstream_of_the_target(composed):
+    r = analyze_root_cause(composed, "quantity")
+    factors = {d["factor"] for d in r.drivers}
+    assert "revenue" not in factors
+    assert r.top_driver == "promo_spend", "the real driver must survive"
+
+
+def test_no_recommendation_claims_a_lever_it_has_not_established(composed):
+    """An association is not a control. "Bring revenue to 3,193" reads
+    as an instruction; this analysis never established that anyone can
+    set revenue, or that doing so would move quantity."""
+    r = analyze_root_cause(composed, "quantity")
+    joined = " ".join(r.recommendations)
+    assert "Bring to high-performer level" not in joined
+    assert "something you set" in joined
+    assert "only the first is a lever" in joined
