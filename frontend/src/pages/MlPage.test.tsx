@@ -217,3 +217,72 @@ describe('failures', () => {
     expect(screen.queryByText('Model leaderboard')).toBeNull()
   })
 })
+
+/**
+ * The what-if predictor: the one thing a trained model is for, and the
+ * endpoint no page called. It is also where a user is most likely to
+ * walk past the edge of the evidence — typing a big number is the
+ * obvious thing to try — so the panel must show the model's actual
+ * range up front and mark an answer that sits outside it.
+ */
+describe('asking the model a question', () => {
+  const withRanges = {
+    ...goodReport,
+    feature_ranges: {
+      salary: { min: 30000, max: 130000 },
+      tenure_years: { min: 0.5, max: 12 },
+    },
+  }
+
+  it('offers the inputs and states the range each was fitted on', async () => {
+    stubApi(withRanges)
+    render(<MlPage />)
+    expect(await screen.findByText(/What would/)).toBeInTheDocument()
+    expect(screen.getByText(/data covers 30,000 – 130,000/)).toBeInTheDocument()
+  })
+
+  it('shows a prediction inside the range without a caveat', async () => {
+    stubApi(withRanges)
+    vi.spyOn(client, 'apiPost').mockResolvedValue({
+      prediction: 46.6,
+      lower: 40.1,
+      upper: 53.1,
+      within_training_range: true,
+      out_of_range: [],
+    })
+    render(<MlPage />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: /Predict/ }))
+
+    expect(await screen.findByText('46.6')).toBeInTheDocument()
+    expect(screen.queryByText(/Outside what the model has seen/)).toBeNull()
+  })
+
+  it('marks an answer the model had no standing to give', async () => {
+    stubApi(withRanges)
+    vi.spyOn(client, 'apiPost').mockResolvedValue({
+      prediction: 1937.6,
+      within_training_range: false,
+      out_of_range: ['Salary of 5.00m is outside the 30,000 to 130,000 the data covers'],
+      range_note:
+        'This prediction is outside what the model has seen: Salary of 5.00m is outside the 30,000 to 130,000 the data covers. The figure above is the fitted model extended past its evidence, not something the data supports.',
+    })
+    render(<MlPage />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: /Predict/ }))
+
+    expect(
+      await screen.findByText(/Outside what the model has seen/),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/Salary of 5.00m is outside/)).toBeInTheDocument()
+    // The number is still shown — the caller wants both.
+    expect(screen.getByText('1,938')).toBeInTheDocument()
+  })
+
+  it('stays away when the model carries no ranges', async () => {
+    stubApi(goodReport)
+    render(<MlPage />)
+    await screen.findByText('What drives the prediction')
+    expect(screen.queryByText(/What would/)).toBeNull()
+  })
+})

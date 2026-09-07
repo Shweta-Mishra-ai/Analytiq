@@ -12,7 +12,9 @@ import logging
 import matplotlib
 matplotlib.use("Agg")                      # no display; PNG bytes only
 import matplotlib.pyplot as plt            # noqa: E402
-import pandas as pd                        # noqa: E402
+import pandas as pd
+
+from app.engines import present as _present                        # noqa: E402
 
 
 logger = logging.getLogger(__name__)
@@ -21,9 +23,12 @@ logger = logging.getLogger(__name__)
 
 from app.engines.pdf_primitives import truncate_label
 from app.services.dtypes import MONTH_END
+from app.engines.palette import (STATUS_DARK as _STATUS_DARK,
+                                 STATUS_LIGHT as _STATUS_LIGHT)
 from app.engines.charts.style import (
     _agg_for_metric, _apply_style, _axis_label, _footnote, _gap_headline,
-    _get_colors, _get_style, _pretty, _reference_line, _tick_budget,
+    _get_colors, _get_style, _pretty, _reference_line, _single_color,
+    _tick_budget,
     fig_to_bytes,
 )
 
@@ -84,10 +89,18 @@ def make_bar_chart(
     ax.legend(fontsize=8, framealpha=0)
 
     ax.set_xticks(range(len(agg)))
+    # Three short category names were being tilted 35°, which reads as a
+    # chart that ran out of room when it had not. Rotate only when the
+    # labels genuinely will not sit side by side.
+    _tick_text = [truncate_label(str(v), _tick_budget(len(agg), 14))
+                  for v in agg[x_col]]
+    _crowded = (len(_tick_text) > 6
+                or max((len(t) for t in _tick_text), default=0) > 10)
     ax.set_xticklabels(
-        [truncate_label(str(v), _tick_budget(len(agg), 14))
-         for v in agg[x_col]],
-        rotation=35, ha="right", fontsize=8.5
+        _tick_text,
+        rotation=30 if _crowded else 0,
+        ha="right" if _crowded else "center",
+        fontsize=8.5,
     )
     ax.set_ylabel(y_label, fontsize=9, color=style["axes.labelcolor"])
     # Headline states the finding; the descriptive title becomes the subtitle
@@ -180,26 +193,31 @@ def make_line_chart(
     ax.set_xticks(list(x_vals)[::step])
     ax.set_xticklabels(labels[::step], rotation=35, ha="right", fontsize=8)
 
-    ax.set_ylabel(y_col, fontsize=9, color=style["axes.labelcolor"])
+    ax.set_ylabel(_pretty(y_col), fontsize=9, color=style["axes.labelcolor"])
     # Headline: direction and size of the change across the period
     try:
         first_v, last_v = float(y_vals[0]), float(y_vals[-1])
         if first_v != 0 and len(y_vals) >= 3:
             chg = (last_v - first_v) / abs(first_v) * 100
             word = "up" if chg > 1 else "down" if chg < -1 else "flat"
-            headline = "{} {} {:.0f}% across the period ({:.3g} → {:.3g})".format(
-                y_col.replace("_", " "), word, abs(chg), first_v, last_v) \
+            # "{:.3g}" turned 2,780 into "2.78e+03". Scientific
+            # notation is correct and unreadable, and it appeared in the
+            # headline of a chart on page one of a client report.
+            # present.num() is the same formatter the tables use.
+            headline = "{} {} {:.0f}% across the period ({} → {})".format(
+                _pretty(y_col), word, abs(chg),
+                _present.num(first_v), _present.num(last_v)) \
                 if word != "flat" else \
-                "{} is stable across the period (~{:.3g})".format(
-                    y_col.replace("_", " "), last_v)
+                "{} is stable across the period (about {})".format(
+                    _pretty(y_col), _present.num(last_v))
             ax.set_title(headline, fontsize=11.5, fontweight="bold",
                          color=style["text.color"], pad=18, loc="left")
-            ax.text(0, 1.02, title or "{} Trend".format(y_col),
+            ax.text(0, 1.02, title or "{} Over Time".format(_pretty(y_col)),
                     transform=ax.transAxes, fontsize=8.5, color="#64748B")
         else:
             raise ValueError("headline not computable")
     except Exception:
-        ax.set_title(title or "{} Trend".format(y_col),
+        ax.set_title(title or "{} Over Time".format(_pretty(y_col)),
                      fontsize=11, fontweight="bold",
                      color=style["text.color"], pad=10)
     _footnote(fig, int(len(df[[x_col, y_col]].dropna())), style)
@@ -222,35 +240,46 @@ def make_histogram(
     fig.patch.set_facecolor(style["figure.facecolor"])
     _apply_style(ax, style)
 
-    ax.hist(data, bins=bins, color=colors[0],
-            alpha=0.8, edgecolor=style["axes.edgecolor"],
+    # One distribution is one series, so it wears the single-series
+    # colour. The mean and median lines are annotations, not series, and
+    # take reserved status colours — taking them from categorical slots
+    # 3 and 4 meant a chart with three real series and a mean line drew
+    # two different things in the same hue.
+    ax.hist(data, bins=bins, color=_single_color(theme_name),
+            alpha=0.9, edgecolor=style["figure.facecolor"],
             linewidth=0.4)
 
     mean_val   = data.mean()
     median_val = data.median()
+    _stat = _STATUS_DARK if theme_name == "Dark Tech" else _STATUS_LIGHT
 
-    ax.axvline(mean_val, color=colors[2],
-               linestyle="--", linewidth=1.8,
-               label="Mean: {:.2f}".format(mean_val))
-    ax.axvline(median_val, color=colors[3] if len(colors) > 3 else colors[1],
-               linestyle=":", linewidth=1.8,
-               label="Median: {:.2f}".format(median_val))
-    ax.legend(fontsize=8)
+    ax.axvline(mean_val, color=_stat["critical"],
+               linestyle="--", linewidth=1.6,
+               label="Mean: {}".format(_present.num(mean_val)))
+    ax.axvline(median_val, color=_stat["good"],
+               linestyle=":", linewidth=1.6,
+               label="Median: {}".format(_present.num(median_val)))
+    ax.legend(fontsize=8, frameon=False)
 
-    ax.set_xlabel(col, fontsize=9, color=style["axes.labelcolor"])
+    ax.set_xlabel(_pretty(col), fontsize=9, color=style["axes.labelcolor"])
     ax.set_ylabel("Frequency", fontsize=9, color=style["axes.labelcolor"])
-    # Headline: typical value + spread — what a reader actually needs
+    # Headline: typical value + spread — what a reader actually needs.
+    # "{:.2f}" printed "Typical revenue is 2334.97 (P10 529.19 – P90
+    # 4874.76)": four decimals nobody needs and no separator on numbers
+    # in the thousands.
     try:
         p10, p90 = float(data.quantile(0.10)), float(data.quantile(0.90))
-        headline = "Typical {} is {:.2f} (P10 {:.2f} – P90 {:.2f})".format(
-            col.replace("_", " "), float(median_val), p10, p90)
+        headline = "Typical {} is {} (middle 80% runs {} to {})".format(
+            _pretty(col), _present.num(median_val),
+            _present.num(p10), _present.num(p90))
         ax.set_title(headline, fontsize=11.5, fontweight="bold",
                      color=style["text.color"], pad=18, loc="left")
-        ax.text(0, 1.02, title or "Distribution: {}".format(col),
-                transform=ax.transAxes, fontsize=8.5, color="#64748B")
+        ax.text(0, 1.02, title or "Distribution of {}".format(_pretty(col)),
+                transform=ax.transAxes, fontsize=8.5,
+                color=style["axes.labelcolor"], alpha=0.7)
     except Exception:
         logger.warning("histogram headline failed", exc_info=True)
-        ax.set_title(title or "Distribution: {}".format(col),
+        ax.set_title(title or "Distribution of {}".format(_pretty(col)),
                      fontsize=11, fontweight="bold",
                      color=style["text.color"], pad=10)
     _footnote(fig, int(len(data)), style)
@@ -429,10 +458,12 @@ def make_correlation_heatmap(
 
     ax.set_xticks(range(n))
     ax.set_yticks(range(n))
-    ax.set_xticklabels([truncate_label(c, 10) for c in corr.columns],
-                       rotation=45, ha="right", fontsize=8,
+    # Ten characters clipped "discount_pct" to "discount_..." — a label
+    # that names nothing. Human labels, and enough room for them.
+    ax.set_xticklabels([truncate_label(_pretty(c), 16) for c in corr.columns],
+                       rotation=30, ha="right", fontsize=8,
                        color=style["xtick.color"])
-    ax.set_yticklabels([truncate_label(c, 10) for c in corr.index],
+    ax.set_yticklabels([truncate_label(_pretty(c), 16) for c in corr.index],
                        fontsize=8, color=style["ytick.color"])
     ax.set_title(title, fontsize=11, fontweight="bold",
                  color=style["text.color"], pad=10)
@@ -531,7 +562,7 @@ def make_risk_heatmap(
                         fontweight="bold")
     ax.set_xticks(range(piv.shape[1]))
     ax.set_yticks(range(piv.shape[0]))
-    ax.set_xticklabels([truncate_label(str(c), 14) for c in piv.columns], rotation=25, ha="right",
+    ax.set_xticklabels([truncate_label(_pretty(c), 14) for c in piv.columns], rotation=25, ha="right",
                        fontsize=9, color=style["xtick.color"])
     ax.set_yticklabels([truncate_label(str(r), 16) for r in piv.index], fontsize=9,
                        color=style["ytick.color"])

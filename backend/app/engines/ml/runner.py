@@ -158,10 +158,23 @@ def run_ml_pipeline(
         except Exception:
             logger.debug("run_ml_pipeline: suppressed exception", exc_info=True)
 
+    # The span of each numeric feature as the model actually saw it —
+    # the reference a what-if prediction is checked against.
+    feature_ranges = {}
+    for col in X.columns:
+        try:
+            series = pd.to_numeric(X[col], errors="coerce").dropna()
+            if len(series) and series.nunique() > 1:
+                feature_ranges[col] = {"min": float(series.min()),
+                                       "max": float(series.max())}
+        except Exception:
+            logger.debug("feature range failed for %s", col, exc_info=True)
+
     report = MLReport(
         task=task,
         target_col=target_col,
         feature_cols=list(X.columns),
+        feature_ranges=feature_ranges,
         n_rows_used=len(X),
         n_features=len(X.columns),
         class_balance=class_balance,

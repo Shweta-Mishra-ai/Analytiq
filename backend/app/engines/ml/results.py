@@ -83,6 +83,13 @@ class MLReport:
     # here, and priced by score_without_suspects.
     suspect_features:   List = field(default_factory=list)
     score_without_suspects: Any = None
+    # {feature: {"min": x, "max": y}} for every numeric feature the model
+    # was fitted on. A trained model returns a confident number for any
+    # input, including one nothing in the training data resembles, so the
+    # what-if screen could take a salary of 5,000,000 against a model
+    # fitted on 30k–120k and answer with a confidence interval. Keeping
+    # the ranges (a few hundred bytes) is what lets it say so.
+    feature_ranges:     Dict = field(default_factory=dict)
 
 
 # ══════════════════════════════════════════════════════════

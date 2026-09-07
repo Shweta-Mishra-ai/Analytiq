@@ -19,6 +19,7 @@ import logging
 import matplotlib
 matplotlib.use("Agg")                      # no display; PNG bytes only
 import matplotlib.pyplot as plt            # noqa: E402
+import matplotlib.ticker as _mticker       # noqa: E402
 
 from app.engines import present as _present  # noqa: E402
 
@@ -70,9 +71,21 @@ def _pretty(name: str) -> str:
     return " ".join(w if w.isupper() else w.capitalize() for w in s.split())
 
 
-LIGHT_COLORS = ["#1565C0", "#0D47A1", "#B71C1C", "#1B5E20", "#4527A0", "#E65100"]
-DARK_COLORS  = ["#64B5F6", "#4DB6AC", "#FFB74D", "#CE93D8", "#EF9A9A", "#FFF176"]
-GREEN_COLORS = ["#1B5E20", "#2E7D32", "#388E3C", "#43A047", "#1A237E", "#0D47A1"]
+# The chart palettes are the product palette, not a set of their own.
+# These three lists used to be picked here in isolation, so a chart's
+# blue (#1565C0) was a different blue from the heading above it
+# (#1B4FD8) and from the app's accent (#5b8def) — three blues in one
+# deliverable, none of them wrong on its own. engines/palette.py holds
+# the checked steppings; this module only chooses which one applies.
+from app.engines.palette import (CATEGORICAL_DARK, CATEGORICAL_LIGHT,
+                                 SINGLE_DARK, SINGLE_LIGHT)
+
+LIGHT_COLORS = list(CATEGORICAL_LIGHT)
+DARK_COLORS  = list(CATEGORICAL_DARK)
+# "Executive Green" used to be a fourth, unrelated set that recoloured
+# every chart green. A theme is a surface, not a different identity:
+# green charts in a blue report were the loudest half of the mismatch.
+GREEN_COLORS = list(CATEGORICAL_LIGHT)
 
 # Must be defined at module level before any function references it
 _SCORE_KEYWORDS = {"satisfaction", "rating", "score", "evaluation", "performance",
@@ -181,17 +194,51 @@ def _get_style(theme_name: str) -> dict:
         }
 
 
+# Grouped digits on every value axis, matching present.num() in the
+# tables and the narrative.
+def _thousands_fmt(x, _pos=None) -> str:
+    if abs(x) >= 1000 and float(x).is_integer():
+        return "{:,.0f}".format(x)
+    if abs(x) >= 1000:
+        return "{:,.0f}".format(x)
+    if float(x).is_integer():
+        return "{:,.0f}".format(x)
+    return "{:,.4g}".format(x)
+
+
+_thousands = _mticker.FuncFormatter(_thousands_fmt)
+
+
 def _get_colors(theme_name: str) -> list:
+    """The categorical slots for a theme, in fixed order.
+
+    Callers index this by series, never by chart: giving chart 3 the
+    third hue makes the reader hunt for what the colour means across
+    charts, where it means nothing. For a single series use
+    `_single_color` instead.
+    """
     if theme_name == "Dark Tech":
         return DARK_COLORS
-    elif theme_name == "Executive Green":
-        return GREEN_COLORS
     return LIGHT_COLORS
+
+
+def _single_color(theme_name: str) -> str:
+    """The one colour a single-series chart wears."""
+    return SINGLE_DARK if theme_name == "Dark Tech" else SINGLE_LIGHT
 
 
 def _apply_style(ax, style: dict):
     ax.set_facecolor(style["axes.facecolor"])
     ax.tick_params(colors=style["xtick.color"])
+    # Axis ticks printed "14000" beside a data label reading "13,691" —
+    # the same quantity written two ways on one chart. Matplotlib's
+    # default formatter also reaches for scientific notation on large
+    # values, which has no place on a client chart.
+    # A FuncFormatter already forces plain notation, and asking
+    # ticklabel_format() on top of it raises "This method only works
+    # with the ScalarFormatter" — which the chart layer swallowed, so
+    # the exhibit silently vanished from the report.
+    ax.yaxis.set_major_formatter(_thousands)
     # Value-axis gridlines only — a full grid competes with the data.
     ax.grid(True, axis="y", color=style["grid.color"],
             alpha=style["grid.alpha"] * 0.7, linewidth=0.5)
@@ -209,7 +256,7 @@ def _footnote(fig, n: int, style: dict, note: str = ""):
     if note:
         txt += " | " + note
     fig.text(0.99, 0.005, txt, ha="right", va="bottom",
-             fontsize=7, color="#94A3B8")
+             fontsize=7, color=style.get("footnote.color", "#7A8798"))
 
 
 def _gap_headline(agg_sorted, x_col, y_col, fmt) -> str:

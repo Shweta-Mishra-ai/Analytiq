@@ -21,6 +21,43 @@ from app.engines.ml.results import MLReport
 #  WHAT-IF PREDICTION
 # ══════════════════════════════════════════════════════════
 
+# How far past the observed edge an input may sit before the answer
+# stops being a prediction. A tenth of the observed span is a step
+# beyond what was seen; several times it is invention. The scenario
+# engine uses the same tolerance, deliberately — a user should not get
+# two different answers to "is this too far?" from two screens.
+OUTSIDE_RANGE_TOLERANCE = 0.10
+
+
+def _out_of_range(ml_report: MLReport, input_values: Dict) -> list:
+    """Inputs that sit outside the span the model was fitted on.
+
+    Reported in the caller's own words — the column as they named it and
+    the range as the data holds it — so the note can be shown verbatim.
+    """
+    ranges = getattr(ml_report, "feature_ranges", None) or {}
+    if not ranges:
+        return []
+
+    from app.engines.present import label as _label, num as _num
+
+    notes = []
+    for feature, value in input_values.items():
+        bounds = ranges.get(feature)
+        if not bounds or value is None:
+            continue
+        try:
+            val = float(value)
+            lo, hi = float(bounds["min"]), float(bounds["max"])
+        except (TypeError, ValueError):
+            continue
+        margin = (hi - lo) * OUTSIDE_RANGE_TOLERANCE
+        if lo - margin <= val <= hi + margin:
+            continue
+        notes.append("{} of {} is outside the {} to {} the data covers"
+                     .format(_label(feature), _num(val), _num(lo), _num(hi)))
+    return notes
+
 def predict_what_if(
     ml_report: MLReport,
     input_values: Dict[str, float],
@@ -80,6 +117,30 @@ def predict_what_if(
             result["lower"] = round(float(pred) - rmse, 4)
             result["upper"] = round(float(pred) + rmse, 4)
             result["confidence_note"] = "±{:.2f} (1x RMSE)".format(rmse)
+
+        # Whether the question is one the model has any standing to
+        # answer. A fitted model returns a confident number for ANY
+        # input: ask it about a salary of 5,000,000 when nothing above
+        # 120,000 was ever seen and it answers, with a confidence
+        # interval, and nothing on the screen says the figure is an
+        # extrapolation. This is the same defect the scenario engine had
+        # — a projection past the edge of the evidence, presented as a
+        # finding — and the interactive predictor is where a user is
+        # most likely to walk into it, because typing a big number is
+        # the obvious thing to try.
+        #
+        # The prediction is still returned: the caller shows it with the
+        # caveat attached rather than refusing to answer.
+        out_of_range = _out_of_range(ml_report, input_values)
+        result["out_of_range"] = out_of_range
+        result["within_training_range"] = not out_of_range
+        if out_of_range:
+            result["range_note"] = (
+                "This prediction is outside what the model has seen: "
+                + "; ".join(out_of_range[:3])
+                + ". The figure above is the fitted model extended past "
+                  "its evidence, not something the data supports."
+            )
 
         return result
 

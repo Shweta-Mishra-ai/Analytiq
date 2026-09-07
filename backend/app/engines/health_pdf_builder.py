@@ -20,8 +20,73 @@ from reportlab.platypus import (
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from app.engines.pdf_primitives import truncate_label, is_id_col
+from app.engines.present import label as _present_label, num as _present_num
 
 logger = logging.getLogger(__name__)
+
+
+# ── Presentation helpers ──────────────────────────────────
+# The health report used to print whatever pandas handed it: raw column
+# names (unit_price), raw dtypes (float64, int64, str) and raw floats
+# (count 1500.0, mean 2557.499, max 9916.48). Each is correct and none
+# belongs in a document a client reads. These route through the same
+# present.* layer the rest of the product already uses, so a number
+# looks the same in the app, the PDF and the deck.
+
+# Pandas dtype -> what the column actually holds. A finance lead reading
+# "float64" learns nothing; "Number" is the fact they wanted.
+_DTYPE_WORDS = (
+    ("datetime", "Date"), ("timedelta", "Duration"), ("period", "Date"),
+    ("bool", "Yes / No"), ("category", "Category"),
+    ("int", "Whole number"), ("float", "Number"),
+    ("object", "Text"), ("string", "Text"), ("str", "Text"),
+)
+
+
+def _dtype_word(dtype: object) -> str:
+    """Plain-language name for a pandas dtype."""
+    d = str(dtype).lower()
+    for needle, word in _DTYPE_WORDS:
+        if needle in d:
+            return word
+    return "Text"
+
+
+def _pretty_col(name: object) -> str:
+    """Column name as a human label — 'unit_price' -> 'Unit Price'."""
+    return _present_label(name)
+
+
+# Which describe() rows are counts, not measurements. Printing a count
+# with decimals ("count 1500.0") is the tell of a report nobody read.
+_COUNT_STATS = {"count", "unique", "freq"}
+
+
+def _stat_text(stat: object, val: object) -> str:
+    """One cell of the describe() table, formatted for a reader."""
+    name = str(stat).strip().lower()
+    if name in _COUNT_STATS:
+        try:
+            return "{:,}".format(int(float(val)))
+        except (TypeError, ValueError):
+            return _present_num(val)
+    return _present_num(val)
+
+
+# "1. Decide which end is desirable 2. Check the gap persists 3. Pilot
+# the practices" is three instructions, and printing it as one paragraph
+# buries two of them mid-line where no reader will find them.
+_STEP_SPLIT = __import__("re").compile(r"(?:(?<=^)|(?<=[.\s]))(?=\d{1,2}\.\s+[A-Z])")
+
+
+def _action_steps(action: object) -> list:
+    """One numbered instruction per line, or the whole string if it is
+    not a numbered list."""
+    text = str(action or "").strip()
+    if not text:
+        return []
+    parts = [p.strip() for p in _STEP_SPLIT.split(text) if p.strip()]
+    return parts if len(parts) > 1 else [text]
 
 
 def _clean_text(text: object) -> str:
@@ -64,8 +129,23 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     from reportlab.lib.colors import white
     from reportlab.lib.enums import TA_JUSTIFY
     from reportlab.platypus import (
-        PageBreak, Image,
+        PageBreak, Image, CondPageBreak,
     )
+
+    # Sections used to start on a fresh page unconditionally, all nine of
+    # them, so a table half a page tall left the other half blank and an
+    # eleven-page report carried perhaps six pages of content. A partner
+    # deck breaks at PARTS, not at every heading. CondPageBreak asks for
+    # enough room to start the section properly and otherwise lets it
+    # follow the one above — the reader gets a document that flows
+    # instead of a slide deck printed onto A4.
+    #
+    # The heights are the space a section needs before its heading stops
+    # being an orphan: a heading, its standfirst, and enough of the
+    # content below to be worth turning to.
+    ROOM_TEXT  = 70 * mm    # a heading and several paragraphs
+    ROOM_TABLE = 95 * mm    # a heading and a readable slice of a table
+    ROOM_CHART = 150 * mm   # a chart is not worth splitting
     from reportlab.pdfgen import canvas as CV
     import matplotlib
     matplotlib.use("Agg")
@@ -75,20 +155,24 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     CW   = W - 36 * mm
     now  = datetime.datetime.now().strftime("%B %d, %Y")
 
-    NICHE_COLORS = {
-        "hr":        "#1565C0",
-        "sales":     "#2E7D32",
-        "ecommerce": "#E64A19",
-        "finance":   "#0D47A1",
-        "general":   "#1B4FD8",
-    }
-    accent_hex  = NICHE_COLORS.get(niche, "#1B4FD8")
+    # One accent, for every domain. This used to be a lookup that
+    # repainted the whole report green for a sales file and orange for an
+    # e-commerce one, so two reports from the same product did not look
+    # like the same product. The domain is named in words on the cover;
+    # it does not need its own livery.
+    from app.engines.palette import PRINT, STATUS_LIGHT, grade_color
+
+    accent_hex  = PRINT["accent"]
     accent      = HexColor(accent_hex)
-    dark        = HexColor("#0A1628")
-    gray        = HexColor("#6B7280")
-    light       = HexColor("#F0F4FF")
-    light2      = HexColor("#F8FAFF")
-    score_color = HexColor(health["color"])
+    dark        = HexColor(PRINT["ground"])
+    gray        = HexColor(PRINT["muted"])
+    light       = HexColor(PRINT["surface_tint"])
+    light2      = HexColor(PRINT["surface_alt"])
+    rule_c      = HexColor(PRINT["rule"])
+    # The score badge used to take health["color"], a mint #22d3a5 chosen
+    # for the dark dashboard. On white paper, beside a blue rule, it read
+    # as a colour from a different document — because it was.
+    score_color = HexColor(grade_color(health["grade"]))
 
     # ── Premium fonts — fall back to Helvetica if not found ──────────────
     import os as _os
@@ -178,7 +262,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             self.setFont(_BB, 30)
             self.drawString(22 * mm, H - 92 * mm, "Data Health &")
             self.drawString(22 * mm, H - 106 * mm, "Business Insights")
-            self.setFillColor(HexColor("#8FB8F0"))
+            self.setFillColor(HexColor(PRINT["accent_soft"]))
             self.setFont(_BF, 13)
             self.drawString(22 * mm, H - 120 * mm, "Analysis Report")
 
@@ -196,20 +280,20 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             self.setFont(_BB, 14)
             self.drawString(58 * mm, badge_y + 4 * mm,
                             "Grade {} — {}".format(health["grade"], health["label"]))
-            self.setFillColor(HexColor("#9FB3CC"))
+            self.setFillColor(HexColor("#9FA9B8"))
             self.setFont(_BF, 9)
             self.drawString(58 * mm, badge_y - 4 * mm,
                             "{:,} rows  ·  {} columns  ·  {} domain".format(
                                 health["rows"], health["cols"], niche))
 
             # Meta block
-            self.setFillColor(HexColor("#9FB3CC"))
+            self.setFillColor(HexColor("#9FA9B8"))
             self.setFont(_BF, 8.5)
             meta_y = 52 * mm
             for label, value in (("DATASET", fname[:52]),
                                  ("PREPARED", now),
                                  ("PREPARED BY", agency_name)):
-                self.setFillColor(HexColor("#6B85A6"))
+                self.setFillColor(HexColor("#7A8798"))
                 self.setFont(_BF, 6.5)
                 self.drawString(22 * mm, meta_y, label)
                 self.setFillColor(white)
@@ -217,7 +301,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                 self.drawString(22 * mm, meta_y - 5 * mm, value)
                 meta_y -= 13 * mm
 
-            self.setFillColor(HexColor("#4A5D75"))
+            self.setFillColor(HexColor("#5C6979"))
             self.setFont(_BF, 6.5)
             self.drawString(22 * mm, 14 * mm,
                             "CONFIDENTIAL  ·  Findings derive solely from the supplied dataset "
@@ -239,7 +323,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             self.setFont(_BB, 9.5)
             self.drawString(8*mm, H - 11*mm, f"{agency_name}  ·  Data Health & Business Insights")
             self.setFont(_BF, 7.5)
-            self.setFillColor(HexColor("#BBDEFB"))
+            self.setFillColor(HexColor(PRINT["accent_soft"]))
             self.drawString(8*mm, H - 17.5*mm, fname[:60])
             self.setFillColor(white)
             self.drawRightString(W - 8*mm, H - 11*mm, now)
@@ -349,7 +433,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         ("TOPPADDING",    (0, 0), (-1, -1), 6),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ("LEFTPADDING",   (0, 0), (-1, -1), 0),
-        ("LINEBELOW",     (0, 0), (-1, -2), 0.4, HexColor("#E5E7EB")),
+        ("LINEBELOW",     (0, 0), (-1, -2), 0.4, rule_c),
     ]))
     story.append(_toc_tbl)
     story.append(PageBreak())
@@ -395,14 +479,14 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                     rowHeights=[58])
     kpi_tbl.setStyle(TableStyle([
         ("BACKGROUND",    (0,0),(0,0), light),
-        ("BACKGROUND",    (1,0),(1,0), HexColor("#EFF6FF")),
+        ("BACKGROUND",    (1,0),(1,0), HexColor(PRINT["surface_tint"])),
         ("BACKGROUND",    (2,0),(-1,0), light2),
         ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
         ("ALIGN",         (0,0),(-1,-1), "CENTER"),
         ("TOPPADDING",    (0,0),(-1,-1), 10),
         ("BOTTOMPADDING", (0,0),(-1,-1), 10),
         ("BOX",           (0,0),(-1,-1), 1.5, accent),
-        ("INNERGRID",     (0,0),(-1,-1), 0.3, HexColor("#E5E7EB")),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, rule_c),
         ("LINEBELOW",     (0,0),(-1,0),  2, accent),
     ]))
     story.append(kpi_tbl)
@@ -416,8 +500,8 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         story.append(Paragraph(
             "<b>Why this grade is capped:</b> " + blocking.replace(
                 "&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"),
-            ParagraphStyle("blk", parent=ST["sm"], textColor=HexColor("#B91C1C"),
-                           backColor=HexColor("#FEF2F2"),
+            ParagraphStyle("blk", parent=ST["sm"], textColor=HexColor(STATUS_LIGHT["critical"]),
+                           backColor=HexColor("#FBF0EF"),
                            borderPadding=6, leading=13)))
         story.append(Spacer(1, 5*mm))
 
@@ -429,8 +513,10 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     missing_total = df.isna().sum().sum()
     dup_count     = df.duplicated().sum()
 
+    _sum_hdr = ParagraphStyle("sumh", fontName=_BB, fontSize=8.5,
+                              textColor=white, alignment=TA_CENTER)
     summary_data = [
-        [Paragraph("<b>Metric</b>", ST["ctr"]), Paragraph("<b>Value</b>", ST["ctr"])],
+        [Paragraph("<b>Metric</b>", _sum_hdr), Paragraph("<b>Value</b>", _sum_hdr)],
         ["Total Rows",       "{:,}".format(health["rows"])],
         ["Total Columns",    str(health["cols"])],
         ["Numeric Columns",  str(len(num_cols_list))],
@@ -457,8 +543,8 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         ("TOPPADDING",    (0,0),(-1,-1), 5),
         ("BOTTOMPADDING", (0,0),(-1,-1), 5),
         ("LEFTPADDING",   (0,0),(-1,-1), 10),
-        ("BOX",           (0,0),(-1,-1), 0.5, HexColor("#E5E7EB")),
-        ("INNERGRID",     (0,0),(-1,-1), 0.3, HexColor("#E5E7EB")),
+        ("BOX",           (0,0),(-1,-1), 0.5, rule_c),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, rule_c),
     ]))
     story.append(sum_tbl)
 
@@ -468,7 +554,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # Skipped entirely when no narrative was supplied, so the report never
     # shows an empty heading.
     if executive_summary or key_findings or risks or opportunities:
-        story.append(PageBreak())
+        story.append(CondPageBreak(ROOM_TEXT))
         story.append(_section("Executive Summary"))
         story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=6))
 
@@ -502,12 +588,12 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
 
         _bullet_section("Key Findings", key_findings, "#2563EB")
         _bullet_section("Risks Identified", risks, "#DC2626")
-        _bullet_section("Opportunities", opportunities, "#059669")
+        _bullet_section("Opportunities", opportunities, STATUS_LIGHT["good"])
 
     # ══════════════════════════════════════════════════════
     # PAGE 2: BUSINESS INSIGHTS
     # ══════════════════════════════════════════════════════
-    story.append(PageBreak())
+    story.append(CondPageBreak(ROOM_TEXT))
     story.append(_section(_insights_heading))
     story.append(Paragraph(
         "Each insight follows the format: <b>What → Why it matters → What to do.</b> "
@@ -518,7 +604,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     SEV_COLORS = {
         "critical": ("#DC2626", "#FEF2F2"),
         "warning":  ("#D97706", "#FFFBEB"),
-        "positive": ("#059669", "#ECFDF5"),
+        "positive": (STATUS_LIGHT["good"], "#ECF6F2"),
         "info":     ("#2563EB", "#EFF6FF"),
     }
 
@@ -538,11 +624,18 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             ParagraphStyle("ib", fontName=_BF, fontSize=9.5,
                            textColor=dark, leading=14.5, spaceAfter=4,
                            alignment=TA_JUSTIFY))
-        action_p = Paragraph(ins["action"],
-            ParagraphStyle("ia", fontName=_BB, fontSize=9,
-                           textColor=HexColor(border_c), leading=13))
+        # The action is usually a numbered sequence — "1. Decide … 2.
+        # Check … 3. Pilot …" — and it arrived as one string, so the
+        # three steps ran together into a single wrapped paragraph that
+        # nobody could act from. Split on the numbering and give each
+        # step its own line.
+        action_rows = [[Paragraph(_a, ParagraphStyle(
+                            "ia", fontName=_BB, fontSize=9,
+                            textColor=HexColor(border_c), leading=13,
+                            spaceAfter=2))]
+                       for _a in _action_steps(ins["action"])]
 
-        card = Table([[tag_p],[title_p],[body_p],[action_p]], colWidths=[CW])
+        card = Table([[tag_p],[title_p],[body_p]] + action_rows, colWidths=[CW])
         card.setStyle(TableStyle([
             ("BACKGROUND",    (0,0),(-1,-1), bg_hex),
             ("LINEBEFORE",    (0,0),(0,-1),  6, bdr_hex),
@@ -550,7 +643,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             ("BOTTOMPADDING", (0,0),(-1,-1), 8),
             ("LEFTPADDING",   (0,0),(-1,-1), 16),
             ("RIGHTPADDING",  (0,0),(-1,-1), 12),
-            ("BOX",           (0,0),(-1,-1), 0.5, HexColor("#E5E7EB")),
+            ("BOX",           (0,0),(-1,-1), 0.5, rule_c),
         ]))
         story.append(KeepTogether([card, Spacer(1, 5*mm)]))
 
@@ -562,7 +655,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # reads. These are the same charts as the main report, each captioned
     # with what it shows rather than left to speak for itself.
     if _charts:
-        story.append(PageBreak())
+        story.append(CondPageBreak(ROOM_TEXT))
         story.append(_section("Visual Analysis"))
         story.append(Paragraph(
             "Charts are built from measure columns only; identifiers and "
@@ -575,9 +668,14 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             if not img_bytes:
                 continue
             try:
+                # The chart draws its own title (the finding) and its
+                # own subtitle (what is plotted), so printing the name a
+                # third time above it was pure repetition. A numbered
+                # exhibit label is what a report needs here — it gives
+                # the reader something to cite without restating the
+                # chart.
                 block = [
-                    Paragraph("{}. {}".format(idx, _clean_text(chart_title)),
-                              ST["h3"]),
+                    Paragraph("Exhibit {}".format(idx), ST["h3"]),
                     Image(_io.BytesIO(img_bytes), width=CW, height=CW * 0.46),
                     Spacer(1, 6 * mm),
                 ]
@@ -589,15 +687,20 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # ══════════════════════════════════════════════════════
     # PAGE 3: DESCRIPTIVE STATISTICS
     # ══════════════════════════════════════════════════════
-    story.append(PageBreak())
+    story.append(CondPageBreak(ROOM_CHART))
     story.append(_section("Descriptive Statistics"))
     story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=5))
 
     if len(num_cols_list) > 0:
         story.append(Paragraph("Numeric Columns Summary", ST["h2"]))
         _desc_cols = [c for c in num_cols_list if not is_id_col(c, df[c])] or num_cols_list
-        desc = df[_desc_cols[:8]].describe().round(3)
-        hdr_vals = ["Stat"] + [truncate_label(c, 12) for c in desc.columns]
+        desc = df[_desc_cols[:8]].describe()
+        # describe() returns raw floats, and they were printed as-is:
+        # "count 1500.0", "mean 2557.499", "max 9916.48". A count is not
+        # a decimal, and no finance team reads 9916.48 as ten thousand
+        # without a separator. present.num() applies the same rules the
+        # rest of the product uses.
+        hdr_vals = ["Stat"] + [_pretty_col(c) for c in desc.columns]
         stat_hdr = [Paragraph("<b>{}</b>".format(h),
                     ParagraphStyle("sh", fontName=_BB, fontSize=7.5,
                                    textColor=white, alignment=TA_CENTER))
@@ -607,7 +710,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             row = [Paragraph("<b>{}</b>".format(idx),
                              ParagraphStyle("si", fontName=_BB, fontSize=7.5, textColor=dark))]
             for val in desc.loc[idx]:
-                row.append(Paragraph(str(val),
+                row.append(Paragraph(_stat_text(idx, val),
                     ParagraphStyle("sv2", fontName=_BF, fontSize=7.5,
                                    textColor=dark, alignment=TA_CENTER)))
             stat_rows.append(row)
@@ -622,8 +725,8 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             ("TOPPADDING",    (0,0),(-1,-1), 5),
             ("BOTTOMPADDING", (0,0),(-1,-1), 4),
             ("LEFTPADDING",   (0,0),(-1,-1), 6),
-            ("BOX",           (0,0),(-1,-1), 0.5, HexColor("#E5E7EB")),
-            ("INNERGRID",     (0,0),(-1,-1), 0.3, HexColor("#E5E7EB")),
+            ("BOX",           (0,0),(-1,-1), 0.5, rule_c),
+            ("INNERGRID",     (0,0),(-1,-1), 0.3, rule_c),
         ]))
         story.append(stat_tbl)
         story.append(Spacer(1, 6*mm))
@@ -643,21 +746,25 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             if n_charts == 1:
                 axes = [axes]
             fig.patch.set_facecolor("#ffffff")
-            palette = ["#1565C0","#0D47A1","#1B5E20","#4527A0"]
+            # Four columns are not four categories. Giving them four
+            # hues invited the reader to look for what blue-versus-green
+            # meant, and there was nothing to find.
+            from app.engines.palette import SINGLE_LIGHT, STATUS_LIGHT as _SL
+            bar_c = SINGLE_LIGHT
             for idx2, (ax2, col) in enumerate(zip(axes, num_cols_list[:n_charts])):
                 s2 = df[col].dropna()
                 s2 = pd.to_numeric(s2, errors="coerce").dropna()
                 if len(s2) == 0:
                     continue
-                ax2.hist(s2, bins=20, color=palette[idx2 % len(palette)],
-                         alpha=0.8, edgecolor="#d0d8f0", linewidth=0.4)
-                ax2.axvline(s2.mean(), color="#E53935", linestyle="--",
-                            linewidth=1.5, alpha=0.8)
-                ax2.axvline(s2.median(), color="#43A047", linestyle=":",
-                            linewidth=1.5, alpha=0.8)
-                ax2.set_title(col[:14].replace("_"," "), fontsize=8,
-                              fontweight="bold", color="#0A1628", pad=6)
-                ax2.set_facecolor("#f8faff")
+                ax2.hist(s2, bins=20, color=bar_c,
+                         alpha=0.9, edgecolor="#FFFFFF", linewidth=0.4)
+                ax2.axvline(s2.mean(), color=_SL["critical"], linestyle="--",
+                            linewidth=1.3)
+                ax2.axvline(s2.median(), color=_SL["good"], linestyle=":",
+                            linewidth=1.3)
+                ax2.set_title(_pretty_col(col), fontsize=8,
+                              fontweight="bold", color=PRINT["ink"], pad=6)
+                ax2.set_facecolor(PRINT["surface_alt"])
                 ax2.spines["top"].set_visible(False)
                 ax2.spines["right"].set_visible(False)
                 ax2.tick_params(labelsize=6, colors="#0F172A")
@@ -673,7 +780,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # ══════════════════════════════════════════════════════
     # PAGE 4: COLUMN QUALITY TABLE
     # ══════════════════════════════════════════════════════
-    story.append(PageBreak())
+    story.append(CondPageBreak(ROOM_TABLE))
     story.append(_section("Column Quality Analysis"))
     story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=5))
     story.append(Paragraph(
@@ -702,8 +809,8 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             mn = str(bool(sc.dropna().min())) if len(sc.dropna()) > 0 else "—"
             mx = str(bool(sc.dropna().max())) if len(sc.dropna()) > 0 else "—"
         elif pd.api.types.is_numeric_dtype(sc):
-            mn = "{:.2f}".format(float(sc.dropna().min())) if len(sc.dropna()) > 0 else "—"
-            mx = "{:.2f}".format(float(sc.dropna().max())) if len(sc.dropna()) > 0 else "—"
+            mn = _present_num(sc.dropna().min()) if len(sc.dropna()) > 0 else "—"
+            mx = _present_num(sc.dropna().max()) if len(sc.dropna()) > 0 else "—"
         else:
             mn = "—"
             mx = "—"
@@ -712,25 +819,25 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         miss_f = sc.isna().mean()*100
         if miss_f > 20:
             status = "⚠ HIGH MISSING"
-            st_c   = HexColor("#DC2626")
+            st_c   = HexColor(STATUS_LIGHT["critical"])
         elif miss_f > 5:
             status = "△ REVIEW"
-            st_c   = HexColor("#D97706")
+            st_c   = HexColor(STATUS_LIGHT["warning"])
         elif sc.nunique() == 1:
             status = "⚠ CONSTANT"
-            st_c   = HexColor("#DC2626")
+            st_c   = HexColor(STATUS_LIGHT["critical"])
         elif sc.nunique() == len(df):
-            status = "ℹ ID COL"
-            st_c   = HexColor("#2563EB")
+            status = "ℹ IDENTIFIER"
+            st_c   = HexColor(PRINT["accent"])
         else:
             status = "✓ OK"
-            st_c   = HexColor("#059669")
+            st_c   = HexColor(STATUS_LIGHT["good"])
 
         rows2.append([
-            Paragraph(truncate_label(col, 20), td_st2),
-            Paragraph(str(sc.dtype)[:8], td_c2),
+            Paragraph(truncate_label(_pretty_col(col), 22), td_st2),
+            Paragraph(_dtype_word(sc.dtype), td_c2),
             Paragraph(miss, ParagraphStyle("mv", fontName=_BB, fontSize=8,
-                           textColor=HexColor("#DC2626") if miss_f > 5 else dark,
+                           textColor=HexColor(STATUS_LIGHT["critical"]) if miss_f > 5 else dark,
                            alignment=TA_CENTER)),
             Paragraph(uniq, td_c2),
             Paragraph(mn, td_c2),
@@ -751,8 +858,8 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         ("TOPPADDING",    (0,0),(-1,-1), 5),
         ("BOTTOMPADDING", (0,0),(-1,-1), 4),
         ("LEFTPADDING",   (0,0),(-1,-1), 5),
-        ("BOX",           (0,0),(-1,-1), 0.5, HexColor("#E5E7EB")),
-        ("INNERGRID",     (0,0),(-1,-1), 0.3, HexColor("#E5E7EB")),
+        ("BOX",           (0,0),(-1,-1), 0.5, rule_c),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, rule_c),
     ]))
     story.append(col_tbl2)
 
@@ -760,7 +867,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # PAGE 5: CORRELATION + DISCLAIMER
     # ══════════════════════════════════════════════════════
     if len(num_cols_list) >= 3:
-        story.append(PageBreak())
+        story.append(CondPageBreak(ROOM_TABLE))
         story.append(_section("Correlation Analysis"))
         story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=5))
         story.append(Paragraph(
@@ -790,9 +897,13 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                                  fontweight="bold" if abs(val3) > 0.3 else "normal")
                 ax3.set_xticks(range(n3))
                 ax3.set_yticks(range(n3))
-                labels3 = [truncate_label(c, 12).replace("_"," ") for c in corr.columns]
-                ax3.set_xticklabels(labels3, rotation=40, ha="right", fontsize=8.5, color="#0A1628")
-                ax3.set_yticklabels(labels3, fontsize=8.5, color="#0A1628")
+                # "discount_..." told the reader nothing. Human labels
+                # first, and a wider budget, so the truncation that
+                # remains still names the column.
+                labels3 = [truncate_label(_pretty_col(c), 16) for c in corr.columns]
+                ax3.set_xticklabels(labels3, rotation=30, ha="right",
+                                    fontsize=8.5, color=PRINT["ink"])
+                ax3.set_yticklabels(labels3, fontsize=8.5, color=PRINT["ink"])
                 ax3.set_title("Correlation Matrix", fontsize=12, fontweight="bold",
                               color="#0A1628", pad=10)
                 ax3.spines[:].set_edgecolor("#d0d8f0")
@@ -830,7 +941,8 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                             Paragraph(truncate_label(cb, 16).replace("_"," "), td_st2),
                             Paragraph("<b>{:.3f}</b>".format(rv),
                                       ParagraphStyle("rv", fontName=_BB, fontSize=8,
-                                      textColor=HexColor("#059669") if rv > 0 else HexColor("#DC2626"),
+                                      textColor=HexColor(STATUS_LIGHT["good"] if rv > 0
+                                                 else STATUS_LIGHT["critical"]),
                                       alignment=TA_CENTER)),
                             Paragraph("{:.3f}".format(r2), td_c2),
                             Paragraph(strength, td_c2),
@@ -844,8 +956,8 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                         ("TOPPADDING",    (0,0),(-1,-1), 5),
                         ("BOTTOMPADDING", (0,0),(-1,-1), 4),
                         ("LEFTPADDING",   (0,0),(-1,-1), 6),
-                        ("BOX",           (0,0),(-1,-1), 0.5, HexColor("#E5E7EB")),
-                        ("INNERGRID",     (0,0),(-1,-1), 0.3, HexColor("#E5E7EB")),
+                        ("BOX",           (0,0),(-1,-1), 0.5, rule_c),
+                        ("INNERGRID",     (0,0),(-1,-1), 0.3, rule_c),
                     ]))
                     story.append(corr_tbl)
                 else:
@@ -866,7 +978,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # Closing a client report on what to DO — not on a correlation table —
     # is what separates a deliverable from a data dump.
     if actions:
-        story.append(PageBreak())
+        story.append(CondPageBreak(ROOM_TABLE))
         story.append(_section("Recommended Actions"))
         story.append(Paragraph(
             "Prioritised from the findings above. Sequence reflects urgency "
@@ -890,9 +1002,9 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             ("TOPPADDING",    (0, 0), (-1, -1), 7),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
             ("LEFTPADDING",   (0, 0), (-1, -1), 2),
-            ("LINEBELOW",     (0, 0), (-1, -2), 0.4, HexColor("#E5E7EB")),
+            ("LINEBELOW",     (0, 0), (-1, -2), 0.4, rule_c),
             ("BACKGROUND",    (0, 0), (-1, -1), light2),
-            ("BOX",           (0, 0), (-1, -1), 0.5, HexColor("#E5E7EB")),
+            ("BOX",           (0, 0), (-1, -1), 0.5, rule_c),
         ]))
         story.append(act_tbl)
 
@@ -913,6 +1025,4 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     return buf.read()
 
 
-
 # ══════════════════════════════════════════════════════════
-

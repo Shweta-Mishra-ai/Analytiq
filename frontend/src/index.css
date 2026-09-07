@@ -23,12 +23,33 @@
   --color-mute: #8b93a1;
   --color-faint: #5c6472;
 
-  --color-accent: #5b8def;
-  --color-accent2: #7aa5f5;
-  --color-teal: #2dd4a7;
-  --color-amber: #f0a44a;
-  --color-rose: #f4676b;
-  --color-violet: #a78bfa;
+  /* Accent and status now come from the product palette in
+     backend/app/engines/palette.py — the dark stepping of the same six
+     hues the reports print. They were chosen apart before, so the app's
+     mint #2dd4a7 was copied into the PDF as a score badge and read as a
+     dashboard colour that had wandered onto paper. Same identity, two
+     surfaces: a chart here and the same chart in the exported PDF are
+     recognisably the same chart.
+
+     Both steppings pass the six palette checks (lightness band, chroma
+     floor, colour-vision separation, normal-vision separation, contrast)
+     — dark worst adjacent CVD ΔE 9.5, normal ΔE 16.2, all ≥ 3:1. The
+     SLOT ORDER is what makes that true: gold beside red failed both
+     separation gates until gold moved to slot 4. */
+  --color-accent: #4589de;
+  --color-accent2: #8fb4dc;
+  --color-teal: #22a47f;
+  --color-amber: #c99a2e;
+  --color-rose: #e06a63;
+  --color-violet: #a177c6;
+
+  /* Categorical slots, in fixed order — assign by series, never cycle. */
+  --color-series1: #4589de;
+  --color-series2: #d9762f;
+  --color-series3: #12a07c;
+  --color-series4: #ad861f;
+  --color-series5: #a177c6;
+  --color-series6: #de5d52;
 
   --font-sans:
     'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;

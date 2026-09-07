@@ -99,76 +99,61 @@ register_premium_fonts()
 #  DOMAIN COLOUR THEMES  (matches your existing THEMES keys)
 # ══════════════════════════════════════════════════════════
 
+# One product, one look. These five entries used to be five different
+# liveries: navy-and-blue for HR, a deep orange cover for e-commerce, a
+# green one for sales. A client who received two Analytiq reports
+# received what looked like reports from two companies, and the green
+# and orange were never checked against the blue chart palette they had
+# to sit beside — which is where the mismatched greens came from.
+#
+# The keys stay, because domains, decks and the report engine address
+# themes by name. What changes is that every light theme now resolves to
+# the same checked palette; the only thing a domain still contributes is
+# the words on the cover badge. "Dark Tech" remains genuinely different
+# because a dark surface is a different surface, not a different brand,
+# and its steps are the dark half of the same six hues.
+from app.engines.palette import (CATEGORICAL_DARK, PRINT, STATUS_DARK,
+                                 STATUS_LIGHT)
+
+
+def _light_theme(domain_label: str) -> dict:
+    """The house style, with only the cover badge wording varying."""
+    return {
+        "cover_bg":    PRINT["ground"],   "cover_accent": PRINT["accent"],
+        "header_bg":   PRINT["ground"],   "header_text":  PRINT["ground_text"],
+        "accent":      PRINT["accent"],   "accent2":      PRINT["accent_soft"],
+        "text":        PRINT["ink"],      "text_muted":   PRINT["ink_soft"],
+        "bg_light":    PRINT["surface_tint"], "bg_card":  PRINT["surface_alt"],
+        "border":      PRINT["rule"],
+        "positive":    STATUS_LIGHT["good"],    "negative": STATUS_LIGHT["critical"],
+        "warning":     STATUS_LIGHT["warning"], "info":     PRINT["accent"],
+        # Tints for callout backgrounds, mixed from the status hues
+        # towards white so a card never fights the text on it.
+        "critical_bg": "#FBF0EF", "warning_bg":  "#FBF5E8",
+        "positive_bg": "#ECF6F2", "info_bg":     PRINT["surface_tint"],
+        "domain_label": domain_label,
+        "domain_badge": PRINT["accent"],
+    }
+
+
 THEMES = {
-    "Corporate Light": {
-        "cover_bg":    "#0A1628", "cover_accent": "#1B4FD8",
-        "header_bg":   "#0A1628", "header_text":  "#FFFFFF",
-        "accent":      "#1B4FD8", "accent2":      "#60A5FA",
-        "text":        "#1F2937", "text_muted":   "#6B7280",
-        "bg_light":    "#EFF6FF", "bg_card":      "#F8FAFF",
-        "border":      "#E5E7EB",
-        "positive":    "#10B981", "negative":     "#EF4444",
-        "warning":     "#F59E0B", "info":         "#3B82F6",
-        "critical_bg": "#FEE2E2", "warning_bg":   "#FEF3C7",
-        "positive_bg": "#D1FAE5", "info_bg":      "#DBEAFE",
-        "domain_label":"BUSINESS ANALYTICS",
-        "domain_badge":"#1B4FD8",
-    },
-    "HR Blue": {
-        "cover_bg":    "#0A1F4E", "cover_accent": "#1976D2",
-        "header_bg":   "#0A1F4E", "header_text":  "#FFFFFF",
-        "accent":      "#1976D2", "accent2":      "#90CAF9",
-        "text":        "#1A2035", "text_muted":   "#5A6482",
-        "bg_light":    "#E8F0FE", "bg_card":      "#F5F8FF",
-        "border":      "#C5D3F0",
-        "positive":    "#2E7D32", "negative":     "#C62828",
-        "warning":     "#E65100", "info":         "#1565C0",
-        "critical_bg": "#FFEBEE", "warning_bg":   "#FFF3E0",
-        "positive_bg": "#E8F5E9", "info_bg":      "#E3F2FD",
-        "domain_label":"HR & PEOPLE ANALYTICS",
-        "domain_badge":"#1976D2",
-    },
-    "Ecommerce Orange": {
-        "cover_bg":    "#3E1500", "cover_accent": "#F4511E",
-        "header_bg":   "#BF360C", "header_text":  "#FFFFFF",
-        "accent":      "#F4511E", "accent2":      "#FFAB91",
-        "text":        "#1A1A1A", "text_muted":   "#5A5A5A",
-        "bg_light":    "#FBE9E7", "bg_card":      "#FFF8F6",
-        "border":      "#FFCCBC",
-        "positive":    "#2E7D32", "negative":     "#B71C1C",
-        "warning":     "#E65100", "info":         "#1565C0",
-        "critical_bg": "#FFEBEE", "warning_bg":   "#FFF3E0",
-        "positive_bg": "#E8F5E9", "info_bg":      "#E8F0FE",
-        "domain_label":"E-COMMERCE ANALYTICS",
-        "domain_badge":"#F4511E",
-    },
-    "Sales Green": {
-        "cover_bg":    "#0A2710", "cover_accent": "#2E7D32",
-        "header_bg":   "#1B5E20", "header_text":  "#FFFFFF",
-        "accent":      "#2E7D32", "accent2":      "#A5D6A7",
-        "text":        "#1A2A1A", "text_muted":   "#4A6A4A",
-        "bg_light":    "#E8F5E9", "bg_card":      "#F5FBF5",
-        "border":      "#C8E6C9",
-        "positive":    "#1B5E20", "negative":     "#B71C1C",
-        "warning":     "#E65100", "info":         "#1565C0",
-        "critical_bg": "#FFEBEE", "warning_bg":   "#FFF3E0",
-        "positive_bg": "#E8F5E9", "info_bg":      "#E8F0FE",
-        "domain_label":"SALES PERFORMANCE ANALYTICS",
-        "domain_badge":"#2E7D32",
-    },
+    "Corporate Light":  _light_theme("BUSINESS ANALYTICS"),
+    "HR Blue":          _light_theme("WORKFORCE ANALYTICS"),
+    "Ecommerce Orange": _light_theme("COMMERCE ANALYTICS"),
+    "Sales Green":      _light_theme("REVENUE ANALYTICS"),
     "Dark Tech": {
-        "cover_bg":    "#0D1117", "cover_accent": "#58A6FF",
-        "header_bg":   "#0D1117", "header_text":  "#E6EDF3",
-        "accent":      "#58A6FF", "accent2":      "#3FB950",
-        "text":        "#E6EDF3", "text_muted":   "#8B949E",
-        "bg_light":    "#161B22", "bg_card":      "#1C2128",
-        "border":      "#30363D",
-        "positive":    "#3FB950", "negative":     "#F85149",
-        "warning":     "#D29922", "info":         "#58A6FF",
-        "critical_bg": "#1C1010", "warning_bg":   "#1C1800",
-        "positive_bg": "#0D1A0F", "info_bg":      "#0D1421",
+        "cover_bg":    "#0B0F14", "cover_accent": CATEGORICAL_DARK[0],
+        "header_bg":   "#0B0F14", "header_text":  "#E9EEF5",
+        "accent":      CATEGORICAL_DARK[0], "accent2": "#8FB4DC",
+        "text":        "#E9EEF5", "text_muted":   "#98A3B2",
+        "bg_light":    "#141A21", "bg_card":      "#1A212A",
+        "border":      "#2A323C",
+        "positive":    STATUS_DARK["good"],    "negative": STATUS_DARK["critical"],
+        "warning":     STATUS_DARK["warning"], "info":     CATEGORICAL_DARK[0],
+        "critical_bg": "#1E1312", "warning_bg":   "#1D1808",
+        "positive_bg": "#0E1A16", "info_bg":      "#101922",
         "domain_label":"TECHNICAL ANALYTICS",
-        "domain_badge":"#58A6FF",
+        "domain_badge": CATEGORICAL_DARK[0],
     },
 }
 

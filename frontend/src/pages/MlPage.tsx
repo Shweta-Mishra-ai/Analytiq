@@ -50,6 +50,23 @@ interface MlReport {
    *  feature importances describe the noise it was fitted to. */
   verdict?: ModelVerdict | null
   leakage?: LeakageFinding[]
+  /** {feature: {min, max}} — the span the model was fitted over. */
+  feature_ranges?: Record<string, { min: number; max: number }>
+}
+
+interface WhatIf {
+  prediction: number
+  prediction_label?: string
+  confidence?: number | null
+  lower?: number
+  upper?: number
+  confidence_note?: string
+  /** False when an input sits outside what the model was fitted on. A
+   *  model answers any question put to it; this says whether it had any
+   *  standing to. */
+  within_training_range: boolean
+  out_of_range: string[]
+  range_note?: string
 }
 
 export default function MlPage() {
@@ -242,6 +259,17 @@ export default function MlPage() {
             </Panel>
           )}
 
+          {/* Ask the model a question.
+              The endpoint existed and no page called it, so a user could
+              train a model and never use it for the one thing a model is
+              for. Only numeric features with a known span are offered —
+              those are the ones a prediction can be sanity-checked
+              against. */}
+          {report.feature_ranges &&
+            Object.keys(report.feature_ranges).length > 0 && (
+              <WhatIfPanel ds={ds!} report={report} />
+            )}
+
           {report.insights.length > 0 && (
             <Panel title="Model insights">
               <ul className="space-y-1.5 text-sm text-mute">
@@ -266,5 +294,141 @@ export default function MlPage() {
         </div>
       )}
     </div>
+  )
+}
+
+
+/**
+ * "What would the model predict if…" — the interactive half of a trained
+ * model, and the place a user is most likely to walk past the edge of
+ * the evidence, because typing a big number is the obvious thing to try.
+ *
+ * The prediction is always shown. What changes when an input is out of
+ * range is that the figure is presented as an extrapolation rather than
+ * a finding, and the panel says which input and what the data covers —
+ * a model fitted on salaries of 30k–120k answered a question about
+ * 5,000,000 with a confidence interval and no caveat at all.
+ */
+function WhatIfPanel({ ds, report }: { ds: string; report: MlReport }) {
+  const ranges = report.feature_ranges ?? {}
+  const features = Object.keys(ranges).slice(0, 6)
+
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      features.map((f) => [
+        f,
+        String(Math.round(((ranges[f].min + ranges[f].max) / 2) * 100) / 100),
+      ]),
+    ),
+  )
+  const [result, setResult] = useState<WhatIf | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  async function run() {
+    setBusy(true)
+    setErr('')
+    try {
+      const inputs: Record<string, number> = {}
+      for (const f of features) {
+        const n = Number(values[f])
+        if (Number.isFinite(n)) inputs[f] = n
+      }
+      setResult(
+        await apiPost<WhatIf>(`/api/ml/${ds}/what-if`, {
+          target: report.target_col,
+          inputs,
+        }),
+      )
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setResult(null)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Panel title={`What would ${fmt.label(report.target_col)} be?`}>
+      <p className="mb-3 text-xs text-mute">
+        Set the inputs and the trained model will predict{' '}
+        {fmt.label(report.target_col)}. Each field shows the range the model
+        was actually fitted on — a value far outside it is guesswork, and the
+        answer will say so.
+      </p>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {features.map((f) => (
+          <div key={f}>
+            <label className="mb-1 block text-[11px] text-mute uppercase">
+              {fmt.label(f)}
+            </label>
+            <input
+              type="number"
+              value={values[f] ?? ''}
+              onChange={(e) =>
+                setValues((v) => ({ ...v, [f]: e.target.value }))
+              }
+              className="w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink"
+            />
+            <div className="mt-1 text-[10px] text-faint">
+              data covers {fmt.num(ranges[f].min)} – {fmt.num(ranges[f].max)}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4">
+        <Btn onClick={run} disabled={busy}>
+          {busy ? 'Predicting…' : 'Predict'}
+        </Btn>
+      </div>
+
+      {err && (
+        <div className="mt-3">
+          <ErrorBox message={err} />
+        </div>
+      )}
+
+      {result && !busy && (
+        <div
+          className={`mt-4 rounded-lg border px-4 py-3 ${
+            result.within_training_range
+              ? 'border-teal/40 bg-teal/5'
+              : 'border-amber/40 bg-amber/5'
+          }`}
+        >
+          <div className="flex items-baseline gap-2">
+            <span className="text-2xl font-bold text-ink">
+              {result.prediction_label ?? fmt.num(result.prediction)}
+            </span>
+            <span className="text-xs text-mute">
+              {fmt.label(report.target_col)}
+            </span>
+          </div>
+          {result.confidence != null && (
+            <div className="mt-1 text-xs text-mute">
+              {result.confidence}% confident
+            </div>
+          )}
+          {result.lower != null && result.upper != null && (
+            <div className="mt-1 text-xs text-mute">
+              likely between {fmt.num(result.lower)} and {fmt.num(result.upper)}
+            </div>
+          )}
+          {result.range_note && (
+            <p className="mt-2 text-xs leading-relaxed text-ink2">
+              <span className="font-semibold text-amber">
+                Outside what the model has seen:{' '}
+              </span>
+              {result.range_note.replace(
+                'This prediction is outside what the model has seen: ',
+                '',
+              )}
+            </p>
+          )}
+        </div>
+      )}
+    </Panel>
   )
 }

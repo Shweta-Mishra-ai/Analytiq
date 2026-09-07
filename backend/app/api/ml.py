@@ -54,6 +54,10 @@ def _serialize_report(report) -> dict:
         "models": [_model(m) for m in report.models],
         "best_model": _model(report.best_model),
         "feature_importance": to_jsonable(report.feature_importance),
+        # The span each feature was fitted over. The what-if form needs
+        # it to show the user what the model has actually seen, before
+        # they type a number outside it.
+        "feature_ranges": to_jsonable(getattr(report, "feature_ranges", {}) or {}),
         "warnings": to_jsonable(report.warnings),
         "insights": to_jsonable(report.insights),
         # Whether the model beat the obvious guess, and any field that
