@@ -9,6 +9,7 @@ from typing import Dict, List
 import pandas as pd
 
 from app.engines.domains.base import build_insight
+from app.engines.domains._common import fmt
 from app.engines.domains.sales_performance import run_sales_performance
 from app.engines.industry_benchmarks import lookup_benchmark
 
@@ -98,8 +99,16 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     findings, risks, opps, actions = [], [], [], []
     insights = []
 
+    # "deal_value", "opportunity_value", "acv" and "contract_value" are
+    # what a CRM export actually calls this column, and none of them
+    # contain revenue/sales/amount/total. Without them the whole revenue
+    # branch below was skipped on ordinary pipeline data and the engine
+    # fell back to generic outlier notes.
     rev_col    = next((c for c in df.columns
-                       if any(k in c.lower() for k in ["revenue","sales","amount","total"])
+                       if any(k in c.lower().replace("_", "")
+                              for k in ["revenue", "sales", "amount", "total",
+                                        "dealvalue", "dealsize", "opportunityvalue",
+                                        "contractvalue", "acv", "tcv", "bookings"])
                        and c in stats), None)
     profit_col = next((c for c in df.columns
                        if any(k in c.lower() for k in ["profit","margin","net"])
@@ -368,6 +377,97 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         "Revenue concentration audit — reduce dependency on single customer/product",
         "Quarterly pricing review — ensure margins are healthy per product category",
     ])
+
+    # ── Pipeline velocity ─────────────────────────────────
+    # How long a deal takes to close is the number a sales leader
+    # forecasts from, and the spread matters more than the average: a
+    # pipeline averaging 60 days where a quarter take 150 cannot be
+    # committed to a quarter-end.
+    cycle_col = next((c for c in df.columns
+                      if any(k in c.lower().replace("_", "")
+                             for k in ["daysinpipeline", "daystoclose",
+                                       "salescycle", "cycledays", "agedays",
+                                       "daysopen"])
+                      and pd.api.types.is_numeric_dtype(df[c])), None)
+    if cycle_col:
+        try:
+            days = pd.to_numeric(df[cycle_col], errors="coerce").dropna()
+            if len(days) >= 30:
+                median_days = float(days.median())
+                p90 = float(days.quantile(0.90))
+                findings.append(
+                    "Half of deals close within {:.0f} days; the slowest "
+                    "tenth take {:.0f} or more.".format(median_days, p90))
+                if p90 >= median_days * 2.5:
+                    risks.append(
+                        "The slowest tenth of the pipeline takes {:.0f} days "
+                        "against a median of {:.0f}. Forecasting from the "
+                        "average commits to dates that a quarter of the book "
+                        "cannot meet.".format(p90, median_days))
+                    insights.append(build_insight(
+                        title="Pipeline Velocity: {:.0f} Days Median, "
+                              "{:.0f} at P90".format(median_days, p90),
+                        problem="The slowest tenth of deals takes {:.1f}x the "
+                                "median time to close".format(
+                                    p90 / max(median_days, 1)),
+                        cause="Deal size, approval steps or a stage where "
+                              "opportunities sit — the stage breakdown "
+                              "narrows it",
+                        evidence="Median {:.0f} days, P90 {:.0f} days across "
+                                 "{:,} opportunities".format(
+                                     median_days, p90, len(days)),
+                        action="1. Age the open pipeline by stage  2. Find "
+                               "the stage where deals stop moving  3. Set an "
+                               "age limit that forces a decision  "
+                               "4. Forecast from the P90, not the mean",
+                        impact="Deals past {:.0f} days are the ones a "
+                               "quarter-end commitment should exclude."
+                               .format(p90),
+                        severity="high", category="sales_velocity",
+                    ))
+        except Exception:
+            logger.debug("sales velocity failed", exc_info=True)
+
+    # ── Is the number resting on a few deals? ─────────────
+    if rev_col:
+        try:
+            values = pd.to_numeric(df[rev_col], errors="coerce").dropna()
+            values = values[values > 0].sort_values(ascending=False)
+            if len(values) >= 30:
+                top_decile = max(1, len(values) // 10)
+                share = float(values.head(top_decile).sum()) / \
+                    float(values.sum()) * 100
+                if share >= 50:
+                    findings.append(
+                        "The largest {:.0f}% of deals carry {:.0f}% of "
+                        "{}.".format(top_decile / len(values) * 100, share,
+                                     rev_col))
+                    risks.append(
+                        "{:.0f}% of {} sits in {:,} deals. Losing two of "
+                        "them moves the quarter more than the rest of the "
+                        "pipeline combined.".format(
+                            share, rev_col, top_decile))
+                    insights.append(build_insight(
+                        title="{:.0f}% of Value Sits in the Largest {:,} "
+                              "Deals".format(share, top_decile),
+                        problem="Revenue is concentrated in a small number "
+                                "of opportunities",
+                        cause="Enterprise mix, or a long tail of small deals "
+                              "that costs as much to work as it returns",
+                        evidence="Top {:,} of {:,} deals carry {:.0f}% of "
+                                 "{}".format(top_decile, len(values), share,
+                                             rev_col),
+                        action="1. Name the top {:,} deals and their close "
+                               "dates  2. Review each one weekly, not "
+                               "monthly  3. Check whether the tail earns its "
+                               "coverage cost  4. Re-weight territory "
+                               "coverage accordingly".format(top_decile),
+                        impact="{} sits in those deals.".format(
+                            fmt(float(values.head(top_decile).sum()))),
+                        severity="high", category="sales_concentration",
+                    ))
+        except Exception:
+            logger.debug("sales concentration failed", exc_info=True)
 
     return {"findings":findings, "risks":risks, "opportunities":opps,
             "actions":actions, "insights":insights}

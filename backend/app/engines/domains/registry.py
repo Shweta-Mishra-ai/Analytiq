@@ -82,6 +82,18 @@ class DomainSpec:
     # insight engine, rather than in a table somewhere else that nobody
     # remembers to update.
     kpis: Tuple = ()
+    # The binary outcome this domain exists to reduce (or increase), and
+    # the word a reader calls it. Naming it here is what lets the shared
+    # "who does this happen to" pass run for every domain from the one
+    # dispatch point — see run_insights. Left empty, that pass is skipped
+    # rather than guessed at: a domain with no outcome column is a real
+    # case, not a misconfiguration.
+    outcome_keywords: Tuple[str, ...] = ()
+    outcome_noun: str = ""
+    # True when MORE of the outcome is the good result (a win rate, a
+    # conversion), False when less of it is (attrition, churn, returns).
+    # It decides which end of every gap the report calls the problem.
+    outcome_good: bool = False
     # Optional deep page for the PDF — a section only this domain can
     # write (finance's P&L and margin analysis, for instance). Signature:
     # (story, s, T, df, config, CW, profile=None). None means the report
@@ -240,16 +252,56 @@ def theme_for(domain: str) -> str:
 
 
 def run_insights(domain: str, df, stats, corrs, attrition=None) -> dict:
-    """Dispatch to the domain's insight engine.
+    """Dispatch to the domain's insight engine, then add the analysis
+    every one of them was missing.
 
     Replaces the if/elif chain in story_engine, which was the reason a
     domain could be detectable without being analysable: the chain's
     `else` swallowed any unlisted domain into the general engine.
+
+    The outcome pass runs here rather than inside each engine on purpose.
+    Every domain has a binary outcome — returned, churned, attrition,
+    readmission, won — and none of them computed the rate of that outcome
+    across anything: they reached for a mean-of-a-numeric comparison, so
+    a dataset where apparel is returned four times as often reported
+    "Apparel and Electronics differ on Discount". Running it at the one
+    dispatch point means a new domain declares its outcome in its spec
+    and gets the analysis, instead of eight engines drifting apart on it.
     """
     spec = spec_for(domain)
     if spec.runs_attrition:
-        return spec.insight_fn(df, stats, corrs, attrition)
-    return spec.insight_fn(df, stats, corrs)
+        result = spec.insight_fn(df, stats, corrs, attrition)
+    else:
+        result = spec.insight_fn(df, stats, corrs)
+    return _add_outcome_analysis(result, spec, df)
+
+
+def _add_outcome_analysis(result: dict, spec: "DomainSpec", df) -> dict:
+    """Merge 'who does this happen to' into whatever the engine found."""
+    if not spec.outcome_keywords or df is None or not len(df):
+        return result
+    try:
+        from app.engines.domains._common import find_col, rate_insights
+
+        col = find_col(df, spec.outcome_keywords)
+        if col is None:
+            return result
+        extra = rate_insights(df, col, spec.outcome_noun or "the outcome",
+                              category="{}_concentration".format(spec.key),
+                              good=spec.outcome_good)
+        if not extra.get("insights"):
+            return result
+        merged = dict(result)
+        for field in ("insights", "findings", "risks", "opportunities",
+                      "actions"):
+            merged[field] = list(extra.get(field, [])) + \
+                list(result.get(field, []) or [])
+        return merged
+    except Exception:
+        # An engine that produced a real answer must not lose it because
+        # the extra pass failed.
+        logger.debug("outcome analysis failed for %s", spec.key, exc_info=True)
+        return result
 
 
 # ══════════════════════════════════════════════════════════
@@ -267,6 +319,11 @@ from app.engines.domains.marketing import _insights_marketing            # noqa:
 from app.engines.domains.saas      import _insights_saas                 # noqa: E402
 from app.engines.domains.operations import _insights_operations          # noqa: E402
 from app.engines.domains.healthcare import _insights_healthcare          # noqa: E402
+from app.engines.domains.education  import _insights_education           # noqa: E402
+from app.engines.domains.logistics  import _insights_logistics           # noqa: E402
+from app.engines.domains.realestate import _insights_realestate          # noqa: E402
+from app.engines.domains.insurance  import _insights_insurance           # noqa: E402
+from app.engines.domains.energy     import _insights_energy              # noqa: E402
 
 
 REGISTRY: Dict[str, DomainSpec] = {}
@@ -289,6 +346,8 @@ register(DomainSpec(
               "hire", "job", "manager", "bonus", "income", "gender", "age",
               "training", "years"),
     insight_fn=_insights_hr,
+    outcome_keywords=("attrition", "left", "exited", "terminated", "resigned", "quit"),
+    outcome_noun="attrition",
     pdf_theme="HR Blue",
     attrition_fn=_run_attrition,
     chart_metrics=("attrition", "monthlyincome", "salary", "satisfaction",
@@ -313,13 +372,26 @@ register(DomainSpec(
 register(DomainSpec(
     key="ecommerce",
     label="e-commerce",
+    # The first eleven of these are Amazon seller-report words, which is
+    # how this domain was originally written and why it never fired on
+    # anything else: an ordinary order-level export (order id, order
+    # value, order date, basket, checkout) scored 5.0 against a MIN_SIGNAL
+    # of 6.0 and fell through to the general engine, so the e-commerce
+    # engine never ran on e-commerce data. The second group is the
+    # backbone vocabulary every order table has, whatever platform
+    # produced it.
     signature=("sku", "asin", "marketplace", "fulfilment", "fulfillment",
                "cart", "productname", "discountpercentage", "ratingcount",
-               "shipservicelevel", "courier", "listingprice"),
+               "shipservicelevel", "courier", "listingprice",
+               "ordervalue", "orderid", "orderdate", "basket", "checkout",
+               "unitprice", "productid", "aov", "gmv", "returnrate",
+               "addtocart", "storefront"),
     keywords=("price", "discount", "rating", "product", "category", "order",
               "review", "seller", "inventory", "stock", "shipping", "qty",
               "quantity", "amount"),
     insight_fn=_insights_ecommerce,
+    outcome_keywords=("returned", "return", "refunded", "refund", "cancelled"),
+    outcome_noun="returns",
     pdf_theme="Ecommerce Orange",
     chart_metrics=("revenue", "amount", "price", "rating", "discount",
                    "quantity", "qty"),
@@ -348,6 +420,9 @@ register(DomainSpec(
     keywords=("revenue", "sales", "target", "deal", "customer", "region",
               "conversion", "lead", "closed", "margin", "profit", "rep"),
     insight_fn=_insights_sales,
+    outcome_keywords=("won", "win", "closedwon", "converted", "success"),
+    outcome_noun="win rate",
+    outcome_good=True,
     pdf_theme="Sales Green",
     chart_metrics=("revenue", "sales", "amount", "profit", "margin",
                    "dealsize", "quota"),
@@ -374,6 +449,8 @@ register(DomainSpec(
     keywords=("profit", "loss", "expense", "income", "budget", "cost",
               "margin", "asset", "tax", "revenue", "balance", "account"),
     insight_fn=_insights_finance,
+    outcome_keywords=("default", "defaulted", "delinquent", "writeoff", "overdue"),
+    outcome_noun="default",
     pdf_theme="Corporate Light",
     chart_metrics=("revenue", "profit", "margin", "ebitda", "expense",
                    "cost", "income"),
@@ -406,6 +483,9 @@ register(DomainSpec(
     keywords=("spend", "channel", "conversions", "reach", "budget", "medium",
               "source", "audience", "engagement", "traffic", "roi"),
     insight_fn=_insights_marketing,
+    outcome_keywords=("converted", "conversion", "clicked", "bounced", "unsubscribed"),
+    outcome_noun="conversion",
+    outcome_good=True,
     pdf_theme="Ecommerce Orange",
     chart_metrics=("roas", "revenue", "spend", "conversions", "cpa",
                    "clicks", "impressions", "ctr"),
@@ -436,6 +516,8 @@ register(DomainSpec(
     keywords=("plan", "tier", "account", "revenue", "tenure", "upgrade",
               "downgrade", "contract", "trial", "usage", "customer"),
     insight_fn=_insights_saas,
+    outcome_keywords=("churned", "churn", "cancelled", "canceled", "renewed"),
+    outcome_noun="churn",
     pdf_theme="Dark Tech",
     chart_metrics=("mrr", "arr", "monthlycharges", "totalcharges", "churn",
                    "expansion", "seats", "activeusers", "nps"),
@@ -466,6 +548,8 @@ register(DomainSpec(
               "quality", "delivery", "inventory", "yield", "process",
               "warehouse"),
     insight_fn=_insights_operations,
+    outcome_keywords=("defective", "defect", "failed", "scrapped", "reject", "late", "ontime"),
+    outcome_noun="the failure",
     pdf_theme="Corporate Light",
     chart_metrics=("throughput", "cycletime", "defectrate", "utilisation",
                    "utilization", "downtime", "inventoryturns"),
@@ -497,6 +581,8 @@ register(DomainSpec(
     keywords=("department", "cost", "age", "satisfaction", "specialty",
               "treatment", "care", "hospital", "bed", "case", "clinic"),
     insight_fn=_insights_healthcare,
+    outcome_keywords=("readmission", "readmitted", "mortality", "complication", "noshow"),
+    outcome_noun="readmission",
     pdf_theme="HR Blue",
     chart_metrics=("costpercase", "lengthofstay", "readmission",
                    "bedoccupancy", "satisfaction"),
@@ -536,6 +622,169 @@ def attach_deep_page(domain_key: str, page_fn: Callable) -> None:
 
 # The fallback. Never competes in scoring; used whenever evidence is weak
 # or two domains tie.
+
+# ── Verticals added after the original eight. Each one is a real engine
+# with its own questions, not a relabel: the registry's completeness test
+# requires a signature, KPIs, chart priorities, benchmarks, a blueprint
+# and its own prompts before a domain can be registered at all, which is
+# what stops "detectable but analysed generically" from happening again.
+
+register(DomainSpec(
+    key="education",
+    label="education",
+    signature=("student", "enrolment", "enrollment", "gradelevel", "gpa",
+               "semester", "curriculum", "tuition", "syllabus", "cohort",
+               "lecturer", "coursework", "examscore", "attendancerate"),
+    keywords=("grade", "score", "attendance", "course", "module", "subject",
+              "teacher", "school", "class", "exam", "pass", "term",
+              "study", "campus"),
+    insight_fn=_insights_education,
+    outcome_keywords=("passed", "pass", "graduated", "completed", "achieved"),
+    outcome_noun="pass rate",
+    outcome_good=True,
+    pdf_theme="HR Blue",
+    chart_metrics=("grade", "score", "attendance", "pass", "gpa", "mark",
+                   "studyhours"),
+    kpis=(
+        K("students", "Enrolments", "count"),
+        K("pass_rate", "Pass Rate", "rate",
+          ("passed", "pass", "graduated", "completed"), unit="%",
+          benchmark="pass_rate", higher_is_better=True),
+        K("grade", "Average Attainment", "mean",
+          ("grade", "score", "mark", "gpa", "percentage"),
+          exclude=("passscore",)),
+        K("attendance", "Average Attendance", "mean",
+          ("attendance", "present"), unit="%",
+          benchmark="attendance_rate", higher_is_better=True),
+        K("modules", "Modules", "nunique",
+          ("module", "course", "subject", "class")),
+    ),
+))
+
+register(DomainSpec(
+    key="logistics",
+    label="logistics",
+    signature=("shipment", "consignment", "carrier", "freight", "waybill",
+               "transittime", "lastmile", "linehaul", "dispatch", "tracking",
+               "palletcount", "deliverydate", "loadid"),
+    keywords=("delivery", "warehouse", "route", "lane", "origin",
+              "destination", "weight", "distance", "transport", "hub",
+              "depot", "mode", "ontime"),
+    insight_fn=_insights_logistics,
+    outcome_keywords=("ontime", "onschedule", "delivered", "delayed", "late"),
+    outcome_noun="on-time delivery",
+    outcome_good=True,
+    pdf_theme="Sales Green",
+    chart_metrics=("ontime", "transittime", "deliverydays", "freightcost",
+                   "cost", "distance", "weight"),
+    kpis=(
+        K("shipments", "Shipments", "count"),
+        K("on_time", "On-Time Delivery", "rate",
+          ("ontime", "onschedule", "delivered"), unit="%",
+          benchmark="on_time_delivery", higher_is_better=True),
+        K("transit", "Average Transit", "mean",
+          ("transittime", "transitdays", "deliverydays", "leadtime")),
+        K("cost", "Total Freight Cost", "sum",
+          ("freightcost", "shippingcost", "transportcost", "cost"),
+          exclude=("costcode",)),
+        K("lanes", "Lanes", "nunique",
+          ("lane", "route", "carrier", "destination")),
+    ),
+))
+
+register(DomainSpec(
+    key="realestate",
+    label="real estate",
+    signature=("property", "listing", "bedrooms", "bathrooms", "sqft",
+               "squarefeet", "tenancy", "landlord", "leasehold", "freehold",
+               "daysonmarket", "rentalyield", "propertytype", "floorarea"),
+    keywords=("price", "rent", "area", "location", "city", "postcode",
+              "valuation", "yield", "occupancy", "lease", "sold", "agent",
+              "district"),
+    insight_fn=_insights_realestate,
+    outcome_keywords=("sold", "let", "leased", "transacted", "vacant"),
+    outcome_noun="sale rate",
+    outcome_good=True,
+    pdf_theme="Corporate Light",
+    chart_metrics=("price", "rent", "yield", "daysonmarket", "occupancy",
+                   "sqft", "area"),
+    kpis=(
+        K("properties", "Properties", "count"),
+        K("price", "Average Price", "mean",
+          ("price", "saleprice", "value", "listprice"),
+          exclude=("pricepersqft", "pricepersqm")),
+        K("days_on_market", "Average Days on Market", "mean",
+          ("daysonmarket", "dayslisted", "daystosell"),
+          benchmark="days_on_market", higher_is_better=False),
+        K("occupancy", "Occupancy", "mean", ("occupancy", "occupied"),
+          unit="%", benchmark="occupancy_rate", higher_is_better=True),
+        K("yield", "Rental Yield", "mean", ("yield", "caprate"), unit="%",
+          benchmark="rental_yield", higher_is_better=True),
+        K("locations", "Locations", "nunique",
+          ("location", "city", "district", "area", "postcode")),
+    ),
+))
+
+register(DomainSpec(
+    key="insurance",
+    label="insurance",
+    signature=("policy", "policyholder", "premium", "claimamount", "insured",
+               "underwriting", "deductible", "suminsured", "lossratio",
+               "reinsurance", "policynumber", "coverage", "actuarial"),
+    keywords=("claim", "risk", "cover", "renewal", "lapse", "broker",
+              "excess", "limit", "settlement", "incurred", "product",
+              "exposure"),
+    insight_fn=_insights_insurance,
+    outcome_keywords=("claimed", "hasclaim", "claimflag", "lapsed"),
+    outcome_noun="claim rate",
+    pdf_theme="Corporate Light",
+    chart_metrics=("lossratio", "premium", "claimamount", "claims",
+                   "suminsured", "frequency"),
+    kpis=(
+        K("policies", "Policies", "count"),
+        K("premium", "Total Premium", "sum",
+          ("premium", "grosspremium", "writtenpremium")),
+        K("loss_ratio", "Loss Ratio", "ratio",
+          ("claimamount", "claimvalue", "incurred", "paid"),
+          denominator=("premium", "grosspremium", "writtenpremium"),
+          unit="%", benchmark="loss_ratio", higher_is_better=False),
+        K("claim_frequency", "Claim Frequency", "rate",
+          ("claimed", "hasclaim", "claimflag"), unit="%",
+          benchmark="claim_frequency", higher_is_better=False),
+        K("avg_claim", "Average Claim", "mean",
+          ("claimamount", "claimvalue", "settlement")),
+    ),
+))
+
+register(DomainSpec(
+    key="energy",
+    label="energy",
+    signature=("kwh", "mwh", "meterreading", "consumption", "peakdemand",
+               "loadfactor", "tariff", "emissions", "co2e", "renewable",
+               "gridsupply", "halfhourly", "meterid", "carbonintensity"),
+    keywords=("energy", "usage", "demand", "load", "site", "meter",
+              "carbon", "solar", "grid", "power", "gas", "electricity",
+              "billing"),
+    insight_fn=_insights_energy,
+    outcome_keywords=(),
+    outcome_noun="",
+    pdf_theme="Dark Tech",
+    chart_metrics=("consumption", "kwh", "demand", "load", "emissions",
+                   "co2", "cost"),
+    kpis=(
+        K("readings", "Readings", "count"),
+        K("consumption", "Total Consumption", "sum",
+          ("consumption", "kwh", "mwh", "usage", "energyused"),
+          exclude=("costperkwh",)),
+        K("peak", "Peak Demand", "max",
+          ("peakdemand", "maxdemand", "demand", "load", "kw")),
+        K("emissions", "Total Emissions", "sum",
+          ("emissions", "co2", "co2e", "carbon")),
+        K("sites", "Sites", "nunique",
+          ("site", "meter", "building", "facility", "location")),
+    ),
+))
+
 register(DomainSpec(
     key="general",
     label="Business Analytics",

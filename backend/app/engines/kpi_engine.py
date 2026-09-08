@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 
 # Aggregations a KPI may use. "rate" is the share of a binary column;
 # "ratio" divides one resolved column by another.
-KINDS = ("count", "sum", "mean", "median", "rate", "ratio", "nunique")
+KINDS = ("count", "sum", "mean", "median", "rate", "ratio", "nunique",
+        "max")
 
 
 @dataclass(frozen=True)

@@ -398,6 +398,144 @@ HEALTHCARE = Blueprint(
 )
 
 
+EDUCATION = Blueprint(
+    domain="education",
+    label="Programme Performance Review",
+    headline_metrics=("pass rate", "average attainment", "attendance",
+                      "withdrawal rate"),
+    sections=_COMMON_OPENING + (
+        Section("attainment", "Attainment & Completion",
+                "Pass rate and grade distribution across the cohort.",
+                ("education_outcomes",)),
+        Section("delivery", "Module & Cohort Variation",
+                "Where outcomes differ, and whether the difference "
+                "follows the module or the intake.",
+                ("education_delivery",)),
+        Section("engagement", "Engagement",
+                "Attendance and study effort against attainment.",
+                ("education_engagement",)),
+        Section("charts", "Supporting Analysis",
+                "The figures above, plotted."),
+    ) + _COMMON_CLOSING,
+    reference_note=(
+        "This is a programme-level analysis of aggregate records. It draws "
+        "no conclusion about any individual student, and pass rates are "
+        "only comparable within a programme: selectivity and level move "
+        "them more than teaching does."),
+)
+
+LOGISTICS = Blueprint(
+    domain="logistics",
+    label="Supply Chain & Distribution Review",
+    headline_metrics=("on-time delivery", "transit time", "cost per shipment",
+                      "carrier concentration"),
+    sections=_COMMON_OPENING + (
+        Section("service", "Service Performance",
+                "On-time delivery against the promise that was made.",
+                ("logistics_service",)),
+        Section("reliability", "Reliability",
+                "The spread of transit time, not only its average — the "
+                "number a customer-facing date should be set from.",
+                ("logistics_reliability",)),
+        Section("cost", "Cost & Lane Economics",
+                "Cost per shipment across lanes, normalised where the "
+                "data allows.",
+                ("logistics_cost",)),
+        Section("risk", "Concentration & Exposure",
+                "Volume held by a single carrier or lane.",
+                ("logistics_risk",)),
+        Section("charts", "Supporting Analysis",
+                "The figures above, plotted."),
+    ) + _COMMON_CLOSING,
+    reference_note=(
+        "Service-level ranges follow common freight contract definitions "
+        "rather than a licensed dataset, and vary by mode and geography. "
+        "Lane-to-lane comparison within this book is the stronger "
+        "evidence."),
+)
+
+REALESTATE = Blueprint(
+    domain="realestate",
+    label="Property Portfolio Review",
+    headline_metrics=("price per unit area", "days on market", "occupancy",
+                      "rental yield"),
+    sections=_COMMON_OPENING + (
+        Section("pricing", "Value & Pricing",
+                "Price normalised for size, which is the only basis on "
+                "which locations compare.",
+                ("realestate_pricing",)),
+        Section("liquidity", "Liquidity",
+                "How long stock sits, and which segment sits longest.",
+                ("realestate_liquidity",)),
+        Section("yield", "Yield & Occupancy",
+                "What the holdings earn against what they cost to hold.",
+                ("realestate_yield",)),
+        Section("charts", "Supporting Analysis",
+                "The figures above, plotted."),
+    ) + _COMMON_CLOSING,
+    reference_note=(
+        "Yields and days-on-market are strongly local and move with the "
+        "cycle, so published ranges are orientation rather than a "
+        "benchmark. Comparison within this portfolio, at a point in time, "
+        "is the firmer evidence. Nothing here is a valuation."),
+)
+
+INSURANCE = Blueprint(
+    domain="insurance",
+    label="Underwriting & Claims Review",
+    headline_metrics=("loss ratio", "claim frequency", "average claim",
+                      "lapse rate"),
+    sections=_COMMON_OPENING + (
+        Section("profitability", "Loss Ratio",
+                "Claims against premium — whether the book pays for "
+                "itself before expenses.",
+                ("insurance_profitability",)),
+        Section("segment", "Segment Performance",
+                "Which product, region or channel carries the loss.",
+                ("insurance_segment",)),
+        Section("exposure", "Frequency & Severity",
+                "Whether the cost comes from more claims or bigger ones — "
+                "they need opposite responses.",
+                ("insurance_exposure",)),
+        Section("charts", "Supporting Analysis",
+                "The figures above, plotted."),
+    ) + _COMMON_CLOSING,
+    reference_note=(
+        "This is a portfolio analysis of aggregate records. It is not a "
+        "pricing decision, a reserving opinion or a statement about any "
+        "individual policy or claim. Loss-ratio ranges differ sharply by "
+        "line of business, so comparison within this book is the stronger "
+        "evidence."),
+)
+
+ENERGY = Blueprint(
+    domain="energy",
+    label="Energy & Consumption Review",
+    headline_metrics=("peak demand", "average load", "energy intensity",
+                      "carbon intensity"),
+    sections=_COMMON_OPENING + (
+        Section("demand", "Demand Shape",
+                "Peak against average, because capacity charges follow "
+                "the peak and a total hides it.",
+                ("energy_demand",)),
+        Section("efficiency", "Baseload & Waste",
+                "What runs when nothing is happening.",
+                ("energy_efficiency",)),
+        Section("intensity", "Intensity",
+                "Consumption per unit of size or output, which is what "
+                "makes sites comparable.",
+                ("energy_intensity",)),
+        Section("charts", "Supporting Analysis",
+                "The figures above, plotted."),
+    ) + _COMMON_CLOSING,
+    reference_note=(
+        "Consumption benchmarks depend heavily on building type, climate "
+        "and operating hours, so published ranges orient rather than "
+        "grade. Site-to-site comparison within this estate, normalised "
+        "for size, is the more actionable evidence."),
+)
+
+
 BLUEPRINTS: Dict[str, Blueprint] = {
     "finance": FINANCE,
     "hr": HR,
@@ -407,6 +545,11 @@ BLUEPRINTS: Dict[str, Blueprint] = {
     "saas": SAAS,
     "operations": OPERATIONS,
     "healthcare": HEALTHCARE,
+    "education": EDUCATION,
+    "logistics": LOGISTICS,
+    "realestate": REALESTATE,
+    "insurance": INSURANCE,
+    "energy": ENERGY,
     "general": GENERAL,
 }
 

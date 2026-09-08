@@ -162,6 +162,79 @@ def _healthcare():
     })
 
 
+def _education():
+    r = _r()
+    module = r.choice(["Statistics", "Marketing", "Accounting", "Law"], N)
+    attendance = np.clip(r.normal(82, 14, N), 20, 100)
+    grade = np.clip(35 + attendance * 0.45 + r.normal(0, 10, N), 0, 100)
+    return pd.DataFrame({
+        "student_id": np.arange(N),
+        "module": module,
+        "semester": r.choice(["2025-S1", "2025-S2"], N),
+        "attendance_rate": attendance.round(1),
+        "study_hours": r.integers(2, 30, N),
+        "exam_score": grade.round(1),
+        "passed": (grade >= 50).astype(int),
+    })
+
+
+def _logistics():
+    r = _r()
+    return pd.DataFrame({
+        "shipment_id": np.arange(N),
+        "carrier": r.choice(["FastFreight", "BudgetHaul", "PrimeLogix"], N),
+        "lane": r.choice(["North-South", "East-West", "Coastal"], N),
+        "transit_days": r.lognormal(1.2, .6, N).round(1),
+        "freight_cost": r.uniform(200, 900, N).round(2),
+        "weight_kg": r.integers(50, 5000, N),
+        "distance_km": r.integers(80, 2200, N),
+        "on_time": r.choice([0, 1], N, p=[.1, .9]),
+    })
+
+
+def _realestate():
+    r = _r()
+    sqft = r.integers(450, 3000, N)
+    return pd.DataFrame({
+        "listing_id": np.arange(N),
+        "location": r.choice(["Riverside", "Old Town", "Northgate"], N),
+        "property_type": r.choice(["Flat", "House", "Maisonette"], N),
+        "bedrooms": r.integers(1, 6, N),
+        "sqft": sqft,
+        "price": (sqft * r.uniform(250, 650, N)).round(0),
+        "days_on_market": r.integers(5, 220, N),
+        "occupancy": np.clip(r.normal(88, 7, N), 40, 100).round(1),
+        "sold": r.choice([0, 1], N, p=[.4, .6]),
+    })
+
+
+def _insurance():
+    r = _r()
+    return pd.DataFrame({
+        "policy_number": np.arange(N),
+        "product": r.choice(["Motor", "Home", "Travel"], N),
+        "region": r.choice(["North", "South", "Central"], N),
+        "premium": r.uniform(40, 1400, N).round(2),
+        "sum_insured": r.uniform(2000, 60000, N).round(0),
+        "claimed": r.choice([0, 1], N, p=[.88, .12]),
+        "claim_amount": r.uniform(0, 8000, N).round(2),
+        "lapsed": r.choice([0, 1], N, p=[.89, .11]),
+    })
+
+
+def _energy():
+    r = _r()
+    return pd.DataFrame({
+        "meter_id": np.arange(N),
+        "site": r.choice(["Plant A", "Plant B", "Office"], N),
+        "hour": r.integers(0, 24, N),
+        "consumption_kwh": r.lognormal(4.5, .7, N).round(1),
+        "floor_area": r.choice([2000, 8500, 9000], N),
+        "emissions_co2e": r.uniform(5, 500, N).round(2),
+        "energy_cost": r.uniform(10, 900, N).round(2),
+    })
+
+
 def _general():
     r = _r()
     return pd.DataFrame({
@@ -175,7 +248,9 @@ def _general():
 BUILDERS = {
     "hr": _hr, "ecommerce": _ecommerce, "sales": _sales, "finance": _finance,
     "marketing": _marketing, "saas": _saas, "operations": _operations,
-    "healthcare": _healthcare, "general": _general,
+    "healthcare": _healthcare, "education": _education,
+    "logistics": _logistics, "realestate": _realestate,
+    "insurance": _insurance, "energy": _energy, "general": _general,
 }
 
 ENGINES = {

@@ -80,6 +80,10 @@ def _insights_operations(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                     "'{}' varies {:.0f}% around its mean — the average is "
                     "not a number the business can plan or promise "
                     "against.".format(cycle, cv))
+                actions.append(
+                    "Split '{}' by job type or line before promising a "
+                    "date from it — a mixed average of {:.0f}% CV hides "
+                    "which part is actually unstable.".format(cycle, cv))
                 insights.append(build_insight(
                     title="'{}' Varies {:.0f}% Around Its Mean".format(
                         cycle, cv),
@@ -119,6 +123,10 @@ def _insights_operations(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                 risks.append(
                     "Defect rate at {:.2f}% means roughly 1 in {:.0f} units "
                     "is reworked or scrapped.".format(rate, 100 / max(rate, .01)))
+                actions.append(
+                    "Pareto '{}' by defect type and fix the top cause "
+                    "first — at {:.2f}%, one cause usually carries most of "
+                    "the rework cost.".format(defects, rate))
             insights.append(build_insight(
                 title="Defect Rate at {:.2f}%".format(rate),
                 problem="{:.2f}% of units fail quality".format(rate),
@@ -145,6 +153,10 @@ def _insights_operations(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                 "On-time performance is {:.1f}%.{}".format(
                     rate, " " + note if note else ""))
             if rate < 95:
+                actions.append(
+                    "Re-set the delivery promise from the 85th percentile "
+                    "of '{}', not the mean — {:.1f}% on-time means the "
+                    "mean is already overpromising.".format(otd_col, rate))
                 insights.append(build_insight(
                     title="On-Time Performance at {:.1f}%".format(rate),
                     problem="{:.1f}% of commitments are met on time".format(rate),
@@ -175,6 +187,10 @@ def _insights_operations(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                     "Utilisation at {:.1f}% leaves no slack. Above roughly "
                     "{:.0f}%, queues grow non-linearly and any disruption "
                     "propagates.".format(util, UTILISATION_CEILING))
+                actions.append(
+                    "Plan capacity to the demand peak, not the {:.1f}% "
+                    "average, and hold a defined buffer on the "
+                    "constraint.".format(util))
                 insights.append(build_insight(
                     title="Utilisation at {:.1f}% — Above the Slack Line".format(
                         util),
@@ -214,6 +230,10 @@ def _insights_operations(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                     "working inside the business and can be copied.".format(
                         gap["best"] if measure == throughput else gap["worst"],
                         measure))
+                actions.append(
+                    "Observe '{}''s practice on '{}' and pilot it at "
+                    "'{}' before a wider rollout.".format(
+                        gap["best"], measure, gap["worst"]))
                 insights.append(build_insight(
                     title="{:.1f}x Spread on '{}' Between Sites".format(
                         gap["ratio"], measure),

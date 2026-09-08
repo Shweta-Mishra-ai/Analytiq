@@ -343,6 +343,120 @@ HEALTHCARE_BENCHMARKS = {
 }
 
 
+
+# ══════════════════════════════════════════════════════════
+#  EDUCATION
+# ══════════════════════════════════════════════════════════
+
+EDUCATION_BENCHMARKS = {
+    "pass_rate": BenchmarkRange(75, 90, "%",
+        "Module pass rate; varies widely by level and selectivity, so it is "
+        "only comparable within a programme",
+        "Higher-education programme reporting convention"),
+    "attendance_rate": BenchmarkRange(80, 90, "%",
+        "Timetabled sessions attended",
+        "Institutional attendance monitoring practice"),
+    "retention_rate": BenchmarkRange(85, 95, "%",
+        "Students continuing into the next year of study",
+        "Published higher-education continuation reporting"),
+    "student_staff_ratio": BenchmarkRange(12, 20, ":1",
+        "Students per academic staff member; discipline-dependent",
+        "Institutional planning convention"),
+}
+
+
+# ══════════════════════════════════════════════════════════
+#  LOGISTICS & SUPPLY CHAIN
+# ══════════════════════════════════════════════════════════
+
+LOGISTICS_BENCHMARKS = {
+    "on_time_delivery": BenchmarkRange(95, 98, "%",
+        "Shipments delivered by the promised date",
+        "Freight service-level agreement convention"),
+    "order_accuracy": BenchmarkRange(97, 99.5, "%",
+        "Orders shipped complete and correct",
+        "Warehouse operations reporting"),
+    "damage_rate": BenchmarkRange(0.2, 1.0, "%",
+        "Consignments damaged in transit; lower is better",
+        "Freight claims reporting"),
+    "inventory_turns": BenchmarkRange(6, 12, "turns/yr",
+        "Highly sector-dependent — perishables and heavy plant sit at "
+        "opposite ends",
+        "Supply-chain planning convention"),
+}
+
+
+# ══════════════════════════════════════════════════════════
+#  REAL ESTATE & PROPERTY
+# ══════════════════════════════════════════════════════════
+
+REALESTATE_BENCHMARKS = {
+    "occupancy_rate": BenchmarkRange(90, 96, "%",
+        "Let space against lettable space; below ~90% is usually a pricing "
+        "or condition question",
+        "Commercial property portfolio reporting"),
+    "rental_yield": BenchmarkRange(4, 8, "%",
+        "Annual rent against capital value; varies sharply by market and "
+        "asset class",
+        "Property investment reporting convention"),
+    "days_on_market": BenchmarkRange(30, 60, "days",
+        "Listing to agreed sale in a liquid market",
+        "Residential agency reporting"),
+    "void_period": BenchmarkRange(2, 6, "weeks",
+        "Time between tenancies",
+        "Lettings management convention"),
+}
+
+
+# ══════════════════════════════════════════════════════════
+#  INSURANCE
+# ══════════════════════════════════════════════════════════
+
+INSURANCE_BENCHMARKS = {
+    "loss_ratio": BenchmarkRange(60, 75, "%",
+        "Claims incurred against premium earned. Above ~75% leaves little "
+        "for expenses and profit; above 100% the book loses money before "
+        "any expense is counted",
+        "General insurance reporting convention"),
+    "combined_ratio": BenchmarkRange(90, 100, "%",
+        "Loss ratio plus expense ratio; above 100% is an underwriting loss",
+        "General insurance reporting convention"),
+    "expense_ratio": BenchmarkRange(25, 35, "%",
+        "Acquisition and administration against premium",
+        "General insurance reporting convention"),
+    "claim_frequency": BenchmarkRange(3, 10, "%",
+        "Policies making a claim in a year; entirely line-dependent",
+        "Actuarial reporting convention"),
+    "policy_lapse_rate": BenchmarkRange(8, 15, "%",
+        "Policies not renewed at the end of their term; strongly affected "
+        "by line of business and by whether renewal is automatic",
+        "Retention reporting convention"),
+}
+
+
+# ══════════════════════════════════════════════════════════
+#  ENERGY & UTILITIES
+# ══════════════════════════════════════════════════════════
+
+ENERGY_BENCHMARKS = {
+    "load_factor": BenchmarkRange(50, 80, "%",
+        "Average load against peak load; a low figure means capacity is "
+        "paid for and not used",
+        "Electricity network planning convention"),
+    "baseload_share": BenchmarkRange(20, 40, "%",
+        "Overnight floor against average consumption; above this is usually "
+        "equipment left running",
+        "Building energy management convention"),
+    "peak_to_average": BenchmarkRange(1.3, 2.5, "x",
+        "Peak demand against average demand; capacity charges follow the "
+        "peak",
+        "Demand-management convention"),
+    "renewable_share": BenchmarkRange(30, 60, "%",
+        "Consumption met from renewable supply; policy-dependent and moving",
+        "Corporate sustainability reporting"),
+}
+
+
 DOMAIN_BENCHMARKS = {
     "hr": HR_BENCHMARKS,
     "sales": SALES_BENCHMARKS,
@@ -352,6 +466,11 @@ DOMAIN_BENCHMARKS = {
     "operations": OPERATIONS_BENCHMARKS,
     "saas": SAAS_BENCHMARKS,
     "healthcare": HEALTHCARE_BENCHMARKS,
+    "education": EDUCATION_BENCHMARKS,
+    "logistics": LOGISTICS_BENCHMARKS,
+    "realestate": REALESTATE_BENCHMARKS,
+    "insurance": INSURANCE_BENCHMARKS,
+    "energy": ENERGY_BENCHMARKS,
 }
 
 # Column-name keywords -> benchmark key, per domain. First match wins.
@@ -432,6 +551,36 @@ _COLUMN_KEYWORD_MAP = {
         (("cac_payback", "payback"), "cac_payback_months"),
         (("rule_of_40", "rule40"), "rule_of_40"),
         (("trial_conversion", "trial_to_paid"), "trial_to_paid"),
+    ],
+    "education": [
+        (("pass", "passrate", "achieved"), "pass_rate"),
+        (("attendance", "present"), "attendance_rate"),
+        (("retention", "continuation"), "retention_rate"),
+    ],
+    "logistics": [
+        (("ontime", "on_time", "sla"), "on_time_delivery"),
+        (("accuracy", "complete"), "order_accuracy"),
+        (("damage", "damaged"), "damage_rate"),
+        (("turns", "inventory_turns"), "inventory_turns"),
+    ],
+    "realestate": [
+        (("occupancy", "occupied"), "occupancy_rate"),
+        (("yield", "caprate"), "rental_yield"),
+        (("daysonmarket", "days_on_market", "dayslisted"), "days_on_market"),
+        (("void", "voidperiod"), "void_period"),
+    ],
+    "insurance": [
+        (("lossratio", "loss_ratio"), "loss_ratio"),
+        (("combined", "combinedratio"), "combined_ratio"),
+        (("expenseratio",), "expense_ratio"),
+        (("frequency", "claimrate"), "claim_frequency"),
+        (("lapse", "lapsed"), "policy_lapse_rate"),
+    ],
+    "energy": [
+        (("loadfactor", "load_factor"), "load_factor"),
+        (("baseload",), "baseload_share"),
+        (("peaktoaverage", "peakratio"), "peak_to_average"),
+        (("renewable", "green"), "renewable_share"),
     ],
     "healthcare": [
         (("occupancy", "bed_occupancy"), "bed_occupancy"),

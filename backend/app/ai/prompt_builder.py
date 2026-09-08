@@ -711,6 +711,148 @@ pattern could have a clinical cause, say clinical review is required.
 """ + _INSIGHT_TAIL
 
 
+EDUCATION_EXECUTIVE_PROMPT = MASTER_SYSTEM_PROMPT + """
+
+DOMAIN: Education & Programme Analytics
+TASK: Write an executive summary for this education dataset analysis.
+
+PRE-COMPUTED DATA (use these exact numbers — do not invent):
+{raw_data_summary}
+
+OUTPUT RULES:
+- 3 paragraphs, no bullet points
+- Paragraph 1: Attainment and completion — pass rate, grade distribution
+  and how they vary across modules or cohorts
+- Paragraph 2: The clearest risk to outcomes — a module well below the
+  programme, an attendance effect, or withdrawal concentrated somewhere
+- Paragraph 3: What the programme team should review before the next
+  intake
+- Write as if presenting to a head of department or programme lead
+- Write about cohorts and modules, never about an individual student
+- Every number must come from PRE-COMPUTED DATA above
+"""
+
+LOGISTICS_EXECUTIVE_PROMPT = MASTER_SYSTEM_PROMPT + """
+
+DOMAIN: Logistics & Supply Chain Analytics
+TASK: Write an executive summary for this logistics dataset analysis.
+
+PRE-COMPUTED DATA (use these exact numbers — do not invent):
+{raw_data_summary}
+
+OUTPUT RULES:
+- 3 paragraphs, no bullet points
+- Paragraph 1: Service performance — on-time delivery, transit time and
+  how reliable it is, not only its average
+- Paragraph 2: Cost and exposure — cost per shipment across lanes, and
+  any carrier or lane carrying a disproportionate share
+- Paragraph 3: What to renegotiate or reroute next
+- Where transit time is variable, say what should be promised rather
+  than what the average is
+- Write as if presenting to a logistics or supply chain director
+- Every number must come from PRE-COMPUTED DATA above
+"""
+
+REALESTATE_EXECUTIVE_PROMPT = MASTER_SYSTEM_PROMPT + """
+
+DOMAIN: Real Estate & Property Analytics
+TASK: Write an executive summary for this property dataset analysis.
+
+PRE-COMPUTED DATA (use these exact numbers — do not invent):
+{raw_data_summary}
+
+OUTPUT RULES:
+- 3 paragraphs, no bullet points
+- Paragraph 1: Value and pricing — always per unit of area where the
+  data allows it, because a total price mostly reports building size
+- Paragraph 2: Liquidity and yield — days on market, occupancy, and
+  where stock is sitting
+- Paragraph 3: What to buy, sell, re-price or re-let next
+- Write as if presenting to a portfolio manager or agency principal
+- Every number must come from PRE-COMPUTED DATA above
+"""
+
+INSURANCE_EXECUTIVE_PROMPT = MASTER_SYSTEM_PROMPT + """
+
+DOMAIN: Insurance Portfolio Analytics
+TASK: Write an executive summary for this insurance dataset analysis.
+
+PRE-COMPUTED DATA (use these exact numbers — do not invent):
+{raw_data_summary}
+
+OUTPUT RULES:
+- 3 paragraphs, no bullet points
+- Paragraph 1: Loss ratio and what it means for the book before expenses
+- Paragraph 2: Which segment carries the loss, and whether the pattern is
+  frequency or severity — they need opposite responses
+- Paragraph 3: What underwriting should re-rate, restrict or review
+- This is PORTFOLIO analysis: no statement about any individual
+  policyholder, claim or price
+- Write as if presenting to an underwriting or claims director
+- Every number must come from PRE-COMPUTED DATA above
+"""
+
+ENERGY_EXECUTIVE_PROMPT = MASTER_SYSTEM_PROMPT + """
+
+DOMAIN: Energy & Sustainability Analytics
+TASK: Write an executive summary for this energy dataset analysis.
+
+PRE-COMPUTED DATA (use these exact numbers — do not invent):
+{raw_data_summary}
+
+OUTPUT RULES:
+- 3 paragraphs, no bullet points
+- Paragraph 1: The shape of demand — peak against average, and baseload —
+  because a total alone treats a flat profile and a peaky one as the same
+- Paragraph 2: Efficiency once size is divided out, and carbon intensity
+  where emissions are recorded
+- Paragraph 3: What to shift, schedule or re-tariff next
+- Write as if presenting to an energy or sustainability manager
+- Every number must come from PRE-COMPUTED DATA above
+"""
+
+EDUCATION_INSIGHT_PROMPT = MASTER_SYSTEM_PROMPT + """
+
+DOMAIN: Education & Programme Analytics
+TASK: Write 4 deep insights from this education dataset analysis.
+Focus on attainment, completion and the modules or cohorts that differ.
+Write about groups, never about an individual student.
+""" + _INSIGHT_TAIL
+
+LOGISTICS_INSIGHT_PROMPT = MASTER_SYSTEM_PROMPT + """
+
+DOMAIN: Logistics & Supply Chain Analytics
+TASK: Write 4 deep business insights from this logistics dataset analysis.
+Focus on service reliability, cost per shipment and concentration risk.
+Reliability means the spread of transit time, not only its average.
+""" + _INSIGHT_TAIL
+
+REALESTATE_INSIGHT_PROMPT = MASTER_SYSTEM_PROMPT + """
+
+DOMAIN: Real Estate & Property Analytics
+TASK: Write 4 deep business insights from this property dataset analysis.
+Normalise for size before comparing anything — price per unit of area,
+not price.
+""" + _INSIGHT_TAIL
+
+INSURANCE_INSIGHT_PROMPT = MASTER_SYSTEM_PROMPT + """
+
+DOMAIN: Insurance Portfolio Analytics
+TASK: Write 4 deep business insights from this insurance dataset analysis.
+Focus on loss ratio, segment mispricing and severity concentration.
+This is PORTFOLIO analysis: no statement about any individual
+policyholder, claim or price.
+""" + _INSIGHT_TAIL
+
+ENERGY_INSIGHT_PROMPT = MASTER_SYSTEM_PROMPT + """
+
+DOMAIN: Energy & Sustainability Analytics
+TASK: Write 4 deep business insights from this energy dataset analysis.
+Focus on demand shape, baseload, intensity per unit of size, and carbon
+intensity rather than absolute totals.
+""" + _INSIGHT_TAIL
+
+
 # ── Lookup ────────────────────────────────────────────────
 # Keyed by the same domain keys the registry uses. Anything absent
 # resolves to GENERAL_*, never to another domain's prompt.
@@ -724,6 +866,11 @@ EXECUTIVE_PROMPTS = {
     "saas":       SAAS_EXECUTIVE_PROMPT,
     "operations": OPERATIONS_EXECUTIVE_PROMPT,
     "healthcare": HEALTHCARE_EXECUTIVE_PROMPT,
+    "education":  EDUCATION_EXECUTIVE_PROMPT,
+    "logistics":  LOGISTICS_EXECUTIVE_PROMPT,
+    "realestate": REALESTATE_EXECUTIVE_PROMPT,
+    "insurance":  INSURANCE_EXECUTIVE_PROMPT,
+    "energy":     ENERGY_EXECUTIVE_PROMPT,
     "general":    GENERAL_EXECUTIVE_PROMPT,
 }
 
@@ -736,6 +883,11 @@ INSIGHT_PROMPTS = {
     "saas":       SAAS_INSIGHT_PROMPT,
     "operations": OPERATIONS_INSIGHT_PROMPT,
     "healthcare": HEALTHCARE_INSIGHT_PROMPT,
+    "education":  EDUCATION_INSIGHT_PROMPT,
+    "logistics":  LOGISTICS_INSIGHT_PROMPT,
+    "realestate": REALESTATE_INSIGHT_PROMPT,
+    "insurance":  INSURANCE_INSIGHT_PROMPT,
+    "energy":     ENERGY_INSIGHT_PROMPT,
     "general":    GENERAL_INSIGHT_PROMPT,
 }
 
