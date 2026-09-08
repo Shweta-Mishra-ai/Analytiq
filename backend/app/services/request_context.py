@@ -21,6 +21,7 @@ in log lines and a header.
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import logging
 import re
@@ -47,6 +48,23 @@ _account: contextvars.ContextVar[str] = contextvars.ContextVar(
 
 def current_request_id() -> str:
     return _request_id.get()
+
+
+@contextlib.contextmanager
+def bind_request_id(rid: str):
+    """Carry a request's id into a thread that is not serving it.
+
+    Background work is submitted by a request and finishes long after
+    it, in a worker thread with no context of its own. Without this a
+    failure during a scheduled report logs under "-" and cannot be tied
+    to the person who asked for it — which is the whole reason the id
+    exists.
+    """
+    token = _request_id.set(rid or "-")
+    try:
+        yield
+    finally:
+        _request_id.reset(token)
 
 
 class RequestIdFilter(logging.Filter):

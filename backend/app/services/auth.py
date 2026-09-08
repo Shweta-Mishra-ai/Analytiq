@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 # endpoints that must stay reachable without a token
 PUBLIC_PATHS = {"/api/health", "/api/auth/login"}
 
+# Prefixes that answer without a session. Exactly one so far: a share
+# link, which carries its own signed grant for a single artifact. It is
+# public by design — the recipient is the CFO who does not have an
+# account, which is the entire point — and the token is the credential,
+# checked by the route itself rather than here.
+PUBLIC_PREFIXES = ("/api/shared/",)
+
 # implicit owner used only in single-user open dev mode
 LOCAL_OWNER = "local"
 
@@ -47,6 +54,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if (not path.startswith("/api")
                 or path in PUBLIC_PATHS
+                or path.startswith(PUBLIC_PREFIXES)
                 or request.method == "OPTIONS"):
             return await call_next(request)
 

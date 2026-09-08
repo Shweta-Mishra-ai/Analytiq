@@ -83,6 +83,7 @@ graph TD
 | 💬 **AI Copilot** | **Safe Chat Agent** | Plain-English query processor -> secure tool dispatcher (no code execution) -> interactive charts and tables. |
 | 🧠 **Knowledge Store** | **RAG Studio** | Custom local vector index ingestion of PDFs, DOCX, CSVs, and video/images via Gemini Vision embeddings. |
 | 📄 **Executive Reports** | **Document Generator** | Beautifully styled ReportLab PDF reports (cover page, TOC, benchmarks, and AI-narrated chart guides). |
+| 📬 **Delivery** | **Links and schedules** | Reports build in the background and are kept, not held on the request thread; a signed, expiring link opens one report for someone with no account, and can be withdrawn; daily/weekly/monthly schedules produce exactly one report per window. |
 
 ---
 
@@ -156,6 +157,8 @@ The application remains fully functional locally without keys (AI modules degrad
 | `CLEANUP_INTERVAL_HOURS` | you choose | How often the expiry sweep runs in the background. Default `6`. A sweep also runs once at startup, and can be triggered manually via `POST /api/admin/cleanup`. |
 | `APP_SECRET` | you choose | Signs client login tokens. Optional — auto-generated and persisted to `DATA_DIR/.secret_key` if unset. Set explicitly if you run multiple backend instances behind a load balancer, so they all validate the same tokens. |
 | `TOKEN_TTL_DAYS` | you choose | How long a client's login session lasts before they must sign in again. Default `30`. |
+| `PUBLIC_BASE_URL` | you choose | The address clients reach the app on, e.g. `https://analytiq.example.com`. Behind a reverse proxy the request's own base URL is the container's internal one, so a share link built from it is dead on arrival — set this and every link, emailed or copied, points at the right place. |
+| `SMTP_HOST` | you choose | Where scheduled reports are emailed from. Unset, a schedule still builds its report on time and it waits on the Reports page, and the schedule says exactly that rather than implying something was sent. `SMTP_PORT` (default `587`), `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` and `SMTP_STARTTLS` (default `1`) go with it. |
 
 ### 🎬 Video-to-dataset extraction
 
@@ -283,6 +286,41 @@ was received. Run `sha256sum` on your original file: if it matches,
 every figure in that report came from that file and no other. The report
 also records the library versions it was computed with, because a
 quantile or a solver default can change between releases.
+
+### 📬 Delivering a report, not just producing one
+
+A report used to exist only for the length of the HTTP response that
+built it, and that one fact was three limitations at once: a three-second
+build had to be held on the request thread, a client could only be sent a
+*file* rather than a link, and nothing could run on a schedule because a
+schedule has nowhere to leave what it made.
+
+- **`POST /api/jobs`** starts a report and returns immediately with an id
+  to poll. Failure is a first-class outcome — a job that raised has a
+  status of `failed` and the reason on it, not a log line and a request
+  that never comes back. A run stranded by a restart is recognised as
+  such (the boot id on the record settles it exactly) rather than
+  reading "running" forever.
+- **`GET /api/artifacts`** is what it produced. Reports are kept 30 days
+  and then removed, because a report is a photograph of a dataset at a
+  moment and an old one misleads.
+- **`POST /api/artifacts/{id}/share`** mints a link that opens that one
+  report with no account — the recipient is the CFO who does not have a
+  login, which is the point. It is not a credential: it cannot list, it
+  cannot reach a dataset, it cannot be traded for a session. The expiry
+  is inside the signature, so it cannot be extended by editing the link,
+  and it can be withdrawn before it lapses. Minting one and following one
+  are both audit events.
+- **`POST /api/schedules`** makes it arrive on its own — daily, weekly or
+  monthly. The tick records the *period* it produced rather than the time
+  it ran, so a restart or an overlapping tick still produces exactly one
+  report per window. Missed windows are not backfilled: a server down for
+  a week does not wake up and send seven reports.
+
+Set `PUBLIC_BASE_URL` so links point at the address your clients reach,
+and `SMTP_HOST` to have scheduled reports emailed. Without SMTP a
+schedule still builds on time and the report waits on the Reports page —
+and says so, rather than quietly producing nothing.
 
 ### 🗄️ Reading from a database instead of a CSV
 

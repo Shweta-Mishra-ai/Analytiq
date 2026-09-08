@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { apiBlob, apiGet, downloadBlob } from '../api/client'
 import { useApp } from '../store/app'
+import Delivery from '../components/Delivery'
 import { Badge, Btn, ErrorBox, NeedData, PageHeader, Panel } from '../components/Ui'
 
 interface HealthInsight {
@@ -395,6 +396,12 @@ export default function ReportsPage() {
             </button>
           </div>
         </Panel>
+      </div>
+
+      {/* Where a report goes after it is built: kept, linkable, and
+          able to arrive on its own. */}
+      <div className="mt-5">
+        <Delivery datasetId={ds ?? ''} />
       </div>
     </div>
   )

@@ -17,7 +17,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.config import config
-from app.api import advanced_analytics, analytics, charts, chat, datasets, ml, reports
+from app.api import (advanced_analytics, analytics, charts, chat, datasets,
+                     deliver, ml, reports)
 from app.services.auth import AuthMiddleware
 from app.services import request_context
 from app.services.cleanup import cleanup_loop, sweep_expired
@@ -26,6 +27,48 @@ from app.services.user_store import user_store
 logger = logging.getLogger(__name__)
 
 logging.basicConfig(level=logging.INFO)
+
+
+# How often the ticker looks for schedules that are due. Cadences are
+# daily at the finest, so a five-minute check is far more often than
+# needed — which is the point: a schedule set for 07:00 should fire
+# near 07:00, not at whatever moment a coarse timer happens to land on.
+SCHEDULE_TICK_SECONDS = 300
+
+
+async def schedule_loop():
+    """Produce what is due, and sweep what has expired.
+
+    Both live here because both are promises the product makes and
+    neither should depend on somebody remembering to configure a cron
+    job. The tick is idempotent — a schedule records the PERIOD it last
+    produced, not the last time it ran — so a restart or an overlapping
+    tick still produces exactly one report per window.
+    """
+    from app.services.artifacts import store as artifacts
+    from app.services.jobs import reap_all
+    from app.services.schedules import run_due
+
+    while True:
+        try:
+            await asyncio.sleep(SCHEDULE_TICK_SECONDS)
+            started = await asyncio.to_thread(run_due)
+            if started:
+                logging.getLogger(__name__).info(
+                    "%d scheduled report(s) started", started)
+            await asyncio.to_thread(artifacts.sweep)
+            # A job a schedule started has nobody polling it, so a
+            # restart would leave it reading "queued" for ever and the
+            # schedule reporting that as its outcome.
+            await asyncio.to_thread(reap_all)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A ticker that dies on one bad schedule stops every other
+            # one silently, which is the worst possible failure for a
+            # feature whose entire promise is that it keeps happening.
+            logging.getLogger(__name__).error(
+                "schedule tick failed; continuing", exc_info=True)
 
 
 @asynccontextmanager
@@ -39,15 +82,24 @@ async def lifespan(app: FastAPI):
     from app.services import warmup
     warmup.start()
 
-    task = asyncio.create_task(cleanup_loop())
+    # What each background job kind does. Registered here rather than
+    # on first use: the scheduler reaches the runner without going
+    # through the API, and a schedule that fired into an empty handler
+    # table failed with "There is no job of kind 'health-report'".
+    from app.services import report_jobs      # noqa: F401  (registers)
+
+    tasks = [asyncio.create_task(cleanup_loop()),
+             asyncio.create_task(schedule_loop())]
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(title=config.app_name, version=config.app_version, lifespan=lifespan)
@@ -94,6 +146,7 @@ app.include_router(charts.router)
 app.include_router(ml.router)
 app.include_router(chat.router)
 app.include_router(reports.router)
+app.include_router(deliver.router)
 
 try:
     from app.api import rag

@@ -74,6 +74,8 @@ EVENTS = {
     "delete",          # the dataset was removed
     "verify",          # an integrity check was run
     "generate",        # a decorative image was produced for a deliverable
+    "share",           # a link was minted that opens without an account
+    "revoke",          # that link was withdrawn
 }
 
 
