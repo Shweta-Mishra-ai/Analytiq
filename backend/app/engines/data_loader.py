@@ -35,6 +35,13 @@ class LoadResult:
 
 MAX_FILE_MB       = 200
 MAX_ROWS_FULL     = 500_000   # keep full data up to 500k rows
+
+# The hard stop while READING. data_validator rejects anything past its
+# own MAX_ROWS afterwards; this exists so the frame that gets rejected
+# was never built at full size in the first place. One row of headroom
+# so "exactly at the limit" is still accepted and "one over" is still
+# detectable.
+ROW_CEILING       = 1_000_000
 SAMPLE_THRESHOLD  = 100_000   # sample for heavy analysis above this
 
 
@@ -191,6 +198,15 @@ def _load_csv(f, warnings: list) -> Optional[pd.DataFrame]:
                     low_memory=False,
                     on_bad_lines="warn",
                     encoding_errors="replace",
+                    # One row past the limit is enough to know the file
+                    # is over it, and stops pandas building the rest.
+                    # The row check used to run on the finished frame,
+                    # which is far too late: a 79 MB CSV took the
+                    # process from 203 MB to 1,704 MB of RSS and was
+                    # THEN rejected for having too many rows. Reading
+                    # the file is what has to be bounded, not the
+                    # verdict on it.
+                    nrows=ROW_CEILING + 1,
                 )
                 if df.shape[1] >= 2:  # at least 2 columns = real CSV
                     if enc != "utf-8":
@@ -205,7 +221,8 @@ def _load_csv(f, warnings: list) -> Optional[pd.DataFrame]:
 
     # Last resort — no separator detection
     f.seek(0)
-    return pd.read_csv(f, encoding_errors="replace", low_memory=False)
+    return pd.read_csv(f, encoding_errors="replace", low_memory=False,
+                       nrows=ROW_CEILING + 1)
 
 
 # ══════════════════════════════════════════════════════════

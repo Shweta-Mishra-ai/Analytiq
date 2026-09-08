@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from app.config import config
 from app.api import advanced_analytics, analytics, charts, chat, datasets, ml, reports
 from app.services.auth import AuthMiddleware
+from app.services import request_context
 from app.services.cleanup import cleanup_loop, sweep_expired
 from app.services.user_store import user_store
 
@@ -60,6 +61,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(AuthMiddleware)
+
+# Outermost, so it wraps auth too: a 401 is a request worth
+# finding in the log, and an id that only exists after
+# authentication cannot explain a failure to authenticate.
+request_context.install(app)
 
 
 class LoginRequest(BaseModel):

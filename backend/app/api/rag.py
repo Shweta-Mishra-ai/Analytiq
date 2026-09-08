@@ -24,6 +24,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/rag", tags=["rag"])
 
 
+
+async def _read_upload(file, media: bool = False):
+    """Read an upload against the configured cap.
+
+    This used to be a bare `await file.read()`, so the size limit was
+    checked after the whole body was already in memory — a 79 MB CSV
+    took the process from 203 MB to 1,704 MB of RSS, which is the
+    container gone on the tiers this deploys to.
+    """
+    from fastapi import HTTPException
+
+    from app.config import config
+    from app.services.upload_limits import UploadTooLarge, read_capped
+
+    limit = config.max_media_mb if media else config.max_file_mb
+    try:
+        return await read_capped(file, limit)
+    except UploadTooLarge as e:
+        raise HTTPException(413, str(e)) from None
+
+
 class KbCreate(BaseModel):
     name: str
 
@@ -98,7 +119,7 @@ async def upload_file(kb_id: str, file: UploadFile = File(...),
                        owner: str = Depends(current_owner)):
     from starlette.concurrency import run_in_threadpool
     kb = _kb_or_404(owner, kb_id)
-    data = await file.read()
+    data = await _read_upload(file, media=True)
     limit = config.max_media_mb * 1024 * 1024
     if len(data) > limit:
         raise HTTPException(413, f"File exceeds {config.max_media_mb} MB limit")

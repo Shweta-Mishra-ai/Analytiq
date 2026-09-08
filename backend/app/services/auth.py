@@ -79,6 +79,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 {"detail": "Not authenticated"}, status_code=401)
         request.state.username = username
         request.state.is_admin = False
+        # So every log line under this request says who it was for.
+        from app.services.request_context import set_account
+        set_account(username)
         return await call_next(request)
 
 

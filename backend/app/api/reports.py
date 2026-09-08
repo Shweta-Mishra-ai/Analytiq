@@ -21,6 +21,8 @@ from app.services.metrics import metrics
 from app.services.serialize import to_jsonable
 
 logger = logging.getLogger(__name__)
+from app.services.load_control import admit
+
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 
@@ -113,7 +115,8 @@ def _count_skipped(skipped: list) -> None:
         metrics.record_failure(f"engine.{section}", "section omitted")
 
 
-@router.post("/{ds_id}/pdf")
+@router.post("/{ds_id}/pdf",
+             dependencies=[Depends(admit("report"))])
 def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner)):
     # "Reports are slow" is unanswerable without a number, and the answer
     # is rarely build_pdf itself — it is usually one engine upstream of it.
@@ -422,7 +425,8 @@ def health_summary(ds_id: str, owner: str = Depends(current_owner)):
     return summary
 
 
-@router.post("/{ds_id}/health-pdf")
+@router.post("/{ds_id}/health-pdf",
+             dependencies=[Depends(admit("report"))])
 def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
                          owner: str = Depends(current_owner)):
     """Client-facing Data Health & Business Insights report (PDF)."""

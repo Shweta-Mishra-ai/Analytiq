@@ -1008,6 +1008,58 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         ]))
         story.append(act_tbl)
 
+    # ── How this was measured ─────────────────────────────
+    # The analysis report carries a full Analytical Method appendix; this
+    # one carried a single BASIS OF PREPARATION paragraph, and this is
+    # the document that most often reaches a stakeholder on its own. The
+    # question it has to answer is not "is the number right" — it is
+    # "what would make this number wrong", and a reader cannot judge
+    # that from a score and a grade.
+    story.append(CondPageBreak(ROOM_TEXT))
+    story.append(_section("How This Was Measured"))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=accent,
+                            spaceAfter=6))
+
+    for heading, text in (
+        ("What the score is",
+         "The health score is the same figure the analysis report prints "
+         "for this dataset — completeness at 60%, freedom from duplicate "
+         "records at 30%, and per-column quality at 10%. It is not a "
+         "second opinion computed here; two different scores for one file "
+         "would be a contradiction in the pack you received."),
+        ("What the grade is",
+         "The grade is a judgement rather than an average, so it has a "
+         "floor. One ruinous fault caps it regardless of the score — a "
+         "file that is mostly duplicate rows, or one where no column "
+         "varies, cannot grade well no matter how complete it is. Where "
+         "the grade has been capped, the reason is stated beside it in "
+         "words."),
+        ("What the findings rest on",
+         "Group differences are tested with Kruskal-Wallis or Mann-Whitney "
+         "where the distribution is not normal and with ANOVA or Welch's "
+         "t-test where it is; the choice follows the data rather than "
+         "convenience. Correlations carry their p-value and sample size. "
+         "Findings that did not survive correction for multiple testing "
+         "were dropped rather than reported with a caveat."),
+        ("What it does not support",
+         "Everything here describes association within this dataset and "
+         "the period it covers. Nothing establishes cause. A column "
+         "computed from another — revenue from units and price, a band "
+         "cut from the measure it groups — is excluded from driver and "
+         "cohort findings rather than reported as an explanation of "
+         "itself. Projections are not extended past the range the data "
+         "actually covers."),
+        ("What would change the answer",
+         "Figures describe the file as supplied. If the export was "
+         "filtered, covers a partial period, or was taken before a "
+         "correction, every number here inherits that. The period this "
+         "file covers is stated in the column analysis above; check it "
+         "against the period you meant to review."),
+    ):
+        story.append(Paragraph(
+            "<b>{}.</b> {}".format(heading, text), ST["body"]))
+        story.append(Spacer(1, 2*mm))
+
     # ── Disclaimer ────────────────────────────────────────
     story.append(Spacer(1, 8*mm))
     story.append(HRFlowable(width="100%", thickness=1, color=gray, spaceAfter=4))

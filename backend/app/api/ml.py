@@ -16,6 +16,8 @@ from app.services.serialize import to_jsonable
 
 logger = logging.getLogger(__name__)
 
+from app.services.load_control import admit
+
 router = APIRouter(prefix="/api/ml", tags=["ml"])
 
 
@@ -75,7 +77,8 @@ def targets(ds_id: str, owner: str = Depends(current_owner)):
     return {"targets": to_jsonable(suggest_targets(df))}
 
 
-@router.post("/{ds_id}/train")
+@router.post("/{ds_id}/train",
+             dependencies=[Depends(admit("train"))])
 def train(ds_id: str, req: TrainRequest, owner: str = Depends(current_owner)):
     df = _df_or_404(owner, ds_id)
     if req.target not in df.columns:

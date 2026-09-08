@@ -26,7 +26,30 @@ from app.services.serialize import df_records, to_jsonable
 
 logger = logging.getLogger(__name__)
 
+from app.services.load_control import admit
+
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
+
+
+
+async def _read_upload(file, media: bool = False):
+    """Read an upload against the configured cap.
+
+    This used to be a bare `await file.read()`, so the size limit was
+    checked after the whole body was already in memory — a 79 MB CSV
+    took the process from 203 MB to 1,704 MB of RSS, which is the
+    container gone on the tiers this deploys to.
+    """
+    from fastapi import HTTPException
+
+    from app.config import config
+    from app.services.upload_limits import UploadTooLarge, read_capped
+
+    limit = config.max_media_mb if media else config.max_file_mb
+    try:
+        return await read_capped(file, limit)
+    except UploadTooLarge as e:
+        raise HTTPException(413, str(e)) from None
 
 
 class _UploadShim:
@@ -78,11 +101,12 @@ def _process_upload(owner: str, filename: str, data: bytes, sheet: str) -> dict:
     return {"meta": to_jsonable(meta), "preview": df_records(df, 100)}
 
 
-@router.post("/upload")
+@router.post("/upload",
+             dependencies=[Depends(admit("upload"))])
 async def upload_dataset(file: UploadFile = File(...), sheet: str = Query("0"),
                           owner: str = Depends(current_owner)):
     from starlette.concurrency import run_in_threadpool
-    data = await file.read()
+    data = await _read_upload(file)
     return await run_in_threadpool(
         _process_upload, owner, file.filename or "upload.csv", data, sheet)
 
@@ -112,12 +136,13 @@ def _process_image_extract(owner: str, filename: str, data: bytes) -> dict:
     return {"meta": to_jsonable(meta), "preview": df_records(df, 100)}
 
 
-@router.post("/extract-from-image")
+@router.post("/extract-from-image",
+             dependencies=[Depends(admit("upload"))])
 async def extract_from_image(file: UploadFile = File(...),
                               owner: str = Depends(current_owner)):
     """Photo/screenshot of a table → real dataset (full pipeline works)."""
     from starlette.concurrency import run_in_threadpool
-    data = await file.read()
+    data = await _read_upload(file, media=True)
     if len(data) > config.max_media_mb * 1024 * 1024:
         raise HTTPException(413, f"Image exceeds {config.max_media_mb} MB")
     return await run_in_threadpool(
@@ -157,14 +182,15 @@ def _process_video_extract(owner: str, filename: str, data: bytes) -> dict:
     return {"meta": to_jsonable(meta), "preview": df_records(df, 100)}
 
 
-@router.post("/extract-from-video")
+@router.post("/extract-from-video",
+             dependencies=[Depends(admit("upload"))])
 async def extract_from_video(file: UploadFile = File(...),
                               owner: str = Depends(current_owner)):
     """Video showing a table/spreadsheet/dashboard → real dataset.
     Slower than image extraction (Gemini File API processing + upload),
     so this route can take up to a few minutes for longer clips."""
     from starlette.concurrency import run_in_threadpool
-    data = await file.read()
+    data = await _read_upload(file, media=True)
     if len(data) > config.max_media_mb * 1024 * 1024:
         raise HTTPException(413, f"Video exceeds {config.max_media_mb} MB")
     return await run_in_threadpool(
