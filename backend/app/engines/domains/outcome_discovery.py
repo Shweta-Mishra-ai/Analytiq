@@ -85,7 +85,10 @@ _GOOD = (
 
 # Words that invert whatever follows them.
 _NEGATIONS = {"not", "no", "non", "never", "without", "un", "failed",
-              "missing", "un"}
+              "missing"}
+
+# The same, run together with the word: `undelivered`, `noncompliant`.
+_NEGATION_PREFIXES = ("un", "non", "not")
 
 # Prefixes and suffixes that carry no meaning in a sentence.
 _STRIP = ("is", "has", "was", "did", "flag", "ind", "indicator", "status",
@@ -120,25 +123,81 @@ def _direction(column: str) -> Optional[bool]:
     problem word ("not_delivered" carries "deliver").
     """
     words = [w.lower() for w in _words(column)]
-    flat = "".join(words)
-    spaced = "_".join(words)
-    bad = max((w for w in _BAD if w in flat or w in spaced),
-              key=len, default="")
-    good = max((w for w in _GOOD if w in flat or w in spaced),
-               key=len, default="")
-    if not bad and not good:
+    if not words:
         return None
+    flat = "".join(words)
+
+    bad, good = _keywords_in(words)
+    if not bad and not good:
+        # `undelivered` and `noncompliant` carry no whole word from
+        # either list until the prefix comes off.
+        for prefix in _NEGATION_PREFIXES:
+            if not flat.startswith(prefix) or len(flat) <= len(prefix) + 3:
+                continue
+            bad, good = _keywords_in([flat[len(prefix):]])
+            if bad or good:
+                # The prefix is the negation, so the polarity inverts.
+                return not (len(good) > len(bad))
+        return None
+
     verdict = len(good) > len(bad)
     matched = good if verdict else bad
-    if _is_negated(words, flat, matched):
-        # `not_delivered` and `undelivered` both carry "deliver". Read as
-        # good outcomes, the report leads with the group they happen to
-        # LEAST — which is exactly the wrong group.
+    if _is_negated(words, matched):
+        # `not_delivered` carries "deliver". Read as a good outcome, the
+        # report leads with the group it happens to LEAST — which is
+        # exactly the wrong group.
         verdict = not verdict
     return verdict
 
 
-def _is_negated(words: List[str], flat: str, matched: str) -> bool:
+def _keywords_in(words: List[str]) -> tuple:
+    """The longest bad and good keyword this name actually uses.
+
+    Matched by word stem, never by substring. Substring matching read
+    "left" inside `leftover_stock` and called a stock column an attrition
+    outcome — the same fault that once made the chat parser answer a
+    question about income with the mean of `Age`, found inside the word
+    "average".
+
+    A stem still matches its inflections, which is the point: `churned`
+    starts with "churn", `cancelled` with "cancel", `attrition` with
+    "attrit". Keywords holding an underscore (`no_show`, `on_time`) are
+    matched against the whole name, since they span two words.
+    """
+    spaced = "_".join(words)
+
+    def longest(keywords):
+        hits = [k for k in keywords
+                if ("_" in k and k in spaced)
+                or any(_is_inflection(w, k) for w in words)]
+        return max(hits, key=len, default="")
+
+    return longest(_BAD), longest(_GOOD)
+
+
+# What may follow a keyword and still be the same word. Bare prefix
+# matching is not enough: `leftover_stock` starts with "left", and a
+# stock column reported as an attrition outcome is worse than one not
+# reported at all.
+_INFLECTIONS = frozenset((
+    "", "s", "d", "ed", "es", "ing", "er", "ers", "ion", "ions", "ance",
+    "led", "ling", "ment", "ments", "al", "ly", "ted", "ting", "ped",
+    "ping", "ned", "ning", "y", "ies", "cy", "ure", "ual",
+))
+
+
+def _is_inflection(word: str, keyword: str) -> bool:
+    """True when `word` is `keyword` or a grammatical form of it.
+
+    "churned" is "churn"; "cancelled" is "cancel"; "attrition" is
+    "attrit". "leftover" is not "left".
+    """
+    if not word.startswith(keyword):
+        return False
+    return word[len(keyword):] in _INFLECTIONS
+
+
+def _is_negated(words: List[str], matched: str) -> bool:
     """True when the name says the *absence* of the thing it names.
 
     `matched` is the outcome word the polarity came from, and a negation
@@ -146,18 +205,7 @@ def _is_negated(words: List[str], flat: str, matched: str) -> bool:
     in its own right, and flipping it would report the group that shows
     up least as the one doing well.
     """
-    for word in words:
-        if word in _NEGATIONS and word not in matched:
-            return True
-    for prefix in ("un", "non", "not", "in"):
-        if not flat.startswith(prefix) or matched.startswith(prefix):
-            continue
-        rest = flat[len(prefix):]
-        # Only a negation if what follows is itself a recognised outcome
-        # word — otherwise "unit_shipped" and "index_hit" get flipped.
-        if any(rest.startswith(w) for w in _GOOD + _BAD):
-            return True
-    return False
+    return any(w in _NEGATIONS and w not in matched for w in words)
 
 
 @dataclass(frozen=True)

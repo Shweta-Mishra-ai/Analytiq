@@ -5,6 +5,7 @@ from row order, and an employee ID used as a business dimension.
 """
 import numpy as np
 import pandas as pd
+import pytest
 
 from app.engines.insight_engine import generate_insights
 
@@ -164,16 +165,62 @@ def test_the_hr_vocabulary_still_works():
 
 
 def test_a_word_is_matched_whole_not_as_a_substring():
-    """`leftover_stock` is not a column about who left."""
-    assert _target(leftover_stock=[0, 1]) is None
+    """`leftover_stock` is not a column about who left.
+
+    It is still a two-value column and so still modellable — see
+    test_a_column_that_names_nothing_is_offered_anyway — but it must not
+    be *read as an outcome name*, because a name that is read that way
+    outranks one that is not. Substring matching found "left" inside
+    "leftover" and ranked a stock column above the real outcome sitting
+    beside it.
+    """
+    from app.engines.ml.targets import _names_an_outcome
+    assert _names_an_outcome("leftover_stock") is False
+    assert _target(leftover_stock=[0, 1], churn=[0, 1]) == "churn"
+
+
+@pytest.mark.parametrize("column", [
+    "latest_run", "window_size", "passenger_count", "lossless_flag",
+    "unit_shipped", "stock_level",
+])
+def test_a_name_that_merely_contains_an_outcome_word_is_not_one(column):
+    from app.engines.ml.targets import _names_an_outcome
+    assert _names_an_outcome(column) is False, column
+
+
+@pytest.mark.parametrize("column", [
+    "churned", "cancelled", "attrition", "escalated", "returned",
+    "delinquency", "failure_flag", "rework", "no_show",
+])
+def test_an_inflection_of_an_outcome_word_still_counts(column):
+    from app.engines.ml.targets import _names_an_outcome
+    assert _names_an_outcome(column) is True, column
 
 
 def test_a_column_that_is_not_binary_is_not_offered():
     assert _target(returned=[0, 1, 2, 3]) is None
 
 
-def test_a_column_that_names_nothing_is_not_offered():
-    assert _target(some_flag=[0, 1]) is None
+def test_a_column_that_names_nothing_is_offered_anyway():
+    """This used to return None, and that rule cost more than it saved.
+
+    Requiring the name to be recognised meant an operations file with a
+    `rework` flag — two values, a real 3x gap between sites — was told
+    "no binary outcome column detected", and the whole "what predicts
+    this" panel was unreachable for any file outside the vocabulary. A
+    recognised name now ranks first rather than gating the search.
+    """
+    assert _target(some_flag=[0, 1]) == "some_flag"
+
+
+def test_a_recognised_name_still_wins_over_an_anonymous_flag():
+    assert _target(some_flag=[0, 1], Attrition=["Yes", "No"]) == "Attrition"
+
+
+def test_a_demographic_is_never_offered():
+    """"What predicts Gender" is the kind of panel that loses a reader's
+    trust in every number above it."""
+    assert _target(gender=["M", "F"]) is None
 
 
 # ══════════════════════════════════════════════════════════
