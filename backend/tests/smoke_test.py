@@ -135,13 +135,19 @@ def main():
     check("rag kb detail", client.get(f"/api/rag/kb/{kb}"))
     has_llm = bool(os.environ.get("GEMINI_API_KEY")
                    or os.environ.get("GROQ_API_KEY"))
-    expect = 200 if has_llm else 503
-    check(f"rag query (expect {expect})", client.post(
+    # A question always gets an answer now. With a model it is written
+    # prose; without one it is the ranked passages that match, which is
+    # a document search — the retrieval half runs locally and used to be
+    # thrown away along with the generation half.
+    check("rag query (always answers)", client.post(
         f"/api/rag/kb/{kb}/query", json={"question": "How did revenue do?"}),
-        expect=expect)
-    check(f"rag report (expect {expect})", client.post(
+        expect=200)
+    # A report is a synthesis, not a lookup: there is no honest version
+    # of it without a model, so it still refuses rather than pretending.
+    report_expect = 200 if has_llm else 503
+    check(f"rag report (expect {report_expect})", client.post(
         f"/api/rag/kb/{kb}/report", json={"title": "Test Report"}),
-        expect=expect)
+        expect=report_expect)
     check("rag delete kb", client.delete(f"/api/rag/kb/{kb}"))
 
     check("delete", client.delete(f"/api/datasets/{ds}"))

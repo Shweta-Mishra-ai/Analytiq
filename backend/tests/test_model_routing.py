@@ -423,9 +423,18 @@ def test_the_chat_page_says_so_when_nothing_can_serve_it(monkeypatch):
         "file": ("t.csv", io.BytesIO(b"a,b\n1,2\n3,4\n"), "text/csv")})
     ds_id = up.json()["meta"]["dataset_id"]
 
-    reply = client.post(f"/api/chat/{ds_id}", json={"message": "hi", "history": []})
-    assert reply.status_code == 503
-    assert "System page" in reply.json()["detail"]
+    # A question no local rule can map, with nothing configured to
+    # interpret it. This used to be a 503, which the page rendered as a
+    # red error. It is now an ordinary reply that says what is missing
+    # and what still works — see test_chat_without_a_model.py, where
+    # the questions the page actually offers are answered with no model
+    # at all.
+    reply = client.post(f"/api/chat/{ds_id}",
+                        json={"message": "why did revenue fall", "history": []})
+    assert reply.status_code == 200
+    body = reply.json()
+    assert "System page" in body["text"]
+    assert body["tool"] == "none"
 
 
 # ── the paths that used to bypass routing entirely ───────

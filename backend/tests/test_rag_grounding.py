@@ -419,3 +419,42 @@ class TestKnowledgeBaseSearch:
         answer questions the documents never addressed."""
         kb = self._kb(tmp_path, self.DOCS)
         assert kb.search("photosynthesis in marine algae", k=3) == []
+
+
+# ── when nothing can write the answer ─────────────────────
+
+def test_the_passages_come_back_when_no_model_can_write_an_answer(
+        tmp_path, monkeypatch):
+    """Retrieval runs on this machine — BM25, the dense index, the
+    fusion and the reranker all work with nothing configured. Only the
+    sentence at the top needs a model.
+
+    So a missing API key used to throw away a working document search:
+    the passages answering the question had already been found and
+    ranked, and the call failed because nothing could phrase them. The
+    passages are most of the value, and they are still returned.
+    """
+    from app.rag import service
+    kb = _kb(tmp_path, HR_DOCS)
+
+    def _refuse(*a, **kw):
+        raise RuntimeError("No model is configured that can answer from a "
+                           "knowledge base.")
+    monkeypatch.setattr(service, "_generate", _refuse)
+
+    out = service.answer_question(kb, "how much annual leave do staff get")
+    assert out["retrieval_only"] is True
+    assert out["grounded"] is True
+    assert out["sources"], "the whole point is that the passages survive"
+    assert any("annual leave" in s["excerpt"].lower() for s in out["sources"])
+    # It says what it is doing rather than pretending to have answered.
+    assert "passage search" in out["answer"].lower()
+
+
+def test_a_written_answer_is_not_marked_retrieval_only(tmp_path, monkeypatch):
+    from app.rag import service
+    kb = _kb(tmp_path, HR_DOCS)
+    monkeypatch.setattr(service, "_generate",
+                        lambda *a, **kw: "Staff get 25 days [1].")
+    out = service.answer_question(kb, "how much annual leave do staff get")
+    assert out.get("retrieval_only") is False

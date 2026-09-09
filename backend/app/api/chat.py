@@ -42,20 +42,36 @@ def chat(ds_id: str, req: ChatRequest, owner: str = Depends(current_owner)):
     df = store.get_df(owner, ds_id)
     if df is None:
         raise HTTPException(404, "Dataset not found")
+    # An ordinary question is a group-by, a sort or a correlation, and
+    # the app already does all three. A model was only ever turning the
+    # sentence into {tool, params} — so try that mapping locally first.
+    # It costs nothing, works offline, and cannot invent a column.
+    #
+    # This is also what the page promises: it offers four generated
+    # questions as buttons, and before this those buttons produced a 503
+    # whenever no API key was set.
+    from app.ai import intent_parser
+
+    local = intent_parser.parse(req.message, df)
+    if local:
+        return _respond(df, local)
+
     # Was: a hard 503 unless GROQ_API_KEY was set — which was wrong the
     # moment there was more than one provider, and wronger still now
     # that the model is chosen per task. Ask the router whether anything
     # can do this job instead of interrogating one vendor's key.
     from app.ai.routing import resolve_models
-    from app.ai.tasks import TASKS
     if not resolve_models("tool_call"):
-        raise HTTPException(
-            503,
-            "No model is configured that can answer chat commands. "
-            + TASKS["tool_call"].degrades_to
-            + " Assign one on the System page, or set any of GROQ_API_KEY, "
-              "OPENROUTER_API_KEY, CEREBRAS_API_KEY, TOGETHER_API_KEY or "
-              "GEMINI_API_KEY.")
+        examples = intent_parser.answerable_examples(df)
+        suggestion = ("\n\nWithout one, these still work on this file:\n"
+                      + "\n".join("- " + e for e in examples)) if examples else ""
+        return {
+            "text": "That question needs a language model to interpret, and "
+                    "none is configured. Assign one on the System page, or "
+                    "set GROQ_API_KEY, OPENROUTER_API_KEY, CEREBRAS_API_KEY, "
+                    "TOGETHER_API_KEY or GEMINI_API_KEY." + suggestion,
+            "figure": None, "table": None, "tool": "none",
+        }
 
     client = get_client(config.groq_api_key)
     system = build_chat_system_prompt(df)
@@ -79,6 +95,13 @@ def chat(ds_id: str, req: ChatRequest, owner: str = Depends(current_owner)):
         return {"text": "Couldn't understand. Try: 'Show sales by region as bar chart'",
                 "figure": None, "table": None}
 
+    return _respond(df, parsed)
+
+
+def _respond(df, parsed: dict) -> dict:
+    """Run the chosen tool and shape the reply. Shared so a question
+    answered locally and one answered through a model come back in
+    exactly the same form."""
     result = dispatch(df, parsed["tool"], parsed["params"],
                       parsed.get("explanation", ""))
 

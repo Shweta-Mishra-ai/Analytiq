@@ -206,3 +206,52 @@ def test_binary_mask_and_binary_rate_agree_on_which_side_is_yes():
         mask = binary_mask(series)
         assert mask is not None
         assert round(float(mask.mean() * 100), 2) == binary_rate(series)
+
+
+def test_the_shared_pass_does_not_repeat_the_engines_own_finding():
+    """A report on HR data listed the same fact twice:
+
+        1. 'Support' Department: 28% Attrition vs 12% Best
+        3. Highest attrition: Department 'Support' at 27.6% against 11.9%
+
+    One finding, two roundings of the same number, from the domain
+    engine and the shared outcome pass respectively. A reader does not
+    read that as corroboration.
+    """
+    from app.engines.domains.registry import _drop_repeats
+    from app.engines.domains.base import build_insight
+
+    def made(title):
+        return build_insight(title=title, problem="", cause="", evidence="",
+                             action="", impact="", severity="high")
+
+    engine = {"insights": [made("'Support' Department: 28% Attrition vs 12% Best")]}
+    shared = {
+        "insights": [
+            made("Highest attrition: Department 'Support' at 27.6% against 11.9%"),
+            made("Highest attrition: OverTime 'Yes' at 35.5% against 8.9%"),
+        ],
+        "findings": ["a"], "risks": [], "opportunities": [], "actions": ["b"],
+    }
+    kept = _drop_repeats(shared, engine)
+    titles = [i.title for i in kept["insights"]]
+    assert len(titles) == 1
+    assert "OverTime" in titles[0], titles
+
+
+def test_a_different_group_in_the_same_column_still_survives():
+    """Dropping every finding that mentions a column the engine touched
+    would throw away real information. Only the same column AND the same
+    group is a repeat."""
+    from app.engines.domains.registry import _drop_repeats
+    from app.engines.domains.base import build_insight
+
+    def made(title):
+        return build_insight(title=title, problem="", cause="", evidence="",
+                             action="", impact="", severity="high")
+
+    engine = {"insights": [made("'Support' Department: 28% Attrition")]}
+    shared = {"insights": [
+        made("Highest attrition: Department 'Finance' at 22.0% against 9.0%")],
+        "findings": [], "risks": [], "opportunities": [], "actions": []}
+    assert len(_drop_repeats(shared, engine)["insights"]) == 1

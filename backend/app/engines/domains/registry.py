@@ -289,6 +289,7 @@ def _add_outcome_analysis(result: dict, spec: "DomainSpec", df) -> dict:
         extra = rate_insights(df, col, spec.outcome_noun or "the outcome",
                               category="{}_concentration".format(spec.key),
                               good=spec.outcome_good)
+        extra = _drop_repeats(extra, result)
         if not extra.get("insights"):
             return result
         merged = dict(result)
@@ -302,6 +303,57 @@ def _add_outcome_analysis(result: dict, spec: "DomainSpec", df) -> dict:
         # the extra pass failed.
         logger.debug("outcome analysis failed for %s", spec.key, exc_info=True)
         return result
+
+
+def _drop_repeats(extra: dict, existing: dict) -> dict:
+    """Remove anything the domain engine already said.
+
+    The shared pass and a domain engine can find the same thing, because
+    a good engine looks where the outcome concentrates too. On HR data
+    the report came back listing
+
+        1. 'Support' Department: 28% Attrition vs 12% Best
+        3. Highest attrition: Department 'Support' at 27.6% against 11.9%
+
+    which is one fact printed twice, and printed with two different
+    roundings of the same number. A reader does not conclude that two
+    methods agree; they conclude nobody read the report before sending
+    it.
+
+    An insight is a repeat when an existing one already names the same
+    driver column and the same group. That is deliberately narrow — a
+    second finding about a *different* group in the same column is new
+    information and survives.
+    """
+    kept, dropped = [], 0
+    seen = " ".join(
+        (getattr(i, "title", "") or "") + " " + (getattr(i, "problem", "") or "")
+        for i in (existing.get("insights") or [])
+    ).lower()
+
+    for insight in extra.get("insights") or []:
+        title = (getattr(insight, "title", "") or "")
+        # "Highest attrition: Department 'Support' at ..." — the driver
+        # and the group are the two identifying parts.
+        match = re.search(r":\s*(.+?)\s+at\s", title)
+        subject = match.group(1) if match else title
+        parts = [p.strip().strip("'\"") for p in subject.split("'") if p.strip()]
+        if parts and all(p.lower() in seen for p in parts):
+            dropped += 1
+            continue
+        kept.append(insight)
+
+    if not dropped:
+        return extra
+    logger.info("dropped %d outcome insight(s) the engine already made",
+                dropped)
+    trimmed = dict(extra)
+    trimmed["insights"] = kept
+    if not kept:
+        # The supporting prose belonged to the insights that went.
+        for field in ("findings", "risks", "opportunities", "actions"):
+            trimmed[field] = []
+    return trimmed
 
 
 # ══════════════════════════════════════════════════════════

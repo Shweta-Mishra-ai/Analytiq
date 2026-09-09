@@ -246,10 +246,47 @@ def answer_question(kb: KnowledgeBase, question: str, k: int = 6) -> dict:
     if not hits:
         return {"answer": NOT_IN_KB, "sources": [], "grounded": False}
 
-    answer = _generate(
-        QA_SYSTEM,
-        f"CONTEXT:\n{_context_block(hits)}\n\nQUESTION: {question}",
-        task="rag_answer", max_tokens=1024)
+    # Retrieval is the part that runs on this machine: BM25, the dense
+    # index, the fusion and the reranker all work with nothing
+    # configured. Only the sentence at the top needs a model.
+    #
+    # So a missing API key used to throw away a working document search.
+    # The passages that answer the question had already been found and
+    # ranked, and the whole call failed because nothing could phrase
+    # them. Fall back to handing those passages back — a document
+    # search, which is most of what a knowledge base is for, and honest
+    # about what it is not doing.
+    #
+    # The fallback hangs off the attempt rather than off a capability
+    # check, deliberately. Asking the router "is a model configured?"
+    # and then generating are two sources of truth that disagree the
+    # moment anything answers that the router did not predict.
+    try:
+        answer = _generate(
+            QA_SYSTEM,
+            f"CONTEXT:\n{_context_block(hits)}\n\nQUESTION: {question}",
+            task="rag_answer", max_tokens=1024)
+    except RuntimeError as exc:
+        logger.info("no model wrote an answer, returning the passages: %s", exc)
+        return {
+            "answer": (
+                "No model is available to write an answer, so this is the "
+                "passage search instead. {}, ranked, each with the file and "
+                "the place it came from.\n\n{}"
+            ).format(
+                "One extract below matches your question" if len(hits) == 1
+                else "The {} extracts below match your question".format(
+                    len(hits)),
+                exc),
+            "grounded": True,
+            "retrieval_only": True,
+            "cited_sources": len(hits),
+            "uncited": False,
+            "sources": [{"ref": i + 1, "source": h["source"],
+                         "locator": h["locator"], "score": round(h["score"], 3),
+                         "excerpt": h["text"][:600]}
+                        for i, h in enumerate(hits)],
+        }
 
     # An answer citing nothing was not written from the passages supplied,
     # whatever it says. Flagging it is honest; suppressing it would throw
@@ -259,6 +296,7 @@ def answer_question(kb: KnowledgeBase, question: str, k: int = 6) -> dict:
     return {
         "answer": answer,
         "grounded": True,
+        "retrieval_only": False,
         "cited_sources": cited,
         "uncited": cited == 0,
         "sources": [{"ref": i + 1, "source": h["source"],

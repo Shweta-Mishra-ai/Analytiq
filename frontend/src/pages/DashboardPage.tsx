@@ -33,6 +33,37 @@ interface TileState {
 }
 
 const DEFAULT_LAYOUT_H = 5
+// Tiles are half-width in a 12-column grid, so two sit side by side.
+const TILE_W = 6
+const GRID_COLS = 12
+
+/** Where the next tile goes.
+ *
+ *  The starting tiles are laid out two per row, and adding one used to
+ *  pass `x: 0, y: Infinity` — which react-grid-layout reads as "push it
+ *  to the bottom, hard left". So every chart a user added dropped onto
+ *  its own row and the dashboard stopped being a grid: half the width
+ *  sat empty and the page grew a screen taller with each addition.
+ *
+ *  Fill the gap beside the last tile when the bottom row has room, and
+ *  only start a new row when it does not.
+ */
+export function nextSlot(layout: LayoutItem[]) {
+  return (id: string): LayoutItem => {
+    const base = { i: id, w: TILE_W, h: DEFAULT_LAYOUT_H, minW: 3, minH: 3 }
+    if (!layout.length) return { ...base, x: 0, y: 0 }
+
+    const bottomY = Math.max(...layout.map((t) => t.y))
+    const bottomRow = layout.filter((t) => t.y === bottomY)
+    const usedWidth = bottomRow.reduce((sum, t) => sum + t.w, 0)
+
+    if (usedWidth + TILE_W <= GRID_COLS) {
+      return { ...base, x: usedWidth, y: bottomY }
+    }
+    const rowHeight = Math.max(...bottomRow.map((t) => t.h))
+    return { ...base, x: 0, y: bottomY + rowHeight }
+  }
+}
 
 export default function DashboardPage() {
   const { dataset, filters, addFilter } = useApp()
@@ -297,18 +328,7 @@ export default function DashboardPage() {
           onClose={() => setShowBuilder(false)}
           onAdd={(t) => {
             setTiles((ts) => [...ts, t])
-            setLayout((l) => [
-              ...l,
-              {
-                i: t.id,
-                x: 0,
-                y: Infinity,
-                w: 6,
-                h: DEFAULT_LAYOUT_H,
-                minW: 3,
-                minH: 3,
-              },
-            ])
+            setLayout((l) => [...l, nextSlot(l)(t.id)])
             setShowBuilder(false)
           }}
         />

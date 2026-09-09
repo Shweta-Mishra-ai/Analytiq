@@ -57,6 +57,10 @@ interface QaItem {
   /** False when the documents did not cover the question — the answer is
    *  a refusal, not a finding, and must not be styled like one. */
   grounded?: boolean
+  /** True when no model was available to write an answer, so the reply
+   *  is the ranked passages themselves. In that mode the excerpts are
+   *  the answer and have to be readable, not hidden in a tooltip. */
+  retrieval_only?: boolean
   /** The model answered without citing any passage. */
   uncited?: boolean
 }
@@ -132,6 +136,7 @@ export default function RagPage() {
         answer: string
         sources: Source[]
         grounded?: boolean
+        retrieval_only?: boolean
         uncited?: boolean
       }>(
         `/api/rag/kb/${active.kb_id}/query`,
@@ -374,7 +379,28 @@ export default function RagPage() {
                         sources below before relying on it.
                       </div>
                     )}
-                    {item.sources.length > 0 && (
+                    {item.sources.length > 0 && item.retrieval_only && (
+                      // The passages ARE the answer here, so they are set
+                      // out to be read. A hover tooltip would put the only
+                      // content behind a gesture that does not exist on a
+                      // phone.
+                      <div className="mt-3 space-y-2">
+                        {item.sources.map((s) => (
+                          <div
+                            key={s.ref}
+                            className="rounded-lg border border-edge bg-panel2 px-3 py-2"
+                          >
+                            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-mute">
+                              [{s.ref}] {s.source} · {s.locator}
+                            </div>
+                            <p className="whitespace-pre-wrap text-xs leading-relaxed text-ink2">
+                              {s.excerpt}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {item.sources.length > 0 && !item.retrieval_only && (
                       <div className="mt-3 flex flex-wrap gap-1.5">
                         {item.sources.map((s) => (
                           <span

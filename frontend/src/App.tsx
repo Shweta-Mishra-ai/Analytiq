@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Link, Route, Routes } from 'react-router-dom'
 import AuthGate from './components/AuthGate'
 import Layout from './components/Layout'
 
@@ -24,6 +24,28 @@ const ChatPage = lazy(() => import('./pages/ChatPage'))
 const RagPage = lazy(() => import('./pages/RagPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const SystemPage = lazy(() => import('./pages/SystemPage'))
+
+function NotFound() {
+  return (
+    <div className="p-8">
+      <div className="mx-auto mt-16 max-w-md rounded-xl border border-edge bg-panel2 px-6 py-10 text-center">
+        <p className="text-sm font-semibold text-ink">
+          There is no page at this address
+        </p>
+        <p className="mt-2 text-xs leading-relaxed text-mute">
+          The link may be out of date, or the address mistyped. Everything
+          the app can do is in the sidebar.
+        </p>
+        <Link
+          to="/"
+          className="mt-5 inline-block rounded-lg btn-primary px-4 py-2 text-sm font-semibold text-white"
+        >
+          Go to Upload
+        </Link>
+      </div>
+    </div>
+  )
+}
 
 function RouteFallback() {
   return (
@@ -57,6 +79,12 @@ export default function App() {
               <Route path="/rag" element={<RagPage />} />
               <Route path="/reports" element={<ReportsPage />} />
               <Route path="/system" element={<SystemPage />} />
+              {/* Without this, any address that is not in the list above
+                  renders an empty page inside the app shell — and a
+                  blank screen reads as a crash, not as a wrong URL.
+                  /upload is the most likely one to be typed, since that
+                  is what the nav item is called. */}
+              <Route path="*" element={<NotFound />} />
             </Route>
           </Routes>
         </Suspense>
