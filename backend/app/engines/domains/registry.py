@@ -65,6 +65,14 @@ class DomainSpec:
     insight_fn: Callable
     # Key into pdf_builder.THEMES.
     pdf_theme: str = "Corporate Light"
+
+    # The band printed across the report cover. It used to come from the
+    # theme, and themes are shared between domains, so an education
+    # report was headed WORKFORCE ANALYTICS and a logistics one REVENUE
+    # ANALYTICS. A client reads that line before anything else; it has
+    # to name their discipline, not the discipline of whichever domain
+    # happens to share the colour scheme.
+    cover_label: str = ""
     # Optional dedicated exit/churn pipeline, run before insights and
     # passed into insight_fn as a 4th argument. Only HR has one today; it
     # used to run for anything detected as HR, which is how SaaS
@@ -390,6 +398,7 @@ def register(spec: DomainSpec) -> DomainSpec:
 
 register(DomainSpec(
     key="hr",
+    cover_label="WORKFORCE ANALYTICS",
     label="HR",
     signature=("attrition", "employee", "headcount", "jobrole", "joblevel",
                "jobsatisfaction", "overtime", "worklifebalance", "promotion",
@@ -423,6 +432,7 @@ register(DomainSpec(
 
 register(DomainSpec(
     key="ecommerce",
+    cover_label="COMMERCE ANALYTICS",
     label="e-commerce",
     # The first eleven of these are Amazon seller-report words, which is
     # how this domain was originally written and why it never fired on
@@ -465,6 +475,7 @@ register(DomainSpec(
 
 register(DomainSpec(
     key="sales",
+    cover_label="REVENUE ANALYTICS",
     label="sales",
     signature=("quota", "pipeline", "opportunity", "territory", "salesrep",
                "dealsize", "winrate", "closedate", "leadsource", "forecast",
@@ -494,12 +505,27 @@ register(DomainSpec(
 
 register(DomainSpec(
     key="finance",
+    cover_label="FINANCIAL ANALYTICS",
     label="finance",
-    signature=("ebitda", "grossmargin", "netincome", "cashflow", "liability",
-               "receivable", "payable", "ledger", "invoice", "depreciation",
-               "budgetvariance", "operatingexpense", "capex", "opex"),
+    # The signature used to hold accounting-textbook terms only —
+    # ebitda, ledger, capex, depreciation — none of which appear in a
+    # finance export anybody actually opens. A management-accounts file
+    # of account / cost_center / budget / actual / variance scored 5.0
+    # against a threshold of 6.0, so the finance engine never ran on
+    # finance data and the file fell to the general engine. What belongs
+    # here is the vocabulary of the systems finance teams export FROM.
+    signature=("ebitda", "grossmargin", "grossprofit", "netincome",
+               "netprofit", "operatingincome", "cashflow", "liability",
+               "receivable", "payable", "accountspayable",
+               "accountsreceivable", "ledger", "generalledger", "glaccount",
+               "chartofaccounts", "journal", "journalentry", "invoice",
+               "depreciation", "amortisation", "amortization", "accrual",
+               "budgetvariance", "operatingexpense", "capex", "opex",
+               "costcenter", "costcentre", "profitandloss", "workingcapital",
+               "fiscalperiod", "fiscalyear", "writeoff", "actualvsbudget"),
     keywords=("profit", "loss", "expense", "income", "budget", "cost",
-              "margin", "asset", "tax", "revenue", "balance", "account"),
+              "margin", "asset", "tax", "revenue", "balance", "account",
+              "actual", "variance", "debit", "credit", "forecast", "ytd"),
     insight_fn=_insights_finance,
     outcome_keywords=("default", "defaulted", "delinquent", "writeoff", "overdue"),
     outcome_noun="default",
@@ -528,6 +554,7 @@ register(DomainSpec(
 
 register(DomainSpec(
     key="marketing",
+    cover_label="MARKETING ANALYTICS",
     label="marketing",
     signature=("impressions", "clicks", "ctr", "cpa", "cpc", "cpm", "roas",
                "campaign", "adspend", "clickthrough", "adgroup", "creative",
@@ -561,6 +588,7 @@ register(DomainSpec(
 
 register(DomainSpec(
     key="saas",
+    cover_label="SUBSCRIPTION ANALYTICS",
     label="SaaS",
     signature=("mrr", "arr", "churn", "seats", "nps", "expansionrevenue",
                "netrevenueretention", "trialtopaid", "activeusers",
@@ -591,6 +619,7 @@ register(DomainSpec(
 
 register(DomainSpec(
     key="operations",
+    cover_label="OPERATIONS ANALYTICS",
     label="operations",
     signature=("cycletime", "defectrate", "throughput", "downtime", "oee",
                "scraprate", "inventoryturns", "leadtime", "firstpassyield",
@@ -626,6 +655,7 @@ register(DomainSpec(
 
 register(DomainSpec(
     key="healthcare",
+    cover_label="CLINICAL ANALYTICS",
     label="healthcare",
     signature=("patient", "readmission", "lengthofstay", "bedoccupancy",
                "diagnosis", "mortality", "admission", "discharge", "ward",
@@ -683,6 +713,7 @@ def attach_deep_page(domain_key: str, page_fn: Callable) -> None:
 
 register(DomainSpec(
     key="education",
+    cover_label="EDUCATION ANALYTICS",
     label="education",
     signature=("student", "enrolment", "enrollment", "gradelevel", "gpa",
                "semester", "curriculum", "tuition", "syllabus", "cohort",
@@ -715,6 +746,7 @@ register(DomainSpec(
 
 register(DomainSpec(
     key="logistics",
+    cover_label="SUPPLY CHAIN ANALYTICS",
     label="logistics",
     signature=("shipment", "consignment", "carrier", "freight", "waybill",
                "transittime", "lastmile", "linehaul", "dispatch", "tracking",
@@ -746,6 +778,7 @@ register(DomainSpec(
 
 register(DomainSpec(
     key="realestate",
+    cover_label="PROPERTY ANALYTICS",
     label="real estate",
     signature=("property", "listing", "bedrooms", "bathrooms", "sqft",
                "squarefeet", "tenancy", "landlord", "leasehold", "freehold",
@@ -779,6 +812,7 @@ register(DomainSpec(
 
 register(DomainSpec(
     key="insurance",
+    cover_label="UNDERWRITING ANALYTICS",
     label="insurance",
     signature=("policy", "policyholder", "premium", "claimamount", "insured",
                "underwriting", "deductible", "suminsured", "lossratio",
@@ -810,6 +844,7 @@ register(DomainSpec(
 
 register(DomainSpec(
     key="energy",
+    cover_label="ENERGY ANALYTICS",
     label="energy",
     signature=("kwh", "mwh", "meterreading", "consumption", "peakdemand",
                "loadfactor", "tariff", "emissions", "co2e", "renewable",
@@ -839,6 +874,7 @@ register(DomainSpec(
 
 register(DomainSpec(
     key="general",
+    cover_label="BUSINESS ANALYTICS",
     label="Business Analytics",
     signature=(),
     keywords=(),

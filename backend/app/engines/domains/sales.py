@@ -12,6 +12,7 @@ from app.engines.domains.base import build_insight
 from app.engines.domains._common import fmt
 from app.engines.domains.sales_performance import run_sales_performance
 from app.engines.industry_benchmarks import lookup_benchmark
+from app.engines.present import label as _L, num as _N
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,60 @@ def _sales_cycle_insights(df: pd.DataFrame, insights: List, findings: List,
         logger.warning("sales cycle length analysis failed", exc_info=True)
 
 
+# A ratio outside this band says the two columns are not measuring the
+# same thing. A per-deal revenue column against an annual team quota
+# produced "6% achievement, 94pp below target" and marked it CRITICAL --
+# on a file whose own data-quality page said that quota column was
+# constant and should be dropped.
+ATTAINMENT_FLOOR = 1.0
+ATTAINMENT_CEILING = 1000.0
+
+
+def _quota_attainment(df, rev_col: str, target_col: str):
+    """(attainment %, how it was computed) or (None, why it cannot be).
+
+    Mean revenue over mean target is only meaningful when both are
+    recorded at the same grain -- one row per owner per period, each
+    carrying that owner's number and that owner's target. A quota
+    repeated unchanged on every row is not that: it is one figure for a
+    team and a period the file never names, and no arithmetic recovers
+    which.
+    """
+    try:
+        pair = df[[rev_col, target_col]].dropna()
+        if len(pair) < 20:
+            return None, "Too few complete rows to compare revenue against target."
+
+        targets = pair[target_col]
+        if targets.nunique() <= 1:
+            return None, ("A single quota figure is repeated on every row, so "
+                          "the period and the owner it applies to are not "
+                          "recorded.")
+        if (targets <= 0).all():
+            return None, "Every target is zero or negative."
+
+        usable = pair[targets > 0]
+        if len(usable) < 20:
+            return None, "Too few rows carry a positive target."
+
+        # Row-wise, then the median: one row with a tiny target must not
+        # carry the whole figure, which is exactly what a ratio of means
+        # allows.
+        ratios = (usable[rev_col] / usable[target_col]) * 100.0
+        attainment = float(ratios.median())
+        if not (ATTAINMENT_FLOOR <= attainment <= ATTAINMENT_CEILING):
+            return None, ("Revenue and target differ by a factor of {:,.0f}, "
+                          "which means they are recorded at different grains "
+                          "-- per deal against per period, most likely."
+                          .format(max(attainment, 100.0 / max(attainment, 1e-9))
+                                  / 100.0))
+        return attainment, ("Median of revenue divided by target, row by row, "
+                            "across {:,} records".format(len(usable)))
+    except Exception:
+        logger.debug("quota attainment failed", exc_info=True)
+        return None, "Target attainment could not be computed from these columns."
+
+
 def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     findings, risks, opps, actions = [], [], [], []
     insights = []
@@ -167,19 +222,42 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
 
     # ── Target/Quota Analysis ──────────────────────────────
     if target_col and rev_col and target_col in stats and rev_col in stats:
-        target_mean = stats[target_col].get("mean",0)
-        rev_mean    = stats[rev_col].get("mean",0)
-        achievement = (rev_mean / target_mean * 100) if target_mean > 0 else 0
+        achievement, basis = _quota_attainment(df, rev_col, target_col)
 
-        if achievement < 80:
+        if achievement is None:
+            # The target column is there and its grain cannot be
+            # established, so no attainment figure is honest. Say what
+            # is actually known instead of printing a ratio.
+            insights.append(build_insight(
+                title="Quota is recorded but attainment cannot be computed",
+                problem=basis,
+                cause="A quota is set for a person and a period. This file "
+                      "carries one figure on every row without saying which "
+                      "person or which period it covers, so dividing one "
+                      "column by the other compares quantities of different "
+                      "grain.",
+                evidence="{} holds a single value of {} across all {:,} rows, "
+                         "while {} is recorded per record (mean {:,.0f}).".format(
+                             _L(target_col),
+                             _N(float(stats[target_col].get("mean", 0))),
+                             len(df), _L(rev_col),
+                             float(stats[rev_col].get("mean", 0))),
+                action="1. Add the period and the owner the quota belongs to  "
+                       "2. Or supply attainment as its own column  "
+                       "3. Re-run — rep-level attainment is then a direct "
+                       "comparison",
+                impact="Until then this report ranks reps on win rate and "
+                       "revenue, which the data does support, and makes no "
+                       "claim about target attainment.",
+                severity="info", category="target"))
+        elif achievement < 80:
             insights.append(build_insight(
                 title="Target Gap: {:.0f}% Achievement — {:.0f}pp Below Target".format(
                     achievement, 100-achievement),
                 problem="Average {:.0f}% quota achievement — team missing targets significantly".format(achievement),
                 cause="Possible drivers to investigate (not yet confirmed): targets set "
                       "too high, pipeline quality, or sales-process gaps.",
-                evidence="Avg revenue={:.0f} vs avg target={:.0f}. Achievement={:.0f}%.".format(
-                    rev_mean, target_mean, achievement),
+                evidence="{}. Achievement={:.0f}%.".format(basis, achievement),
                 action="1. Check whether targets are realistic against your own historical "
                        "attainment  2. Pipeline quality audit — qualification issues  "
                        "3. Sales-process coaching for bottom-quartile reps",

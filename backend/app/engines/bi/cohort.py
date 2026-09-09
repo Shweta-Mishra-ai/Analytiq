@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 from app.engines.statistics import (assess_normality, compare_groups)
 
 
-from app.services.stat_guards import is_binned_from
+from app.services.stat_guards import is_binned_from, is_determined_by
 
 from app.engines.bi.results import CohortResult
 
@@ -119,7 +119,8 @@ def analyze_cohort(
     # legitimate distribution summary, and callers chart it. What changes
     # is that nothing is claimed about cause, and no recommendation
     # invites anyone to act on it.
-    is_definitional = is_binned_from(df_filt, cohort_col, metric_col)
+    is_definitional = (is_binned_from(df_filt, cohort_col, metric_col)
+                       or is_determined_by(df_filt, cohort_col, metric_col))
 
     interp = (
         "{} cohorts compared on '{}'. "

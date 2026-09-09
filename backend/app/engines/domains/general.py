@@ -15,6 +15,7 @@ from app.engines.domains.base import higher_is_better, build_insight
 # measure — domain insights, cohort analysis — applies the same test.
 from app.services.stat_guards import (BINNING_WORDS as _BINNING_WORDS,
                                       is_binned_from as _is_binned_from,
+                                      is_determined_by as _is_determined_by,
                                       name_words as _words)
 from app.engines.domains.general_depth import run_general_depth
 from app.engines.domains.outcome_discovery import discover_outcomes
@@ -393,6 +394,13 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
             if _is_obvious_segment_pair(cat, num):
                 continue
             if _is_binned_from(df, cat, num):
+                continue
+            # A budget assigned per account, a rate card priced per
+            # tier: the category sets the number rather than moving it,
+            # so the "gap" is the file's own construction. One of these
+            # led a finance report as "CRITICAL: Payroll and Travel
+            # differ on Budget".
+            if _is_determined_by(df, cat, num):
                 continue
             try:
                 sub = df[[cat, num]].dropna()

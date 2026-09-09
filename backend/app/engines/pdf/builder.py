@@ -188,7 +188,16 @@ def build_pdf(
         logger.warning("cover artwork step failed — using the flat cover",
                        exc_info=True)
 
-    cover_bytes = _build_cover(T, config, kpis_cover, cover_art=cover_art)
+    # The cover band names the discipline this report is about. Passed
+    # through config so the cover builder stays free of the registry.
+    try:
+        from app.engines.domains.registry import spec_for
+        cover_config = dict(config)
+        cover_config.setdefault("cover_label", spec_for(domain).cover_label)
+    except Exception:
+        logger.debug("cover label lookup failed", exc_info=True)
+        cover_config = config
+    cover_bytes = _build_cover(T, cover_config, kpis_cover, cover_art=cover_art)
 
     # ── Content pages ─────────────────────────────────────
     content_buf = io.BytesIO()

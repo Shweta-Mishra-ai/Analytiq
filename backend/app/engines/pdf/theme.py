@@ -392,7 +392,11 @@ def _build_cover(T: dict, config: dict, kpis_preview: list,
     title       = config.get("title", "Data Analysis Report")
     client_name = config.get("client_name", "Client")
     report_date = datetime.now().strftime("%B %d, %Y")
-    domain_lbl  = T.get("domain_label", "BUSINESS ANALYTICS")
+    # The domain's own band wins over the theme's. Themes are shared, so
+    # taking it from the theme headed an education report WORKFORCE
+    # ANALYTICS and a logistics one REVENUE ANALYTICS.
+    domain_lbl  = (config.get("cover_label")
+                   or T.get("domain_label", "BUSINESS ANALYTICS"))
 
     # BG
     cv.setFillColor(_c(T["cover_bg"]))

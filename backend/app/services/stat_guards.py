@@ -274,6 +274,65 @@ def is_binned_from(df, cat: str, num: str) -> bool:
         return False
 
 
+# ── Columns the grouping simply sets ──────────────────────
+# A rate card, a budget line, a standard fee: the value is assigned per
+# category rather than measured within it, so it has no spread inside a
+# group at all. Comparing the two reports the file's own construction.
+
+# How little variation inside a group counts as "none". Not zero: a
+# budget carried at 52,000 for eleven months and 51,998 for one is still
+# a set figure, and floating-point division leaves dust behind.
+DETERMINED_CV = 0.02
+
+# Below this many groups the check has too little to go on -- a two-value
+# category with tight groups is often a real and important effect.
+DETERMINED_MIN_GROUPS = 3
+
+
+def is_determined_by(df, cat: str, num: str) -> bool:
+    """True when the category *sets* the numeric column rather than
+    influencing it.
+
+    `budget` is assigned per `account`, so every Payroll row carries the
+    same figure. A significance test on that returns p<0.001 and an 8.7x
+    spread, and the report led with "CRITICAL: Payroll and Travel differ
+    on Budget" -- which says only that the payroll budget is larger than
+    the travel budget, marked as the most urgent finding in the file.
+
+    The signature is no spread *within* any group while the groups differ
+    from each other. A real driver leaves variation behind: employees in
+    the same department earn different salaries.
+    """
+    try:
+        pair = df[[cat, num]].dropna()
+        if len(pair) < 30:
+            return False
+        grouped = pair.groupby(cat, observed=True)[num]
+        sizes = grouped.size()
+        usable = sizes[sizes >= 5]
+        if len(usable) < DETERMINED_MIN_GROUPS:
+            return False
+        stats = grouped.agg(["mean", "std"]).loc[usable.index]
+        overall = float(pair[num].std())
+        if not overall or overall <= 0:
+            return False
+        # Every group has to be flat, not just the average of them: one
+        # constant band among five real ones is a fact about that band.
+        for mean, sd in zip(stats["mean"], stats["std"]):
+            scale = abs(float(mean)) if abs(float(mean)) > 1e-9 else overall
+            if float(sd or 0.0) / scale > DETERMINED_CV:
+                return False
+        # And the groups must actually differ, or this is a constant
+        # column and a different problem entirely.
+        return float(stats["mean"].std() or 0.0) > 0
+
+
+    except Exception:
+        logger.debug("determination check failed for %s x %s",
+                     cat, num, exc_info=True)
+        return False
+
+
 # ── Columns built out of the target ───────────────────────
 # The restatement check above catches a column that IS the target
 # rewritten. This catches the next case out: a column COMPOSED from it.

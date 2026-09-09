@@ -13,6 +13,7 @@ directly by the frontend (InsightsPage.tsx) and the PDF builder, so
 the richer domain engines are adapted into that shape rather than
 replacing it.
 """
+import re
 import logging
 import pandas as pd
 from dataclasses import dataclass, field
@@ -79,6 +80,58 @@ class StoryReport:
 # ══════════════════════════════════════════════════════════
 #  ANOMALY DETECTION
 # ══════════════════════════════════════════════════════════
+
+MIN_PLAN_LENGTH = 4
+
+
+def _first_step(action: str) -> str:
+    """The first step of a numbered action, as one sentence.
+
+    Insight actions are written as a short procedure — "1. Pull the 606
+    records in segment 'Young Driver' and read a sample against 'Family'
+    2. Name the difference in process  3. ...". A plan reads better as
+    one imperative per line, with the rest of the procedure staying on
+    the finding it belongs to.
+    """
+    text = " ".join(str(action or "").split())
+    if not text:
+        return ""
+    match = re.match(r"1\.\s*(.+?)(?:\s+2\.|$)", text)
+    step = (match.group(1) if match else text).strip(" .;")
+    return step
+
+
+def _plan_from(engine_actions: List[str], insights: List) -> List[str]:
+    """The recommended actions, topped up from the findings.
+
+    An engine's own action list is written for the domain in general.
+    The insights' actions are written for THIS file — they name the
+    segment, the size of it and what to compare it against — so they
+    make the better plan when the engine offered few or none.
+    """
+    plan = [a for a in (engine_actions or []) if str(a).strip()]
+    if len(plan) >= MIN_PLAN_LENGTH:
+        return plan
+
+    seen = {" ".join(str(a).lower().split()) for a in plan}
+    for insight in insights or []:
+        step = _first_step(getattr(insight, "action", ""))
+        if not step or len(step) < 12:
+            continue
+        # Attribute the step to the finding that produced it, so the
+        # plan reads as consequences of the analysis rather than a
+        # second, unexplained list.
+        title = str(getattr(insight, "title", "")).strip()
+        line = "{} — addresses: {}".format(step, title) if title else step
+        key = " ".join(line.lower().split())
+        if key in seen:
+            continue
+        seen.add(key)
+        plan.append(line)
+        if len(plan) >= 6:
+            break
+    return plan
+
 
 def _detect_anomalies(df: pd.DataFrame, stats: Dict) -> List[str]:
     anomalies = []
@@ -406,9 +459,18 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
 
     risks_flat    = raw["risks"][:6]
     opps_flat     = raw["opportunities"][:4]
+
+    # Every insight carries an action; the engines' separate `actions`
+    # list does not always. On an insurance file the analysis produced
+    # six findings each with a concrete next step and an EMPTY action
+    # list, so the report's Recommendations & Action Plan — the page a
+    # client turns to first — rendered blank while the six actions sat
+    # one section above it. The plan is topped up from the findings it
+    # is supposed to be a plan for.
+    action_lines = _plan_from(raw.get("actions") or [], deduped)
     actions_flat  = ["[{}] {}".format(
         "CRITICAL" if i<2 else "SHORT TERM" if i<4 else "LONG TERM", a)
-        for i, a in enumerate(raw["actions"][:8])]
+        for i, a in enumerate(action_lines[:8])]
 
     # Executive summary — a synthesised narrative that leads with the single
     # most important claim, not a count of how many issues were found. The

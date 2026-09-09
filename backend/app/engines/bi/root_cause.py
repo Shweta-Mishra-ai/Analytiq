@@ -24,6 +24,7 @@ from app.engines.statistics import (clamp_p, cohens_d,
 from app.services.dtypes import text_columns
 from app.services.stat_guards import (apply_fdr, chi2_association,
                                       is_binned_from, is_composed_of,
+                                      is_determined_by,
                                       is_restatement)
 
 from app.engines.bi.results import RootCauseResult
@@ -145,7 +146,8 @@ def analyze_root_cause(
     # were drawn.
     cat_cols = [c for c in text_columns(df)
                 if 2 <= df[c].nunique() <= 20
-                and not is_binned_from(df, c, target_col)]
+                and not is_binned_from(df, c, target_col)
+                and not is_determined_by(df, c, target_col)]
     for col in cat_cols[:8]:
         try:
             # Chi-square with its assumptions verified. The raw
