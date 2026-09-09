@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { FlaskRound } from 'lucide-react'
 import { apiGet, apiPost } from '../api/client'
 import { useApp } from '../store/app'
@@ -54,6 +54,37 @@ export default function AbTestPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
+  // The page already knows which split and which metric to use — it
+  // fills both in from the data. Waiting behind a button for a choice it
+  // has already made left a screen of one form and nine hundred pixels
+  // of nothing, which is what an analysis tool looks like when it has
+  // no analysis. The first comparison runs on arrival; the button is
+  // for the second one.
+  const ranFor = useRef('')
+
+  const run = useCallback(
+    async (group: string, metric: string, level: number) => {
+      if (!ds || !group || !metric) return
+      setBusy(true)
+      setError('')
+      try {
+        setResult(
+          await apiPost<AbResult>(`/api/analytics/${ds}/ab-test`, {
+            group_col: group,
+            metric_col: metric,
+            confidence_level: level,
+          }),
+        )
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        setResult(null)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [ds],
+  )
+
   useEffect(() => {
     if (!ds) return
     setResult(null)
@@ -61,32 +92,19 @@ export default function AbTestPage() {
     apiGet<Fields>(`/api/analytics/${ds}/ab-test/fields`)
       .then((f) => {
         setFields(f)
-        setGroupCol(f.group_columns[0] ?? '')
-        setMetricCol(f.metric_columns[0] ?? '')
+        const group = f.group_columns[0] ?? ''
+        const metric = f.metric_columns[0] ?? ''
+        setGroupCol(group)
+        setMetricCol(metric)
+        if (group && metric && ranFor.current !== ds) {
+          ranFor.current = ds
+          void run(group, metric, 0.95)
+        }
       })
       .catch((e) => setError(e.message))
-  }, [ds])
+  }, [ds, run])
 
   if (!dataset) return <NeedData />
-
-  const run = async () => {
-    setBusy(true)
-    setError('')
-    try {
-      setResult(
-        await apiPost<AbResult>(`/api/analytics/${ds}/ab-test`, {
-          group_col: groupCol,
-          metric_col: metricCol,
-          confidence_level: confidence,
-        }),
-      )
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      setResult(null)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   return (
     <div className="p-8">
@@ -129,7 +147,10 @@ export default function AbTestPage() {
               <option value={0.99}>99%</option>
             </select>
           </div>
-          <Btn onClick={run} disabled={busy || !groupCol || !metricCol}>
+          <Btn
+            onClick={() => run(groupCol, metricCol, confidence)}
+            disabled={busy || !groupCol || !metricCol}
+          >
             <span className="flex items-center gap-1.5">
               <FlaskRound className="h-4 w-4" /> Run test
             </span>

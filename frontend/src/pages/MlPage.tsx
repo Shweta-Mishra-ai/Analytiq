@@ -226,7 +226,21 @@ export default function MlPage() {
             </div>
           </Panel>
 
+          {/* An empty box under a confident heading reads as a broken
+              page. The engine withholds importances on purpose when the
+              model found no signal — they would describe the noise it
+              was fitted to — so say that instead of rendering nothing. */}
           <Panel title="What drives the prediction">
+            {report.feature_importance.length === 0 ? (
+              <p className="text-sm text-mute">
+                Not reported for this model. Feature importance explains
+                how a model reaches its answer, and this one has no
+                answer to explain — it ranks barely better than chance,
+                so the ranking below it would be noise presented as a
+                cause. Train against a target the data can actually
+                separate, or add the fields thought to drive this one.
+              </p>
+            ) : (
             <div className="space-y-1.5">
               {report.feature_importance.slice(0, 12).map((f) => (
                 <div key={f.feature} className="flex items-center gap-3 text-xs">
@@ -245,6 +259,7 @@ export default function MlPage() {
                 </div>
               ))}
             </div>
+            )}
           </Panel>
 
           {report.verdict && !report.verdict.usable && (

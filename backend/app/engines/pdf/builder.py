@@ -154,10 +154,10 @@ def build_pdf(
                     "value": "{:.1f}%".format(predictive.base_rate),
                     "color": T["accent"]}
 
-    try:
-        qual_txt = "{:.0f}".format(float(qual))
-    except (TypeError, ValueError):
-        qual_txt = str(qual)
+    # One spelling of this number for the whole document — see
+    # present.quality_score.
+    from app.engines.present import quality_score as _quality_score
+    qual_txt = _quality_score(qual)
 
     kpis_cover = [
         {"label": "RECORDS",      "value": "{:,}".format(n_rows),

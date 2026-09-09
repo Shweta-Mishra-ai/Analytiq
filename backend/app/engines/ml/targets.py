@@ -147,7 +147,22 @@ def _token_set(col) -> set:
 
 
 def _names_an_outcome(col) -> bool:
-    return bool(_token_set(col) & _OUTCOME_TOKENS)
+    """True when the column name says a thing happened.
+
+    The token set below is the fast path. Beyond it, the same word lists
+    the report writer uses to decide whether a flag is a good or a bad
+    result answer the same question — if a name has a polarity at all,
+    it names an outcome. Keeping the judgement in one place is what stops
+    `rework`, `defect_flag` and `no_show` from being outcomes to the
+    report and features to the model in the same session.
+    """
+    if _token_set(col) & _OUTCOME_TOKENS:
+        return True
+    try:
+        from app.engines.domains.outcome_discovery import _direction
+        return _direction(col) is not None
+    except Exception:
+        return False
 
 
 def _names_an_attribute(col) -> bool:

@@ -208,16 +208,52 @@ class SurvivalRequest(BaseModel):
     group_col: Optional[str] = None
 
 
+# Words that say a number is elapsed time rather than an amount. A
+# survival curve over MonthlyIncome is arithmetically valid and means
+# nothing — "median survival time: 8952.0 (MonthlyIncome units)" is what
+# the page said when the candidates came back in column order and the
+# first numeric column won.
+_DURATION_WORDS = (
+    "tenure", "duration", "lifetime", "lifespan", "age", "years", "year",
+    "months", "month", "weeks", "week", "days", "day", "hours", "hour",
+    "minutes", "elapsed", "since", "time", "length", "recency", "survival",
+    "los", "runtime", "uptime", "seniority", "experience",
+)
+
+
+def _duration_rank(column) -> int:
+    """0 for a column that reads as elapsed time, 1 for anything else."""
+    import re as _re
+    spaced = _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(column)).lower()
+    words = {w for w in _re.split(r"[^a-z0-9]+", spaced) if w}
+    return 0 if words & set(_DURATION_WORDS) else 1
+
+
 @router.get("/{ds_id}/survival/fields")
 def survival_fields(ds_id: str, owner: str = Depends(current_owner)):
     """Candidate duration (numeric), event (binary-ish), and group
-    (low-cardinality categorical) columns, for a frontend column picker."""
+    (low-cardinality categorical) columns, for a frontend column picker.
+
+    Ordered, not merely listed: the page runs the first pair on arrival,
+    so the first pair has to be the one an analyst would choose. Column
+    order is not that — on an HR export it put MonthlyIncome against
+    OverTime and drew a survival curve in dollars.
+    """
     df = _df_or_404(owner, ds_id)
+    from app.engines.ml.targets import _names_an_outcome
+
     measures = set(_measure_columns(df))
-    duration_candidates = [c for c in df.columns
-                            if c in measures and pd.api.types.is_numeric_dtype(df[c])
-                            and not _is_binary_series(df[c])]
-    event_candidates = [c for c in df.columns if _is_binary_series(df[c])]
+    duration_candidates = sorted(
+        (c for c in df.columns
+         if c in measures and pd.api.types.is_numeric_dtype(df[c])
+         and not _is_binary_series(df[c])),
+        key=lambda c: (_duration_rank(c), list(df.columns).index(c)))
+    # An event is something that happened. `Attrition` is one; `OverTime`
+    # is a working pattern that happens to hold two values.
+    event_candidates = sorted(
+        (c for c in df.columns if _is_binary_series(df[c])),
+        key=lambda c: (0 if _names_an_outcome(c) else 1,
+                       list(df.columns).index(c)))
     group_candidates = [c for c in df.columns
                          if c in measures and 2 <= df[c].nunique() <= 20]
     return {"duration_columns": duration_candidates, "event_columns": event_candidates,

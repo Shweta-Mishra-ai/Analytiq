@@ -457,7 +457,7 @@ def describe_gap(gap: RateGap, outcome_noun: str) -> str:
 
 def rate_insights(df: pd.DataFrame, outcome_col: str, outcome_noun: str,
                   category: str = "concentration", good: bool = False,
-                  max_insights: int = 2) -> Dict:
+                  max_insights: int = 2, verdict: bool = True) -> Dict:
     """Turn the sharpest outcome concentrations into report material.
 
     `good` says which end of the gap is the problem, and it changes every
@@ -467,6 +467,14 @@ def rate_insights(df: pd.DataFrame, outcome_col: str, outcome_noun: str,
     analysis with "The win concentrates in Rep 12: 42.1%" marked
     critical, which reads as an alarm about the best performer in the
     business.
+
+    `verdict` says whether the direction is known at all. A column found
+    by shape rather than by name — an `approved_b` flag nobody declared —
+    gets the same table and the same Fisher test, and no opinion: the
+    concentration is a fact, whereas "critical risk" is a claim about
+    which end of it the business wants, and this function has no basis
+    for that one. With verdict False the finding is stated, capped at
+    warning, and left for the reader to judge.
 
     Returns the same {insights, findings, risks, opportunities, actions}
     shape the domain engines already assemble, so an engine gets the
@@ -498,7 +506,7 @@ def rate_insights(df: pd.DataFrame, outcome_col: str, outcome_noun: str,
         # The gap to the average, in records rather than percentages —
         # a count is what gets a plan approved.
         excess = int(round(problem_n * abs(problem_rate - gap.overall) / 100))
-        if excess > 0:
+        if excess > 0 and verdict:
             out["opportunities"].append(
                 "Moving {} to the {:.1f}% average is about {:,} {} {} across "
                 "the {:,} records in that group.".format(
@@ -507,7 +515,10 @@ def rate_insights(df: pd.DataFrame, outcome_col: str, outcome_noun: str,
 
         severity = ("critical" if gap.spread >= 20 else
                     "high" if gap.spread >= 10 else "warning")
-        if severity == "critical":
+        if not verdict:
+            # Nothing here says the high group is the wrong end.
+            severity = "warning" if severity == "critical" else severity
+        if severity == "critical" and verdict:
             out["risks"].append(
                 "{} in {} is {:.1f}% against {:.1f}% overall. A gap this "
                 "wide between slices of the same book is a difference in "
@@ -544,8 +555,15 @@ def rate_insights(df: pd.DataFrame, outcome_col: str, outcome_noun: str,
                    "the data  3. Change it for that group only  "
                    "4. Re-measure after one full cycle".format(
                        problem_n, problem, target),
-            impact="About {:,} records in that group sit {} the overall "
-                   "rate.".format(excess, "below" if good else "above"),
+            impact=("About {:,} records in that group sit {} the overall "
+                    "rate.".format(excess, "below" if good else "above")
+                    if verdict else
+                    "{:,} of the {:,} records in that group carry the flag, "
+                    "against {:.1f}% across the file. Whether that is the "
+                    "good end or the bad one is a question about the "
+                    "business, not the data.".format(
+                        int(round(problem_n * problem_rate / 100)),
+                        problem_n, gap.overall)),
             severity=severity, category=category,
         ))
     return out

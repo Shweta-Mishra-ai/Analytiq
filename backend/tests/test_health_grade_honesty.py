@@ -62,8 +62,8 @@ def test_the_cap_does_not_touch_the_score(clean):
     """
     dupes = pd.concat([clean.head(50)] * 40, ignore_index=True)
     h = compute_health(dupes)
-    assert h["score"] == int(round(float(
-        profile_dataset(dupes).overall_quality_score)))
+    assert h["score"] == round(float(
+        profile_dataset(dupes).overall_quality_score), 1)
 
 
 def test_a_file_with_no_variation_is_told_the_cause_not_the_symptom():

@@ -264,3 +264,22 @@ def article(text: str) -> str:
 def plural(count, singular: str, many: str = "") -> str:
     """Agree a verb or noun with its count: "1 group sits", "3 groups sit"."""
     return singular if abs(float(count)) == 1 else (many or singular + "s")
+
+
+def quality_score(value) -> str:
+    """The data-quality score, spelled the same way everywhere.
+
+    The cover formatted it `{:.0f}` and the page-three summary used
+    `str()`, so one deliverable carried "100 / 100" on its cover and
+    "99.7 / 100" two pages later. Both were the same number; a client
+    reading them in order sees two.
+
+    One decimal place, and no trailing ".0" on a whole number.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value) if value not in (None, "") else "—"
+    rounded = round(number, 1)
+    return "{:.0f}".format(rounded) if rounded == int(rounded) \
+        else "{:.1f}".format(rounded)

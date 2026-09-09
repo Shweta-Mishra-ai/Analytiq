@@ -321,19 +321,55 @@ class DriverResult:
 
 
 def find_binary_target(df: pd.DataFrame) -> Optional[str]:
-    """A column suitable as a prediction target: named like a churn/attrition
-    flag AND effectively binary (2 classes, both present, not degenerate)."""
-    from app.engines.ml.targets import _names_an_outcome
+    """A column suitable as a prediction target: effectively binary (2
+    classes, both present, not degenerate), preferring one whose name
+    says it is an outcome.
 
+    The name used to be a requirement, and it made the whole "what
+    predicts this" section of the app unreachable for an ordinary file.
+    An operations export with a `rework` flag — two values, 13% of rows,
+    a real 3x gap by site — came back "No binary outcome column
+    detected. Pass ?target=<column> naming a two-value column such as
+    churn/attrition/left", which asks the user to name the column the
+    app is looking straight at.
+
+    A recognised name still wins, because a file can hold several flags
+    and `Attrition` is a better guess than `is_remote`. It is a ranking
+    now, not a gate.
+    """
+    from app.engines.ml.targets import (_names_an_attribute,
+                                         _names_an_outcome)
+
+    named, unnamed = [], []
     for col in df.columns:
-        if not _names_an_outcome(col):
-            continue
         s = df[col].dropna()
-        if s.nunique() == 2 and 20 <= len(s):
-            vc = s.value_counts(normalize=True)
-            if vc.min() >= 0.02:          # minority class at least 2%
-                return col
-    return None
+        if s.nunique() != 2 or len(s) < 20:
+            continue
+        vc = s.value_counts(normalize=True)
+        if vc.min() < 0.02:               # minority class at least 2%
+            continue
+        if _names_an_outcome(col):
+            named.append(col)
+        elif not _names_an_attribute(col):
+            # `gender` is binary and is not something that happened to
+            # anyone. Modelling "what predicts Gender" is the kind of
+            # output that loses a reader's trust in everything above it.
+            unnamed.append(col)
+
+    if named:
+        return named[0]
+    if not unnamed:
+        return None
+    # Among anonymous flags, prefer the one with the most to explain and
+    # skip anything that is really an identifier.
+    from app.engines.domains.outcome_discovery import discover_outcomes
+    try:
+        found = discover_outcomes(df, limit=1)
+        if found:
+            return found[0].column
+    except Exception:
+        logger.debug("outcome discovery failed", exc_info=True)
+    return unnamed[0]
 
 
 def _to_binary(s: pd.Series) -> Optional[pd.Series]:

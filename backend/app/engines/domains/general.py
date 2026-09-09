@@ -17,6 +17,7 @@ from app.services.stat_guards import (BINNING_WORDS as _BINNING_WORDS,
                                       is_binned_from as _is_binned_from,
                                       name_words as _words)
 from app.engines.domains.general_depth import run_general_depth
+from app.engines.domains.outcome_discovery import discover_outcomes
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,16 @@ def _is_rating_scale(series) -> bool:
         return False
 
 
+def _is_flag(df: pd.DataFrame, col) -> bool:
+    """True for a two-valued yes/no column, whatever it is stored as."""
+    try:
+        from app.engines.domains._common import binary_mask
+        return col in df.columns and binary_mask(df[col]) is not None
+    except Exception:
+        logger.debug("flag check failed on %s", col, exc_info=True)
+        return False
+
+
 def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     from app.engines.domains.base import is_id_column
     findings, risks, opps, actions = [], [], [], []
@@ -68,8 +79,15 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
 
     # Identifiers are not measures — exclude from every analysis below.
     num_cols = [c for c in df.select_dtypes(include="number").columns
-                if not is_id_column(c, df[c])]
-    analysable = [c for c in stats.keys() if not is_id_column(c, df[c] if c in df else None)]
+                if not is_id_column(c, df[c]) and not _is_flag(df, c)]
+    # A 0/1 flag is a yes/no, not a measurement. Run through the numeric
+    # commentary it produced "Rework is right-skewed (mean 0.13 against
+    # median 0), so the median is the fair summary" — a true statement
+    # about a column where the median is always 0 and neither number
+    # means anything. Flags are analysed as rates further down instead.
+    analysable = [c for c in stats.keys()
+                  if not is_id_column(c, df[c] if c in df else None)
+                  and not _is_flag(df, c)]
 
     for col in analysable[:8]:
         st = stats.get(col, {})
@@ -249,13 +267,74 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     # ── Trend, outlier concentration, segment sufficiency ────
     run_general_depth(df, insights, findings, risks, opps)
 
-    actions.extend([
-        "Validate all outliers before analysis or modeling",
-        "Use median for skewed distributions in executive reports",
-        "Segment analysis — subgroups may tell different stories",
-    ])
+    # ── Who does the outcome happen to? ──────────────────────
+    # The named domains get this from a keyword list. A file with no
+    # domain signature has the same question and used to get no answer:
+    # an operations export whose rework flag ran at 31% for one site
+    # against 11% elsewhere produced a row count, a median difference and
+    # a correlation. The flag is found by shape here instead of by name.
+    _add_discovered_outcomes(df, insights, findings, risks, opps, actions)
+
+    # Generic advice, only where it applies. Three lines of "validate all
+    # outliers before analysis" under every dataset, including a clean
+    # one, is what makes a tool read as a template rather than a reading
+    # of this file.
+    if any(st.get("outlier_pct", 0) >= 2 for st in stats.values()):
+        actions.append("Validate the flagged outliers before modelling — "
+                       "confirm each is an error, not a real extreme.")
+    if any(abs(st.get("skew", 0)) >= 1.5 for st in stats.values()):
+        actions.append("Report the median rather than the mean for the "
+                       "skewed columns — the average sits above most rows.")
+
     return {"findings": findings, "risks": risks, "opportunities": opps,
             "actions": actions, "insights": insights}
+
+
+def _add_discovered_outcomes(df, insights, findings, risks, opps,
+                             actions) -> None:
+    """Run the rate analysis on every binary flag worth explaining.
+
+    Appends in place, and never raises: a file where this finds nothing
+    must come back exactly as it did before, and one where it throws must
+    not lose the rest of the analysis with it.
+    """
+    from app.engines.domains._common import rate_insights
+
+    try:
+        outcomes = discover_outcomes(df)
+    except Exception:
+        logger.warning("outcome discovery failed", exc_info=True)
+        return
+
+    # Collected first so the best outcome stays first. Prepending inside
+    # the loop reverses them, and the flag with the most to explain is
+    # deliberately the one discovery returns first.
+    lead_insights, lead_findings, lead_actions = [], [], []
+    for outcome in outcomes:
+        try:
+            extra = rate_insights(
+                df, outcome.column, outcome.noun,
+                category="outcome_concentration",
+                good=bool(outcome.good),
+                # An unrecognised flag gets the table and the test, and
+                # no opinion about which end of it the business wants.
+                verdict=outcome.named,
+            )
+        except Exception:
+            logger.warning("rate analysis failed for %s", outcome.column,
+                           exc_info=True)
+            continue
+        lead_insights.extend(extra.get("insights", []))
+        lead_findings.extend(extra.get("findings", []))
+        lead_actions.extend(extra.get("actions", []))
+        risks.extend(extra.get("risks", []))
+        opps.extend(extra.get("opportunities", []))
+
+    # The concentrations lead: they are the only findings here that name
+    # a group, a size and a significance level.
+    insights[:0] = lead_insights
+    findings[:0] = lead_findings
+    actions[:0] = lead_actions
 
 
 def _is_obvious_segment_pair(cat: str, num: str) -> bool:

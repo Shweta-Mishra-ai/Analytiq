@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity } from 'lucide-react'
 import { apiGet, apiPost } from '../api/client'
 import { useApp } from '../store/app'
@@ -65,6 +65,34 @@ export default function SurvivalPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
+  // Same reasoning as the A/B page: the duration and event columns are
+  // detected from the data, so the first curve can be drawn without
+  // asking. The controls stay for changing the grouping.
+  const ranFor = useRef('')
+
+  const run = useCallback(
+    async (durationCol: string, eventCol: string, groupCol: string) => {
+      if (!ds || !durationCol || !eventCol) return
+      setBusy(true)
+      setError('')
+      try {
+        setReport(
+          await apiPost<SurvivalReport>(`/api/analytics/${ds}/survival`, {
+            duration_col: durationCol,
+            event_col: eventCol,
+            group_col: groupCol || null,
+          }),
+        )
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        setReport(null)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [ds],
+  )
+
   useEffect(() => {
     if (!ds) return
     setReport(null)
@@ -72,12 +100,18 @@ export default function SurvivalPage() {
     apiGet<Fields>(`/api/analytics/${ds}/survival/fields`)
       .then((f) => {
         setFields(f)
-        setDuration(f.duration_columns[0] ?? '')
-        setEvent(f.event_columns[0] ?? '')
+        const durationCol = f.duration_columns[0] ?? ''
+        const eventCol = f.event_columns[0] ?? ''
+        setDuration(durationCol)
+        setEvent(eventCol)
         setGroup('')
+        if (durationCol && eventCol && ranFor.current !== ds) {
+          ranFor.current = ds
+          void run(durationCol, eventCol, '')
+        }
       })
       .catch((e) => setError(e.message))
-  }, [ds])
+  }, [ds, run])
 
   const figure: Figure | null = useMemo(() => {
     if (!report) return null
@@ -107,25 +141,6 @@ export default function SurvivalPage() {
   }, [report])
 
   if (!dataset) return <NeedData />
-
-  const run = async () => {
-    setBusy(true)
-    setError('')
-    try {
-      setReport(
-        await apiPost<SurvivalReport>(`/api/analytics/${ds}/survival`, {
-          duration_col: duration,
-          event_col: event,
-          group_col: group || null,
-        }),
-      )
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      setReport(null)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   return (
     <div className="p-8">
@@ -160,7 +175,10 @@ export default function SurvivalPage() {
             onChange={setGroup}
             options={['', ...(fields?.group_columns ?? [])]}
           />
-          <Btn onClick={run} disabled={busy || !duration || !event}>
+          <Btn
+            onClick={() => run(duration, event, group)}
+            disabled={busy || !duration || !event}
+          >
             <span className="flex items-center gap-1.5">
               <Activity className="h-4 w-4" /> Run analysis
             </span>

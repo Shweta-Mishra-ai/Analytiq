@@ -286,3 +286,52 @@ describe('asking the model a question', () => {
     expect(screen.queryByText(/What would/)).toBeNull()
   })
 })
+
+
+describe('a model that found nothing', () => {
+  /** The engine withholds feature importances on purpose when the model
+   *  ranks no better than chance — they would describe the noise it was
+   *  fitted to. The page rendered the panel anyway, so "What drives the
+   *  prediction" sat over roughly nine hundred pixels of empty black,
+   *  which reads as a broken page rather than a deliberate refusal. */
+  const noSignal = {
+    ...goodReport,
+    feature_importance: [],
+    verdict: {
+      usable: false,
+      baseline_score: 0.7,
+      baseline_strategy: 'always predict No',
+      model_score: 0.748,
+      metric: 'accuracy',
+      lift: 0.048,
+      auc: 0.58,
+      minority_recall: 0.03,
+      reason: 'AUC 0.58 — ranking is barely above chance',
+      verdict: 'No reliable predictive signal was found.',
+    },
+  }
+
+  it('says why the drivers are missing instead of showing an empty box', async () => {
+    stubApi(noSignal)
+    render(<MlPage />)
+    expect(
+      await screen.findByText('What drives the prediction'),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/no answer to explain/i)).toBeInTheDocument()
+  })
+
+  it('still shows the verdict that explains the model', async () => {
+    stubApi(noSignal)
+    render(<MlPage />)
+    expect(
+      await screen.findByText(/No reliable predictive signal was found/),
+    ).toBeInTheDocument()
+  })
+
+  it('shows the drivers normally when there are some', async () => {
+    stubApi(goodReport)
+    render(<MlPage />)
+    expect(await screen.findByText('Overtime')).toBeInTheDocument()
+    expect(screen.queryByText(/no answer to explain/i)).toBeNull()
+  })
+})

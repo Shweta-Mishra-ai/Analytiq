@@ -30,6 +30,7 @@ from app.engines.pdf.primitives import (
 )
 from app.engines.industry_benchmarks import REPLACEMENT_COST_RANGE
 from app.engines.present import (label as _PL, num as _PN,
+                                 quality_score as _quality_score,
                                  truncate as _PT)
 from app.services.dtypes import is_text_dtype, text_columns
 
@@ -188,7 +189,7 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
         {"label": "MISSING DATA",  "value": "{:.1f}%".format(miss_pct),
          "sub": "0% = perfect",
          "color": T["positive"] if miss_pct == 0 else T["warning"]},
-        {"label": "QUALITY SCORE", "value": str(qual),
+        {"label": "QUALITY SCORE", "value": _quality_score(qual),
          "sub": "Grade {}".format(grade) if grade else "/ 100",
          "color": T["positive"]},
     ], CW)
@@ -473,7 +474,7 @@ def _exec_dashboard(story, s, T, df, profile, top_insights,
         {"label": "RECORDS ANALYSED", "value": "{:,}".format(len(df)),
          "sub": "{} columns".format(len(df.columns)), "color": T["accent"]},
         {"label": "DATA QUALITY",
-         "value": str(qual) if qual is not None else "—",
+         "value": _quality_score(qual) if qual is not None else "—",
          "sub": "/ 100", "color": T["positive"]},
         {"label": "MISSING DATA", "value": "{:.1f}%".format(miss),
          "sub": "0% = complete",

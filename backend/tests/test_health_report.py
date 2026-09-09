@@ -69,7 +69,7 @@ def test_compute_health_matches_profiler_score(hr_df):
     contradiction when both PDFs are delivered together."""
     from app.engines.data_profiler import profile_dataset
     assert compute_health(hr_df)["score"] == max(
-        int(round(float(profile_dataset(hr_df).overall_quality_score))), 0)
+        round(float(profile_dataset(hr_df).overall_quality_score), 1), 0.0)
 
 
 # ══════════════════════════════════════════════════════════

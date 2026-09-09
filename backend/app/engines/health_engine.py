@@ -19,6 +19,7 @@ health_pdf_builder renders.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Dict, List
 
 import pandas as pd
@@ -109,7 +110,11 @@ def compute_health(df: pd.DataFrame) -> dict:
         logger.warning("profile_dataset() failed in compute_health — falling back "
                        "to a completeness-only estimate", exc_info=True)
         score = max(0.0, 100.0 - missing_pct)
-    score = max(int(round(score)), 0)
+    # One decimal, matching what the analysis PDF prints. Rounding to a
+    # whole number here made the health card read "100 / 100" beside a
+    # report that said "99.7 / 100" for the same file — one number, two
+    # spellings, delivered together.
+    score = max(round(float(score), 1), 0.0)
 
     grade_map = [(90,"A+","Excellent","#22d3a5"),
                  (80,"A", "Very Good","#42b983"),
@@ -681,14 +686,78 @@ def build_full_insights(df: pd.DataFrame, niche: str, max_cards: int = 12) -> Li
     except Exception:
         logger.warning("niche data-quality cards failed", exc_info=True)
 
-    # De-duplicate on title; keep the first (domain engines rank higher).
-    seen, unique = set(), []
-    for c in cards:
-        key = c["title"].strip().lower()
-        if key not in seen:
-            seen.add(key)
-            unique.append(c)
-
+    unique = _drop_restated(cards)
     order = {"critical": 0, "warning": 1, "info": 2, "positive": 3}
     unique.sort(key=lambda c: order.get(c["severity"], 9))
     return unique[:max_cards]
+
+
+# Words that appear in almost every finding and so identify none of them.
+_NOISE = {
+    "the", "and", "for", "with", "vs", "versus", "against", "at", "in",
+    "of", "is", "are", "has", "have", "than", "from", "over", "under",
+    "best", "worst", "highest", "lowest", "most", "least", "top", "bottom",
+    "rate", "rates", "average", "averages", "mean", "median", "total",
+    "per", "out", "sits", "sit", "runs", "run", "band", "records", "data",
+    "this", "that", "one", "two", "concentration", "risk",
+}
+
+
+def _subject_words(title: str) -> set:
+    """The words in a finding that say what it is about."""
+    lowered = re.sub(r"[^a-z0-9\s]", " ", str(title).lower())
+    return {w for w in lowered.split() if len(w) >= 3 and w not in _NOISE
+            and not w.isdigit()}
+
+
+def _headline_number(title: str):
+    """The largest percentage in a finding, to the nearest point.
+
+    Two engines reporting the same gap disagree on the rounding — 28%
+    from one and 27.6% from the other — so the comparison has to be as
+    coarse as a reader's memory of the number.
+    """
+    values = [float(m) for m in re.findall(r"(\d+(?:\.\d+)?)\s*%", str(title))]
+    return round(max(values)) if values else None
+
+
+def _drop_restated(cards: List[Dict]) -> List[Dict]:
+    """Keep one card per finding, not one per phrasing.
+
+    An HR report carried the same fact three times:
+
+        'Support' Department: 28% Attrition vs 12% Best
+        Highest attrition: Department 'Support' at 27.6% against 11.9%
+        'Support' has the highest attrition: 27.6%
+
+    — the domain engine, the shared outcome pass and this module's own
+    niche cards, each having found it independently. Matching on the
+    exact title, as this did, treats three spellings of one number as
+    three findings, and a reader does not read that as corroboration.
+
+    Two cards are the same finding when they agree on the headline
+    percentage AND share at least two subject words. Either alone is too
+    weak: a file can hold two unrelated 28% figures, and "attrition"
+    appears in every card of an HR report.
+    """
+    kept: List[Dict] = []
+    seen_exact = set()
+    for card in cards:
+        title = str(card.get("title", "")).strip()
+        exact = title.lower()
+        if exact in seen_exact:
+            continue
+        number = _headline_number(title)
+        words = _subject_words(title)
+        restated = False
+        for other in kept:
+            if number is None or _headline_number(other["title"]) != number:
+                continue
+            if len(words & _subject_words(other["title"])) >= 2:
+                restated = True
+                break
+        if restated:
+            continue
+        seen_exact.add(exact)
+        kept.append(card)
+    return kept
