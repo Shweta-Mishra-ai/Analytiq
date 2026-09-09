@@ -272,7 +272,7 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                 title="Targets Exceeded: {:.0f}% Achievement".format(achievement),
                 problem="N/A — exceeding targets",
                 cause="Strong sales execution and/or conservative target setting",
-                evidence="Avg revenue={:.0f} vs avg target={:.0f}".format(rev_mean, target_mean),
+                evidence="{}. Achievement={:.0f}%.".format(basis, achievement),
                 action="1. Review if targets were set too conservatively  "
                        "2. Capture learnings from over-performers and scale",
                 impact="Consistent over-achievement suggests capacity for higher targets",

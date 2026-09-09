@@ -224,7 +224,7 @@ def test_the_sales_report_makes_no_false_target_claim():
     "energy", "general",
 ])
 def test_every_domain_renders_a_performance_page(domain, logistics):
-    from app.engines.pdf.domain_sections import _domain_performance_page
+    from app.engines.pdf.performance_page import _domain_performance_page
     from app.engines.pdf.theme import THEMES, _styles
     T = THEMES["Corporate Light"]
     story = []
@@ -234,7 +234,7 @@ def test_every_domain_renders_a_performance_page(domain, logistics):
 
 
 def test_the_performance_page_breaks_the_outcome_down_by_group(logistics):
-    from app.engines.pdf.domain_sections import _domain_performance_page
+    from app.engines.pdf.performance_page import _domain_performance_page
     from app.engines.pdf.theme import THEMES, _styles
     T = THEMES["Corporate Light"]
     story = []
@@ -246,7 +246,7 @@ def test_the_performance_page_breaks_the_outcome_down_by_group(logistics):
 
 def test_the_heading_never_stands_over_an_empty_section():
     """A page with a title and nothing under it is worse than no page."""
-    from app.engines.pdf.domain_sections import _domain_performance_page
+    from app.engines.pdf.performance_page import _domain_performance_page
     from app.engines.pdf.theme import THEMES, _styles
     T = THEMES["Corporate Light"]
     bare = pd.DataFrame({"note": ["a", "b", "c"] * 40})
@@ -260,7 +260,7 @@ def test_the_heading_never_stands_over_an_empty_section():
 def test_a_binary_flag_is_not_offered_as_a_total(logistics):
     """"Total On Time 1,355 — 54.1% share" is a count of shipments
     wearing the word Total."""
-    from app.engines.pdf.domain_sections import _primary_measure
+    from app.engines.pdf.performance_page import _primary_measure
     from app.engines.domains.registry import spec_for
     measure = _primary_measure(logistics, spec_for("logistics"))
     assert measure != "on_time"
@@ -273,7 +273,7 @@ def test_a_kpi_with_a_published_range_is_read_against_it():
     the benchmark KEY was passed to a lookup that expects a column
     name."""
     from app.engines.kpi_engine import compute_kpis
-    from app.engines.pdf.domain_sections import _verdict_against
+    from app.engines.pdf.performance_page import _verdict_against
     r = np.random.default_rng(1)
     n = 1200
     df = pd.DataFrame({

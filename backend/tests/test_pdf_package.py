@@ -22,6 +22,7 @@ MODULES = [
     "app.engines.pdf.data_sections",
     "app.engines.pdf.lineage",
     "app.engines.pdf.domain_sections",
+    "app.engines.pdf.performance_page",
     "app.engines.pdf.predictive_sections",
     "app.engines.pdf.builder",
 ]
