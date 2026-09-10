@@ -5,7 +5,7 @@
  *  - clicking a bar / pie slice cross-filters every other tile
  *  - add-tile builder (chart type, x, y, aggregation)
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import GridLayout, { type LayoutItem } from 'react-grid-layout'
 import { GripVertical, Plus, RefreshCw, X } from 'lucide-react'
 import { apiGet, apiPost, type Field, type Kpi } from '../api/client'
@@ -77,6 +77,13 @@ export default function DashboardPage() {
   const [layout, setLayout] = useState<LayoutItem[]>([])
   const [showBuilder, setShowBuilder] = useState(false)
   const [error, setError] = useState('')
+  // Which dataset the tiles currently in state were built for. A ref
+  // compared against `ds` is not enough: both are already the new id by
+  // the time the loading effect runs, while `tiles` still holds the
+  // previous dataset's specs — that is how a finance dashboard asked
+  // for a chart of `sales_rep`.
+  const requestedFor = useRef<string | undefined>(undefined)
+  const [tilesFor, setTilesFor] = useState<string | undefined>(undefined)
   const [width, setWidth] = useState(1200)
 
   const ds = dataset?.dataset_id
@@ -89,61 +96,43 @@ export default function DashboardPage() {
     return () => obs.disconnect()
   }, [ds])
 
-  // ── initial: fields + auto-recommended tiles ──────────
+  // ── initial: fields + server-recommended tiles ────────
+  // The page used to choose its own opening charts here, from the order
+  // the columns happen to sit in the file. That is the only information
+  // the browser has, and it is not enough: it opened a finance
+  // dashboard on "budget by account" — a budget is assigned per
+  // account, so those bars restate how the file was built — an
+  // education one on an average cohort YEAR, and a healthcare one on
+  // average age rather than length of stay. The server knows each
+  // column's role and the detected domain, so it picks; the specs come
+  // back as recipes the tiles can re-render on every filter change.
   useEffect(() => {
     if (!ds) return
     setError('')
+    // Clear synchronously, before either request resolves. Without this
+    // the previous dataset's tiles were still in state when the load
+    // effect below re-ran against the NEW dataset id, so switching from
+    // an HR file to a finance one asked the finance dataset for a
+    // histogram of MonthlyIncome — a 500 from plotly and one tile
+    // permanently broken until reload.
+    setTiles([])
+    setLayout([])
+    setTileState({})
+    setTilesFor(undefined)
+    requestedFor.current = ds
+
     apiGet<{ fields: Field[] }>(`/api/charts/${ds}/fields`)
+      .then((r) => setFields(r.fields))
+      .catch((e) => setError(e.message))
+
+    apiPost<{ tiles: TileSpec[] }>(`/api/charts/${ds}/recommend-tiles`, {
+      filters: [],
+    })
       .then((r) => {
-        setFields(r.fields)
-        const nums = r.fields.filter((f) => f.kind === 'numeric')
-        const cats = r.fields.filter(
-          (f) => f.kind === 'categorical' && f.unique > 1 && f.unique <= 30,
-        )
-        const dates = r.fields.filter((f) => f.kind === 'datetime')
-        const auto: TileSpec[] = []
-        if (cats[0] && nums[0])
-          auto.push({
-            id: 't1',
-            title: `${fmt.label(nums[0].name)} by ${fmt.label(cats[0].name)}`,
-            type: 'bar',
-            x: cats[0].name,
-            y: nums[0].name,
-            // The server decides: a total of ages is 25,000 years.
-            agg: 'auto',
-          })
-        if (dates[0] && nums[0])
-          auto.push({
-            id: 't2',
-            title: `${fmt.label(nums[0].name)} over time`,
-            type: 'line',
-            x: dates[0].name,
-            y: nums[0].name,
-            agg: 'auto',
-          })
-        // A pie shows composition, so its slices have to add up to a
-        // whole. A pie of an average age is slices of a quantity that
-        // does not total anything — a second bar chart is the honest
-        // view of the same comparison.
-        if (cats[1] && nums[0])
-          auto.push({
-            id: 't3',
-            title: `${fmt.label(nums[0].name)} by ${fmt.label(cats[1].name)}`,
-            type: 'bar',
-            x: cats[1].name,
-            y: nums[0].name,
-            agg: 'auto',
-          })
-        if (nums[1])
-          auto.push({
-            id: 't4',
-            title: `Distribution of ${fmt.label(nums[1].name)}`,
-            type: 'histogram',
-            x: nums[1].name,
-          })
-        if (nums.length >= 2)
-          auto.push({ id: 't5', title: 'Correlation', type: 'heatmap' })
+        if (requestedFor.current !== ds) return   // a later switch won
+        const auto = r.tiles ?? []
         setTiles(auto)
+        setTilesFor(ds)
         setLayout(
           auto.map((t, i) => ({
             i: t.id,
@@ -168,7 +157,16 @@ export default function DashboardPage() {
         setKpis(r.kpis)
         setQuality(r.data_quality ?? [])
       })
-      .catch(() => {})
+      // Swallowing this left the KPI row simply absent, with no hint
+      // that anything had been attempted — the reader cannot tell a
+      // dataset with no headline numbers from a request that failed.
+      .catch((e) =>
+        setError(
+          e instanceof Error
+            ? `Headline numbers unavailable: ${e.message}`
+            : 'Headline numbers unavailable.',
+        ),
+      )
   }, [ds, filters])
 
   const loadTile = useCallback(
@@ -200,10 +198,13 @@ export default function DashboardPage() {
   )
 
   useEffect(() => {
+    if (!ds) return
     loadKpis()
-    tiles.forEach(loadTile)
+    // Only load tiles that were built for THIS dataset. On a switch the
+    // effect runs once with the outgoing dataset's specs still in state.
+    if (tilesFor === ds) tiles.forEach(loadTile)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, tiles.length, ds])
+  }, [filters, tiles.length, tilesFor, ds])
 
   const catFields = useMemo(
     () => new Set(fields.filter((f) => f.kind === 'categorical').map((f) => f.name)),

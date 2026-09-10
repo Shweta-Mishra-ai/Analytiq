@@ -78,6 +78,12 @@ _SCORE_METRICS = {
 }
 
 
+# How much wider than the row count an integer key's range may run and
+# still read as a key. Ids with gaps (deleted rows, sharded ranges) stay
+# inside a small multiple; a measured quantity does not.
+ID_SPAN_TOLERANCE = 3.0
+
+
 def _is_identifier(col_name: str, series: pd.Series, n_rows: int) -> bool:
     """True when a column identifies a row rather than measuring it."""
     col_lower = str(col_name).lower().strip()
@@ -93,12 +99,30 @@ def _is_identifier(col_name: str, series: pd.Series, n_rows: int) -> bool:
         return False
 
     try:
-        n_unique = series.nunique()
-        if n_unique / max(n_rows, 1) > 0.95 and n_rows > 100:
+        clean = series.dropna()
+        if clean.empty:
+            return False
+        # Near-consecutive integers: a row counter however it is named.
+        ordered = clean.sort_values().reset_index(drop=True)
+        if len(ordered) > 10 and (ordered.diff().dropna() == 1).mean() > 0.95:
             return True
-        clean = series.dropna().sort_values().reset_index(drop=True)
-        if len(clean) > 10 and (clean.diff().dropna() == 1).mean() > 0.95:
-            return True
+
+        # Uniqueness alone used to be the test, and it is wrong: a
+        # continuous measure is nearly all-distinct by nature. It
+        # classified `deal_size` — the single most important column in a
+        # sales file — as an identifier, which removed it from every
+        # chart and every correlation on the dashboard.
+        if clean.nunique() / max(n_rows, 1) <= 0.95 or n_rows <= 100:
+            return False
+        # Decimals mean it was measured, not assigned.
+        if not bool((clean % 1 == 0).all()):
+            return False
+        # An assigned integer key spans about as many values as there are
+        # rows. A measured quantity spans far more (or far less) — deal
+        # sizes from 1,065 to 113,382 across 3,000 rows span thirty-odd
+        # times the row count.
+        span = float(ordered.iloc[-1]) - float(ordered.iloc[0])
+        return abs(span) <= n_rows * ID_SPAN_TOLERANCE
     except Exception:
         logger.debug("identifier check failed for %r", col_name, exc_info=True)
     return False
@@ -155,7 +179,15 @@ def _pick_primary_metric(cols: Dict, domain: str = "general",
 
     for preferred in priority:
         for col in all_metrics:
-            if preferred in str(col).lower().replace("_", ""):
+            if preferred not in str(col).lower().replace("_", ""):
+                continue
+            # The domain's preferred metric still has to be chartable.
+            # Without this the priority list returned early and won: a
+            # logistics dashboard led with `on_time` (a 0/1 flag, so
+            # "Distribution of On Time" is two bars) and a sales one with
+            # `quota`, which was the same 250,000 on every row — a flat
+            # bar chart and a single-spike histogram.
+            if _is_chartable(col, df_ref):
                 return col
     # No domain preference matched. Take the measure that actually varies
     # rather than whichever came first in the frame — a 0/1 flag sitting in
@@ -163,18 +195,41 @@ def _pick_primary_metric(cols: Dict, domain: str = "general",
     candidates = cols["metrics"] or cols["score_metrics"]
     best, best_cv = None, -1.0
     for c in candidates:
+        if not _is_chartable(c, df_ref):
+            continue
         try:
-            ser = pd.to_numeric(df_ref[c], errors="coerce").dropna() \
-                if df_ref is not None else None
-            if ser is None or len(ser) < 10 or ser.nunique() < 3:
-                continue
+            ser = pd.to_numeric(df_ref[c], errors="coerce").dropna()
             m = float(ser.mean())
             cv = abs(float(ser.std()) / m) if m else 0.0
             if cv > best_cv:
                 best, best_cv = c, cv
         except Exception:
             logger.debug("cv check failed for %r", c, exc_info=True)
-    return best or candidates[0]
+    if best is not None:
+        return best
+    # Nothing varies enough to lead with. Falling back to the first
+    # column would put a constant on the front page, so say there is no
+    # metric and let the caller render nothing instead.
+    return next((c for c in candidates if _is_chartable(c, df_ref)), None)
+
+
+# A measure needs at least this many distinct values to be worth a bar
+# chart or a histogram. Two is a flag; one is a constant.
+MIN_CHARTABLE_VALUES = 3
+
+
+def _is_chartable(col, df_ref: Optional[pd.DataFrame]) -> bool:
+    """True when this column carries enough variation to draw."""
+    if df_ref is None or col not in getattr(df_ref, "columns", []):
+        return False
+    try:
+        ser = pd.to_numeric(df_ref[col], errors="coerce").dropna()
+        if len(ser) < 10:
+            return False
+        return int(ser.nunique()) >= MIN_CHARTABLE_VALUES
+    except Exception:
+        logger.debug("chartable check failed for %r", col, exc_info=True)
+        return False
 
 
 def _pick_best_dimension(df: pd.DataFrame, cols: Dict,
@@ -410,3 +465,122 @@ def make_heatmap(df):
         template=TEMPLATE,
         color_continuous_scale="RdBu_r",
         zmin=-1, zmax=1)
+
+
+# ══════════════════════════════════════════════════════════
+#  TILE SPECS FOR THE DASHBOARD
+# ══════════════════════════════════════════════════════════
+# recommend_charts returns rendered figures, which the dashboard cannot
+# use: its tiles must survive a filter change, a resize and a delete, so
+# it needs the *recipe* rather than the picture. Lacking one, the page
+# picked its own charts in the browser from column order — and that is
+# how a finance dashboard opened on "budget by account" (a budget is
+# assigned per account, so the bars restate how the file was built), an
+# education one on "cohort by module" (an average of a year number), and
+# a healthcare one on "age by department" instead of length of stay.
+#
+# Same column-role logic as recommend_charts, emitted as specs.
+
+# A dimension with more levels than this makes an unreadable bar chart.
+MAX_TILE_DIMENSION_LEVELS = 30
+
+
+def recommend_tiles(df: pd.DataFrame, domain: str = "general") -> List[Dict]:
+    """Up to six dashboard tiles, chosen by column role.
+
+    Each is {id, title, type, x, y, agg} — exactly what /charts/build
+    takes, so the dashboard can re-render every tile whenever a filter
+    changes without asking what it was showing.
+    """
+    if df is None or df.empty:
+        return []
+
+    cols = _get_analysis_columns(df)
+    metric = _pick_primary_metric(cols, domain, df_ref=df)
+    if metric is None:
+        logger.info("no chartable metric among %d columns", len(df.columns))
+        return []
+
+    dim = _pick_best_dimension(df, cols, metric)
+    # "auto" defers to _agg_for_metric, which this codebase calls its
+    # single source of truth for how a measure is aggregated. Hardcoding
+    # "sum" here bypassed it and charted the TOTAL monthly income of
+    # each attrition group — 15M against 3M, which is a headcount chart
+    # wearing a salary label. That rule already knows income is averaged.
+    agg = "auto"
+    tiles: List[Dict] = []
+
+    def add(title, kind, x=None, y=None, how=None):
+        tiles.append({"id": "t{}".format(len(tiles) + 1), "title": title,
+                      "type": kind, "x": x, "y": y, "agg": how or "auto"})
+
+    if dim:
+        add("{} by {}".format(_label(metric), _label(dim)), "bar", dim, metric,
+            agg)
+
+    # The finding the rest of the app leads with, as a chart. A dashboard
+    # that never shows the outcome is a different product from the
+    # Insights page looking at the same file.
+    outcome = _outcome_for_tiles(df)
+    if outcome:
+        # When the outcome is itself the leading dimension — an HR file
+        # grouped by Attrition — charting its rate against itself says
+        # 0% and 100%. Cut it by the next dimension instead.
+        by = dim if (dim and dim != outcome) else _second_dimension(
+            df, cols, metric, dim)
+        if by and by != outcome:
+            add("{} rate by {}".format(_label(outcome), _label(by)),
+                "bar", by, outcome, "mean")
+
+    if cols["date_cols"]:
+        add("{} over time".format(_label(metric)), "line",
+            cols["date_cols"][0], metric, agg)
+
+    add("Distribution of {}".format(_label(metric)), "histogram", metric)
+
+    # A second dimension, so the reader can see the measure cut two ways.
+    second = _second_dimension(df, cols, metric, dim)
+    if second:
+        add("{} by {}".format(_label(metric), _label(second)), "bar",
+            second, metric, agg)
+
+    if len(cols["all_metrics"]) >= 3:
+        add("Correlation", "heatmap")
+
+    return tiles[:6]
+
+
+def _label(name) -> str:
+    from app.engines.present import label as _present_label
+    try:
+        return _present_label(name)
+    except Exception:
+        logger.debug("label failed for %r", name, exc_info=True)
+        return str(name)
+
+
+def _outcome_for_tiles(df: pd.DataFrame) -> Optional[str]:
+    """The binary outcome worth charting, if the file has one."""
+    try:
+        from app.engines.domains.outcome_discovery import discover_outcomes
+        found = discover_outcomes(df, limit=1)
+        return found[0].column if found else None
+    except Exception:
+        logger.debug("outcome discovery failed for tiles", exc_info=True)
+        return None
+
+
+def _second_dimension(df: pd.DataFrame, cols: Dict, metric: str,
+                      first: Optional[str]) -> Optional[str]:
+    """Another grouping column, so the dashboard is not one cut repeated."""
+    for col in cols.get("cat_cols", []):
+        if col == first or col == metric:
+            continue
+        try:
+            levels = int(df[col].nunique(dropna=True))
+        except Exception:
+            logger.debug("level count failed for %s", col, exc_info=True)
+            continue
+        if 2 <= levels <= MAX_TILE_DIMENSION_LEVELS:
+            return col
+    return None

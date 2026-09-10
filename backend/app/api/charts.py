@@ -114,12 +114,47 @@ def recommend(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)
     return {"charts": [{"title": t, "figure": _fig_json(f)} for t, f in charts]}
 
 
+@router.post("/{ds_id}/recommend-tiles")
+def recommend_tiles(ds_id: str, body: FiltersBody,
+                    owner: str = Depends(current_owner)):
+    """The dashboard's opening tiles, as specs it can re-render.
+
+    The page used to choose these in the browser from column order, and
+    the result was a finance dashboard opening on "budget by account" —
+    a budget is assigned per account, so the bars restate the file's own
+    construction — and a healthcare one on average age rather than
+    length of stay. Column roles are known here; column order is all the
+    browser has.
+    """
+    df = _df(owner, ds_id, body.filters)
+    try:
+        from app.engines.story_engine import detect_domain
+        domain, _ = detect_domain(df)
+    except Exception:
+        logger.warning("domain detection failed for tile recommendation",
+                       exc_info=True)
+        domain = "general"
+    return {"tiles": chart_engine.recommend_tiles(df, domain),
+            "domain": domain}
+
+
 @router.post("/{ds_id}/build")
 def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
     df = _df(owner, ds_id, req.filters)
     if df.empty:
         raise HTTPException(422, "No rows match the current filters")
     t = req.type
+
+    # A column the frame does not have is a bad request, not a server
+    # fault. Without this check plotly raised deep inside make_figure and
+    # the client got a 500 with no usable message — which is what a
+    # dashboard still holding the previous dataset's tiles produced when
+    # the user switched files.
+    for role, name in (("x", req.x), ("y", req.y), ("color", req.color)):
+        if name and name not in df.columns:
+            raise HTTPException(
+                422, "Column '{}' (used as {}) is not in this dataset."
+                     .format(name, role))
 
     try:
         if t == "histogram":
@@ -133,17 +168,18 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
         elif t in ("bar", "line", "area", "pie"):
             if not req.x or not req.y:
                 raise HTTPException(422, "x and y are required")
-            grouped = _aggregate(df, req)
+            grouped, y_col = _aggregate(df, req)
             if t == "bar":
-                fig = chart_engine.make_bar(grouped, req.x, req.y, req.title)
+                fig = chart_engine.make_bar(grouped, req.x, y_col, req.title)
             elif t == "pie":
-                fig = chart_engine.make_pie(grouped, req.x, req.y, req.title)
+                fig = chart_engine.make_pie(grouped, req.x, y_col, req.title)
             else:
-                fig = chart_engine.make_line(grouped, req.x, req.y, req.title)
+                fig = chart_engine.make_line(grouped, req.x, y_col, req.title)
                 if t == "area":
                     fig.update_traces(fill="tozeroy")
         elif t == "table":
-            grouped = _aggregate(df, req) if (req.x and req.y) else df.head(req.top_n)
+            grouped = (_aggregate(df, req)[0] if (req.x and req.y)
+                       else df.head(req.top_n))
             from app.services.serialize import df_records
             return {"table": df_records(grouped, req.top_n)}
         else:
@@ -165,7 +201,13 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
     return {"figure": _fig_json(fig)}
 
 
-def _aggregate(df: pd.DataFrame, req: ChartRequest) -> pd.DataFrame:
+def _aggregate(df: pd.DataFrame, req: ChartRequest):
+    """(grouped frame, the y column to plot).
+
+    The y column is returned because a yes/no measure is converted to a
+    percentage under a new name, and the caller has to plot the name
+    that actually exists in the frame it gets back.
+    """
     x, y, agg = req.x, req.y, req.agg
     if agg == "auto" and y:
         # One rule for how a metric is aggregated, shared with the report
@@ -182,9 +224,45 @@ def _aggregate(df: pd.DataFrame, req: ChartRequest) -> pd.DataFrame:
         rule = "D" if span_days <= 92 else ("W" if span_days <= 730 else "ME")
         agg_fn = "count" if agg == "count" else agg
         out = getattr(tmp[y].resample(rule), agg_fn)().reset_index()
-        return out
+        return out, y
     if agg == "count":
         out = df.groupby(x, dropna=True)[y].count().reset_index()
+        return out.sort_values(y, ascending=False).head(req.top_n), y
     else:
-        out = df.groupby(x, dropna=True)[y].agg(agg).reset_index()
-    return out.sort_values(y, ascending=False).head(req.top_n)
+        frame = df
+        if agg in ("mean", "sum") and not pd.api.types.is_numeric_dtype(df[y]):
+            # A rate chart over a Yes/No column is the most useful tile
+            # a dashboard can carry — "attrition rate by department" —
+            # and pandas cannot mean a string, so the whole tile failed
+            # with "dtype 'str' does not support operation 'mean'".
+            # Mapping the affirmative side to 1 makes the average the
+            # rate, which is what the title claims it is.
+            from app.engines.domains._common import binary_mask
+            mask = binary_mask(df[y])
+            if mask is None:
+                raise HTTPException(
+                    422,
+                    "'{}' is text, so it cannot be averaged. Pick a numeric "
+                    "column, or a yes/no column to chart as a rate."
+                    .format(y))
+            # Two things a first draft of this got wrong.
+            #
+            # Scale follows the aggregation. Averaging 0/100 gives the
+            # rate; SUMMING percentages does not — three affirmative
+            # rows would read as 300%. A sum of a flag is a count of it,
+            # so summing keeps the 0/1 form.
+            #
+            # And a missing value is not a "no". Filling the gaps with
+            # False counted every blank row against the rate; left as
+            # NaN, groupby skips them, which is what "rate among the
+            # records that recorded it" means.
+            as_rate = agg == "mean"
+            values = mask.reindex(df.index).astype("float64")
+            if as_rate:
+                values = values * 100.0
+            rate_name = ("{} rate (%)".format(y) if as_rate
+                         else "{} count".format(y))
+            frame = df.assign(**{rate_name: values})
+            y = rate_name
+        out = frame.groupby(x, dropna=True)[y].agg(agg).reset_index()
+    return out.sort_values(y, ascending=False).head(req.top_n), y

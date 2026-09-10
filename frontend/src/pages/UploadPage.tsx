@@ -27,7 +27,16 @@ export default function UploadPage() {
   const refresh = useCallback(() => {
     apiGet<{ datasets: DatasetMeta[] }>('/api/datasets')
       .then((r) => setRecent(r.datasets))
-      .catch(() => {})
+      // Swallowed, this rendered an empty "Recent datasets" panel, and
+      // a user with datasets could not tell it apart from a user with
+      // none. On the first page of the app that reads as data loss.
+      .catch((e) =>
+        setError(
+          e instanceof Error
+            ? `Could not list your datasets: ${e.message}`
+            : 'Could not list your datasets.',
+        ),
+      )
   }, [])
   useEffect(refresh, [refresh])
 
