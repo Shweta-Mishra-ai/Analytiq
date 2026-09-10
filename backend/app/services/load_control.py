@@ -159,8 +159,8 @@ def guard(account: str, what: str) -> None:
 
 # ── FastAPI wiring ────────────────────────────────────────
 
-def admit(what: str):
-    """A dependency that rate-limits and holds a heavy-work slot.
+def admit(what: str, metered: str = ""):
+    """A dependency that rate-limits, meters, and holds a heavy-work slot.
 
     Written as a generator dependency so the slot is released when the
     response is finished — including when the handler raises, which a
@@ -168,7 +168,18 @@ def admit(what: str):
     first time somebody adds an early return.
 
         @router.post("/{ds_id}/pdf",
-                     dependencies=[Depends(admit("report"))])
+                     dependencies=[Depends(admit("report", "reports"))])
+
+    `metered` names the monthly counter this endpoint spends, if any.
+    The check happens before the work and the count only after it
+    succeeded — billing a customer for a report that then failed to
+    build is the kind of thing they remember. The generator learns
+    whether the handler raised by watching for the exception FastAPI
+    throws back in, which is the only signal available here.
+
+    Rate limit and plan ceiling answer different questions and both
+    belong: the limiter stops one account monopolising the box in the
+    next sixty seconds, the ceiling is what the account bought.
     """
     def dependency(request: Request):
         from app.services.auth import current_owner
@@ -181,15 +192,39 @@ def admit(what: str):
                 429, str(e),
                 headers={"Retry-After": str(e.retry_after)}) from None
 
+        if metered:
+            from app.services.quota import QuotaExceeded, check_event
+            try:
+                check_event(owner, metered)
+            except QuotaExceeded as e:
+                # 402: the caller can act on this, and the action is a
+                # payment. 429 would tell them to wait, which is wrong —
+                # waiting a minute changes nothing about a monthly cap.
+                raise HTTPException(402, e.as_detail()) from None
+
         try:
             heavy.__enter__()
         except Busy as e:
             raise HTTPException(
                 503, str(e),
                 headers={"Retry-After": str(e.retry_after)}) from None
+        # The release stays in a `finally`. Narrowing it to `except
+        # Exception` looks equivalent and is not: a client that
+        # disconnects mid-report raises CancelledError, which derives
+        # from BaseException, so the slot would never come back. Two of
+        # those and every caller gets 503 until the process restarts —
+        # which is the exact failure this module exists to prevent.
+        succeeded = False
         try:
             yield
+            succeeded = True
         finally:
             heavy.__exit__(None, None, None)
+
+        # Only reached when the handler returned normally, so a report
+        # that failed to build is never charged for.
+        if metered and succeeded:
+            from app.services.quota import record
+            record(owner, metered)
 
     return dependency

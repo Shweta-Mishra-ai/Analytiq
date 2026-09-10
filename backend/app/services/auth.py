@@ -32,7 +32,24 @@ from app.services.user_store import user_store
 logger = logging.getLogger(__name__)
 
 # endpoints that must stay reachable without a token
-PUBLIC_PATHS = {"/api/health", "/api/auth/login"}
+PUBLIC_PATHS = {
+    "/api/health",
+    "/api/auth/login",
+    # Reachable without a token by definition: the caller is asking to
+    # become one of the accounts this middleware checks against.
+    "/api/auth/signup",
+    "/api/auth/signup-status",
+    "/api/auth/password-reset",
+    # The pricing table is public — it is what a signed-out visitor is
+    # deciding on.
+    "/api/billing/plans",
+    # Stripe cannot hold a bearer token. This one authenticates by
+    # verifying the signature on the payload instead, and refuses
+    # outright when no webhook secret is configured — see
+    # api/billing.py. Without this entry the middleware answered 401 and
+    # no subscription would ever have been applied.
+    "/api/billing/webhook",
+}
 
 # Prefixes that answer without a session. Exactly one so far: a share
 # link, which carries its own signed grant for a single artifact. It is

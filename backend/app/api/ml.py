@@ -78,7 +78,7 @@ def targets(ds_id: str, owner: str = Depends(current_owner)):
 
 
 @router.post("/{ds_id}/train",
-             dependencies=[Depends(admit("train"))])
+             dependencies=[Depends(admit("train", "models"))])
 def train(ds_id: str, req: TrainRequest, owner: str = Depends(current_owner)):
     df = _df_or_404(owner, ds_id)
     if req.target not in df.columns:

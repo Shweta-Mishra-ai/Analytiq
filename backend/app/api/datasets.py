@@ -71,6 +71,18 @@ class _UploadShim:
         return getattr(self._buf, item)
 
 
+def _enforce_upload_quota(owner: str, *, rows: int, size_mb: float) -> None:
+    """Refuse an upload that would cross this account's plan ceiling."""
+    from app.services.quota import QuotaExceeded, check_new_dataset
+    try:
+        check_new_dataset(owner, rows=rows, size_mb=size_mb)
+    except QuotaExceeded as e:
+        # 402 rather than 403: the client can do something about this,
+        # and the something is a payment. The body names the ceiling,
+        # what was used and where to change plan.
+        raise HTTPException(402, e.as_detail()) from None
+
+
 def _process_upload(owner: str, filename: str, data: bytes, sheet: str) -> dict:
     """Heavy parsing/validation — runs in the threadpool, off the event loop."""
     ok, msg = validate_file_size(len(data))
@@ -87,6 +99,12 @@ def _process_upload(owner: str, filename: str, data: bytes, sheet: str) -> dict:
     validation = validate_dataframe(df)
     if not validation.is_valid:
         raise HTTPException(422, "; ".join(validation.errors))
+
+    # Checked after parsing, because the row count is the ceiling that
+    # matters and only parsing knows it. On an unmetered deployment this
+    # resolves to the unlimited plan and costs one dictionary lookup.
+    _enforce_upload_quota(owner, rows=len(df),
+                          size_mb=len(data) / (1024 * 1024))
 
     # Hashed from the bytes as received, before parsing — so the record
     # is of the file the client actually sent, not of our reading of it.

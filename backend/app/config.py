@@ -159,9 +159,58 @@ class AppConfig(BaseSettings):
     app_secret: str = Field(default="", alias="APP_SECRET")
     token_ttl_days: int = Field(default=30, alias="TOKEN_TTL_DAYS")
 
+    # ── Signup and billing ───────────────────────────────
+    # Self-signup is OFF unless a deployment asks for it. The default has
+    # to be the safe one: a self-hosted instance that quietly accepted
+    # strangers would be a hole its operator never opened, and the cost
+    # of the other mistake is one environment variable.
+    signup_enabled: bool = Field(default=False, alias="SIGNUP_ENABLED")
+
+    # The plan a self-signup lands on.
+    signup_plan: str = Field(default="free", alias="SIGNUP_PLAN")
+
+    # Stripe. Absent, checkout is simply unavailable and every account
+    # keeps whatever plan it already has — billing is a way to CHANGE a
+    # plan, never the thing that grants one, so an outage at Stripe must
+    # not lock a paying customer out of their own data.
+    stripe_secret_key: str = Field(default="", alias="STRIPE_SECRET_KEY")
+    stripe_webhook_secret: str = Field(default="",
+                                       alias="STRIPE_WEBHOOK_SECRET")
+    # plan=price_id pairs, e.g. "solo=price_123,practice=price_456"
+    stripe_prices: str = Field(default="", alias="STRIPE_PRICES")
+    billing_return_url: str = Field(default="", alias="BILLING_RETURN_URL")
+
     @property
     def effective_admin_key(self) -> str:
         return self.app_admin_key or self.app_password
+
+    @property
+    def is_metered(self) -> bool:
+        """Whether accounts are subject to plan ceilings.
+
+        A deployment is metered once it invites strangers — which is
+        exactly what turning signup on means. Before that it is somebody
+        running the tool for their own clients, and capping their own
+        container serves nobody.
+        """
+        return bool(self.signup_enabled)
+
+    @property
+    def stripe_configured(self) -> bool:
+        return bool(self.stripe_secret_key and self.stripe_price_map)
+
+    @property
+    def stripe_price_map(self) -> dict:
+        """{plan_key: stripe_price_id} parsed from STRIPE_PRICES."""
+        out = {}
+        for pair in str(self.stripe_prices or "").split(","):
+            if "=" not in pair:
+                continue
+            plan, _, price = pair.partition("=")
+            plan, price = plan.strip().lower(), price.strip()
+            if plan and price:
+                out[plan] = price
+        return out
 
     model_config = {
         "extra": "ignore",

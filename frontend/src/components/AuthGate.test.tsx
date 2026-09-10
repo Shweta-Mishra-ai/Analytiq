@@ -158,3 +158,101 @@ describe('an unreachable backend', () => {
     expect(await screen.findByText(APP)).toBeInTheDocument()
   })
 })
+
+describe('signing up', () => {
+  /** The gate is also the way IN to the product now. Before signup
+   *  existed a visitor who reached this screen had no way forward at
+   *  all, and the form said nothing about that. */
+  function stubSignup(enabled: boolean) {
+    const posts: { path: string; body: unknown }[] = []
+    vi.spyOn(client, 'apiGet').mockImplementation(async (path: string) => {
+      if (path === '/api/auth/signup-status') return { enabled }
+      if (path === '/api/health') return { auth_required: true }
+      throw new Error(`unexpected ${path}`)
+    })
+    vi.spyOn(client, 'apiPost').mockImplementation(
+      async (path: string, body: unknown) => {
+        posts.push({ path, body })
+        return { token: 'fresh-token' }
+      },
+    )
+    return posts
+  }
+
+  it('offers signup only where the deployment allows it', async () => {
+    stubSignup(true)
+    render(app())
+    expect(
+      await screen.findByRole('button', { name: /create an account/i }),
+    ).toBeInTheDocument()
+  })
+
+  it('never offers signup where the deployment does not', async () => {
+    stubSignup(false)
+    render(app())
+    await screen.findByRole('button', { name: 'Sign in' })
+    expect(
+      screen.queryByRole('button', { name: /create an account/i }),
+    ).toBeNull()
+  })
+
+  it('asks for an email only when creating an account', async () => {
+    stubSignup(true)
+    const user = userEvent.setup()
+    render(app())
+    expect(screen.queryByLabelText(/Email/)).toBeNull()
+    await user.click(
+      await screen.findByRole('button', { name: /create an account/i }),
+    )
+    expect(screen.getByLabelText(/Email/)).toBeInTheDocument()
+  })
+
+  it('posts to signup, not login, when creating an account', async () => {
+    const posts = stubSignup(true)
+    const user = userEvent.setup()
+    render(app())
+
+    await user.click(
+      await screen.findByRole('button', { name: /create an account/i }),
+    )
+    await user.type(screen.getByLabelText(/Username/), 'amy')
+    await user.type(screen.getByLabelText(/Email/), 'amy@example.com')
+    await user.type(screen.getByLabelText(/Password/), 'password123')
+    await user.click(screen.getByRole('button', { name: /^Create account$/ }))
+
+    await waitFor(() => expect(posts).toHaveLength(1))
+    expect(posts[0].path).toBe('/api/auth/signup')
+    expect(posts[0].body).toMatchObject({
+      username: 'amy',
+      email: 'amy@example.com',
+      password: 'password123',
+    })
+  })
+
+  it('still signs an existing account in while signup is on offer', async () => {
+    const posts = stubSignup(true)
+    const user = userEvent.setup()
+    render(app())
+
+    await user.type(await screen.findByLabelText(/Username/), 'amy')
+    await user.type(screen.getByLabelText(/Password/), 'password123')
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+
+    await waitFor(() => expect(posts).toHaveLength(1))
+    expect(posts[0].path).toBe('/api/auth/login')
+  })
+
+  it('will not submit a signup without an email', async () => {
+    stubSignup(true)
+    const user = userEvent.setup()
+    render(app())
+    await user.click(
+      await screen.findByRole('button', { name: /create an account/i }),
+    )
+    await user.type(screen.getByLabelText(/Username/), 'amy')
+    await user.type(screen.getByLabelText(/Password/), 'password123')
+    expect(
+      screen.getByRole('button', { name: /^Create account$/ }),
+    ).toBeDisabled()
+  })
+})

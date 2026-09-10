@@ -116,7 +116,7 @@ def _count_skipped(skipped: list) -> None:
 
 
 @router.post("/{ds_id}/pdf",
-             dependencies=[Depends(admit("report"))])
+             dependencies=[Depends(admit("report", "reports"))])
 def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner)):
     # "Reports are slow" is unanswerable without a number, and the answer
     # is rarely build_pdf itself — it is usually one engine upstream of it.
@@ -311,9 +311,20 @@ def _generate_pdf(ds_id: str, req: PdfRequest, owner: str):
         skipped.append("charts")
 
     # 9. build PDF
+    # The one thing a freelancer actually pays to remove. A plan that
+    # includes white-labelling drops the mark entirely rather than
+    # replacing it with something else of ours; a free report keeps it
+    # unless the user wrote their own subtitle, because overriding what
+    # they typed would be worse than the mark itself.
+    from app.services.quota import plan_for
+    branded = plan_for(owner).branding
+    subtitle = req.subtitle
+    if not subtitle:
+        subtitle = "Powered by Analytiq" if branded else ""
+
     pdf_config = {
         "title": req.title,
-        "subtitle": req.subtitle,
+        "subtitle": subtitle,
         "client_name": req.client_name,
         "confidential": req.confidential,
         "theme_name": theme_name,
@@ -426,7 +437,7 @@ def health_summary(ds_id: str, owner: str = Depends(current_owner)):
 
 
 @router.post("/{ds_id}/health-pdf",
-             dependencies=[Depends(admit("report"))])
+             dependencies=[Depends(admit("report", "reports"))])
 def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
                          owner: str = Depends(current_owner)):
     """Client-facing Data Health & Business Insights report (PDF)."""

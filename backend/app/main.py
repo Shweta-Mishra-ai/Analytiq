@@ -17,8 +17,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.config import config
-from app.api import (advanced_analytics, analytics, charts, chat, datasets,
-                     deliver, ml, reports)
+from app.api import (accounts, advanced_analytics, analytics, billing,
+                     charts, chat, datasets, deliver, ml, reports)
 from app.services.auth import AuthMiddleware
 from app.services import request_context
 from app.services.cleanup import cleanup_loop, sweep_expired
@@ -139,6 +139,8 @@ async def login(req: LoginRequest):
     return {"token": issue_token(user.username), "username": user.username,
             "is_admin": user.is_admin}
 
+app.include_router(accounts.router)
+app.include_router(billing.router)
 app.include_router(datasets.router)
 app.include_router(analytics.router)
 app.include_router(advanced_analytics.router)
