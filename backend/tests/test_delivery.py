@@ -447,8 +447,6 @@ def test_an_invalid_cadence_is_refused(client, dataset):
 def test_an_expired_report_stops_being_served(client, dataset, tmp_path):
     """A report is a photograph of a dataset at a moment; an old one is
     misleading rather than useful."""
-    import json
-
     from app.services.artifacts import store as artifacts
 
     job = client.post("/api/jobs", json={"dataset_id": dataset,
@@ -456,12 +454,12 @@ def test_an_expired_report_stops_being_served(client, dataset, tmp_path):
     done = _finish(client, job["job_id"])
     art_id = done["artifact_id"]
 
-    path = artifacts._meta_path("local", art_id)
-    with open(path) as fh:
-        meta = json.load(fh)
-    meta["expires_at"] = time.time() - 1
-    with open(path, "w") as fh:
-        json.dump(meta, fh)
+    # Age it through the store's own API rather than by editing a file:
+    # the bytes may not be on this machine's disk at all.
+    art = artifacts.get("local", art_id)
+    assert art is not None
+    art.expires_at = time.time() - 1
+    artifacts.update(art)
 
     assert client.get(f"/api/artifacts/{art_id}").status_code == 404
     assert artifacts.sweep() >= 1
@@ -469,20 +467,15 @@ def test_an_expired_report_stops_being_served(client, dataset, tmp_path):
 
 def test_the_sweep_does_not_delete_a_report_that_is_still_being_written(
         client):
-    """put() makes the directory, writes the bytes, then writes the
-    metadata. A sweep landing in that window sees a directory with no
-    readable metadata — which is also what a genuinely broken artifact
-    looks like — and used to delete the report someone was at that
-    moment waiting for."""
-    import os
-
+    """put() writes the bytes, then writes the metadata. A sweep landing
+    in that window sees bytes with no readable metadata — which is also
+    what a genuinely broken artifact looks like — and used to delete the
+    report someone was at that moment waiting for."""
     from app.services.artifacts import store as artifacts
 
-    half_written = artifacts._dir("local", "0123456789abcdef")
-    os.makedirs(half_written, exist_ok=True)
-    with open(os.path.join(half_written, "blob"), "wb") as fh:
-        fh.write(b"%PDF-not-finished")
+    blob = artifacts._blob_key("local", "0123456789abcdef")
+    artifacts.blobs.put(blob, b"%PDF-not-finished")
 
     artifacts.sweep()
-    assert os.path.isdir(half_written), \
+    assert artifacts.blobs.exists(blob), \
         "the sweep deleted a report that was still being written"

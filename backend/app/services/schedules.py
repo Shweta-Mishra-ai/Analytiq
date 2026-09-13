@@ -92,7 +92,7 @@ class ScheduleStore:
         return os.path.join(directory, _safe(schedule_id) + ".json")
 
     def save(self, s: Schedule) -> None:
-        from app.services.artifacts import _atomic_write
+        from app.services.blobstore import atomic_write as _atomic_write
         with self._lock:
             _atomic_write(self._path(s.owner, s.schedule_id),
                           json.dumps(asdict(s)).encode("utf-8"))

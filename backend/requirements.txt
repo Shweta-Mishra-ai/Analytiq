@@ -40,3 +40,8 @@ python-pptx>=1.0.0
 # Semantic retrieval for the knowledge base is an optional extra, because
 # it pulls in torch: see requirements-rag.txt. Retrieval degrades to BM25
 # plus a hashed term vector without it, which matches shared words only.
+
+# Object storage for generated reports (S3, Cloudflare R2,
+# Backblaze, MinIO). Only imported when S3_BUCKET is set; without
+# it artifacts stay on local disk exactly as before.
+boto3>=1.34

@@ -171,10 +171,6 @@ def record_access(owner: str, artifact_id: str) -> None:
 
 
 def _persist(art) -> None:
-    from dataclasses import asdict
-
-    from app.services.artifacts import _atomic_write
     from app.services.artifacts import store as artifacts
 
-    _atomic_write(artifacts._meta_path(art.owner, art.artifact_id),
-                  json.dumps(asdict(art)).encode("utf-8"))
+    artifacts.update(art)

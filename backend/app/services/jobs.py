@@ -105,7 +105,7 @@ class JobStore:
         return os.path.join(directory, _safe(job_id) + ".json")
 
     def save(self, job: Job) -> None:
-        from app.services.artifacts import _atomic_write
+        from app.services.blobstore import atomic_write as _atomic_write
         with self._lock:
             _atomic_write(self._path(job.owner, job.job_id),
                           json.dumps(asdict(job)).encode("utf-8"))

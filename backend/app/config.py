@@ -136,6 +136,19 @@ class AppConfig(BaseSettings):
 
     # ── Storage ──────────────────────────────────────────
     data_dir: str = Field(default="./data", alias="DATA_DIR")
+
+    # Object storage for generated reports. DATA_DIR on a container
+    # platform is scratch: it survives a request, not a deploy. Share
+    # links, scheduled delivery and background jobs all exist so a
+    # report outlives the request that made it, and a disk that does not
+    # outlive the process undoes all three. Set S3_BUCKET and artifacts
+    # move to an S3-compatible bucket — AWS, Cloudflare R2, Backblaze,
+    # MinIO all speak it. Left unset, behaviour is exactly as before.
+    s3_bucket: str = Field(default="", alias="S3_BUCKET")
+    s3_prefix: str = Field(default="", alias="S3_PREFIX")
+    # R2 and MinIO need this; AWS does not.
+    s3_endpoint_url: str = Field(default="", alias="S3_ENDPOINT_URL")
+    s3_region: str = Field(default="", alias="S3_REGION")
     data_ttl_days: int = Field(default=30, alias="DATA_TTL_DAYS")
     cleanup_interval_hours: int = Field(default=6, alias="CLEANUP_INTERVAL_HOURS")
 

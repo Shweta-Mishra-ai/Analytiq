@@ -197,6 +197,32 @@ async def llm_status():
     return get_client().status()
 
 
+@app.get("/api/admin/storage")
+async def storage_status():
+    """Where generated reports are kept, and whether they survive a
+    deploy.
+
+    An operator cannot tell this from the outside: reports work
+    perfectly on a container that has not restarted yet. Naming it
+    plainly is the difference between finding out here and finding out
+    when a client opens a share link.
+    """
+    from app.services.artifacts import store as artifacts
+
+    blobs = artifacts.blobs
+    durable = bool(getattr(blobs, "durable", False))
+    return {
+        "artifacts": blobs.describe(),
+        "durable": durable,
+        "detail": (
+            "Reports are kept in object storage and survive a restart."
+            if durable else
+            "Reports are on this container's disk. They survive a request "
+            "but not a deploy — set S3_BUCKET to keep them."
+        ),
+    }
+
+
 @app.post("/api/admin/llm-check")
 async def llm_check(providers: str = "", timeout: float = 12.0):
     """Actually call every configured provider and report what happened.
