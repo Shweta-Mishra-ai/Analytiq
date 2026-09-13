@@ -88,6 +88,28 @@ PRINT = {
 }
 
 
+# ── The dark surface ──────────────────────────────────────
+# The same roles as PRINT, for the one dark theme. It lives here rather
+# than inside pdf/theme.py because a chart is drawn by matplotlib and
+# then printed onto a reportlab page: two renderers, one surface. When
+# the two kept their own hexes the chart's own background (#0e0f1a) sat
+# on a card painted #1A212A, and the figure read as a rectangle pasted
+# onto the page rather than part of it.
+SCREEN = {
+    "ground":      "#0B0F14",   # cover and running header
+    "ground_text": "#E9EEF5",
+    "accent":      CATEGORICAL_DARK[0],
+    "accent_soft": "#8FB4DC",
+    "ink":         "#E9EEF5",
+    "ink_soft":    "#98A3B2",
+    "muted":       "#6F7B8A",
+    "rule":        "#2A323C",
+    "surface":     "#0B0F14",
+    "surface_alt": "#1A212A",   # zebra rows, card fills
+    "surface_tint":"#141A21",   # the one tinted panel per page
+}
+
+
 # ── Data health grades ────────────────────────────────────
 # The grade is a judgement, so it wears a status colour, not a series
 # colour. The old scale ran mint → blue → amber → orange → red, five

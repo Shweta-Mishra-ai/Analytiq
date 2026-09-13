@@ -112,8 +112,8 @@ register_premium_fonts()
 # the words on the cover badge. "Dark Tech" remains genuinely different
 # because a dark surface is a different surface, not a different brand,
 # and its steps are the dark half of the same six hues.
-from app.engines.palette import (CATEGORICAL_DARK, PRINT, STATUS_DARK,
-                                 STATUS_LIGHT)
+from app.engines.palette import (CATEGORICAL_DARK, PRINT, SCREEN,
+                                 STATUS_DARK, STATUS_LIGHT)
 
 
 def _light_theme(domain_label: str) -> dict:
@@ -142,12 +142,15 @@ THEMES = {
     "Ecommerce Orange": _light_theme("COMMERCE ANALYTICS"),
     "Sales Green":      _light_theme("REVENUE ANALYTICS"),
     "Dark Tech": {
-        "cover_bg":    "#0B0F14", "cover_accent": CATEGORICAL_DARK[0],
-        "header_bg":   "#0B0F14", "header_text":  "#E9EEF5",
-        "accent":      CATEGORICAL_DARK[0], "accent2": "#8FB4DC",
-        "text":        "#E9EEF5", "text_muted":   "#98A3B2",
-        "bg_light":    "#141A21", "bg_card":      "#1A212A",
-        "border":      "#2A323C",
+        # Same roles as the light themes, read from the same place, so
+        # the matplotlib figure and the reportlab page it lands on
+        # cannot drift apart.
+        "cover_bg":    SCREEN["ground"], "cover_accent": SCREEN["accent"],
+        "header_bg":   SCREEN["ground"], "header_text":  SCREEN["ground_text"],
+        "accent":      SCREEN["accent"], "accent2":      SCREEN["accent_soft"],
+        "text":        SCREEN["ink"],    "text_muted":   SCREEN["ink_soft"],
+        "bg_light":    SCREEN["surface_tint"], "bg_card": SCREEN["surface_alt"],
+        "border":      SCREEN["rule"],
         "positive":    STATUS_DARK["good"],    "negative": STATUS_DARK["critical"],
         "warning":     STATUS_DARK["warning"], "info":     CATEGORICAL_DARK[0],
         "critical_bg": "#1E1312", "warning_bg":   "#1D1808",

@@ -6,3 +6,8 @@ node_modules/
 dist/
 .DS_Store
 *.pkl
+
+# Built frontend. The Dockerfile builds it from frontend/ and copies
+# it here; a committed copy is 5.5 MB of duplicated build output that
+# goes stale the moment the frontend changes.
+backend/static/

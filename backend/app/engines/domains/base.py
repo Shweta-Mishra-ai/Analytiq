@@ -145,22 +145,6 @@ class AttritionAnalysis:
     dept_sizes:       Dict = field(default_factory=dict)
 
 
-@dataclass
-class StoryReport:
-    domain:              str = "general"
-    domain_confidence:   float = 0.0
-    executive_summary:   str = ""
-    key_findings:        List[str] = field(default_factory=list)
-    business_risks:      List[str] = field(default_factory=list)
-    opportunities:       List[str] = field(default_factory=list)
-    recommended_actions: List[str] = field(default_factory=list)
-    insights:            List[Insight] = field(default_factory=list)
-    anomalies:           List[str] = field(default_factory=list)
-    attrition:           Optional[AttritionAnalysis] = None
-    data_quality_verdict: str = ""
-    analysis_confidence:  str = ""
-
-
 # ══════════════════════════════════════════════════════════
 #  STAT HELPERS  (Spearman throughout — non-parametric)
 # ══════════════════════════════════════════════════════════

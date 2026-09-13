@@ -1,30 +1,27 @@
 """
-core/insights_builder.py
-Builds structured top_insights from story_engine output + raw df analysis.
-Works whether story_engine has top_insights field or not.
-Drop this file in core/ and import in 8_Reports.py
+engines/insights_builder.py — the report's top findings, from whatever
+the story engine managed to produce.
+
+It takes story_engine's output when that has insights, and otherwise
+builds them from the dataframe and whatever analysis objects were
+passed. Either way the PDF gets the same shape, so a report is never
+short a Findings page because one upstream engine stayed quiet.
 """
-
 from __future__ import annotations
+
 import logging
+
 import pandas as pd
-from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
-
-
+# One Insight, defined in domains/base. There used to be a second copy
+# here carrying seven of the nine fields, and the shortfall was not
+# cosmetic: the branch below passes category=, which the local copy
+# never declared, so every story whose top_insights arrived as dicts
+# raised TypeError inside the report build.
+from app.engines.domains.base import Insight
 from app.services.dtypes import text_columns
 
-
-@dataclass
-class Insight:
-    severity: str          # critical | high | warning | info
-    title: str
-    problem: str
-    cause: str
-    evidence: str
-    action: str
-    impact: str
+logger = logging.getLogger(__name__)
 
 
 def build_top_insights(

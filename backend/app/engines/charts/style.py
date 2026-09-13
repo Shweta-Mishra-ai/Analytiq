@@ -78,6 +78,7 @@ def _pretty(name: str) -> str:
 # deliverable, none of them wrong on its own. engines/palette.py holds
 # the checked steppings; this module only chooses which one applies.
 from app.engines.palette import (CATEGORICAL_DARK, CATEGORICAL_LIGHT,
+                                 PRINT, SCREEN,
                                  SINGLE_DARK, SINGLE_LIGHT)
 
 LIGHT_COLORS = list(CATEGORICAL_LIGHT)
@@ -168,30 +169,28 @@ def _agg_for_metric(y_col: str):
 
 
 def _get_style(theme_name: str) -> dict:
-    if theme_name == "Dark Tech":
-        return {
-            "figure.facecolor": "#07080f",
-            "axes.facecolor":   "#0e0f1a",
-            "axes.edgecolor":   "#1e2035",
-            "axes.labelcolor":  "#dde1f5",
-            "xtick.color":      "#1e3a5f",
-            "ytick.color":      "#1e3a5f",
-            "text.color":       "#dde1f5",
-            "grid.color":       "#1e2035",
-            "grid.alpha":       0.8,
-        }
-    else:
-        return {
-            "figure.facecolor": "#ffffff",
-            "axes.facecolor":   "#F8FAFF",
-            "axes.edgecolor":   "#CBD5E1",
-            "axes.labelcolor":  "#0F172A",   # near-black for labels
-            "xtick.color":      "#0F172A",   # dark tick labels
-            "ytick.color":      "#0F172A",   # dark tick labels
-            "text.color":       "#0A1628",   # very dark for titles
-            "grid.color":       "#CBD5E1",
-            "grid.alpha":       0.5,
-        }
+    """The matplotlib surface for a theme, read from the same palette
+    the printed page uses.
+
+    These nine hexes used to be written out here, a second set beside
+    the report theme's. They had already drifted: the dark figure was
+    painted #0e0f1a and pasted onto a card painted #1A212A, so the
+    chart read as a rectangle stuck onto the page rather than part of
+    it. Deriving both from one palette is what stops that happening
+    again the next time a colour changes.
+    """
+    surface = SCREEN if theme_name == "Dark Tech" else PRINT
+    return {
+        "figure.facecolor": surface["surface"],
+        "axes.facecolor":   surface["surface_alt"],
+        "axes.edgecolor":   surface["rule"],
+        "axes.labelcolor":  surface["ink"],
+        "xtick.color":      surface["ink_soft"],
+        "ytick.color":      surface["ink_soft"],
+        "text.color":       surface["ink"],
+        "grid.color":       surface["rule"],
+        "grid.alpha":       0.8 if theme_name == "Dark Tech" else 0.5,
+    }
 
 
 # Grouped digits on every value axis, matching present.num() in the

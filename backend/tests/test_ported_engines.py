@@ -1,6 +1,6 @@
 """
 Unit tests for the second batch of engines ported from dataforge-ai:
-benchmarking, industry_benchmarks, cohort_analysis, predictive,
+benchmarking, industry_benchmarks, predictive,
 comparison_engine, and bi_engine.analyze_scenario.
 """
 from __future__ import annotations
@@ -113,34 +113,22 @@ def test_lookup_benchmark_finds_known_hr_metric():
 
 
 # ══════════════════════════════════════════════════════════
-#  Cohort analysis helpers
+#  Concentration
 # ══════════════════════════════════════════════════════════
 
-def test_build_quantile_cohorts_splits_a_numeric_column(hr_df):
-    from app.engines.cohort_analysis import build_quantile_cohorts
-    banded = build_quantile_cohorts(hr_df, "salary", q=4,
-                                     agg_cols={"tenure_years": "mean"})
-    assert len(banded) > 0
-    assert len(banded) <= 4
+def test_pareto_cumulative_share_is_monotonic_and_ends_at_100(hr_df):
+    """The property that makes a concentration table readable at all: a
+    cumulative share that goes backwards, or stops short of the whole,
+    means the reader is looking at a subset presented as a total."""
+    from app.engines.bi_engine import analyze_pareto
 
+    result = analyze_pareto(hr_df, "department", "salary")
+    cum = [g["cumulative_pct"] for g in result.groups]
 
-def test_build_quantile_cohorts_raises_on_all_null_column(hr_df):
-    from app.engines.cohort_analysis import build_quantile_cohorts
-    df = hr_df.copy()
-    df["salary"] = np.nan
-    with pytest.raises(ValueError, match="no non-null values"):
-        build_quantile_cohorts(df, "salary")
-
-
-def test_concentration_analysis_on_grouped_values(hr_df):
-    from app.engines.cohort_analysis import concentration_analysis
-    result = concentration_analysis(hr_df, "department", "salary")
-    assert isinstance(result, dict)
-    table = result["table"]
-    # cumulative share must end at 100% and be non-decreasing
-    cum = table["cum_pct"].tolist()
     assert cum == sorted(cum), "cumulative percentage must be non-decreasing"
-    assert abs(cum[-1] - 100.0) < 0.01
+    assert abs(cum[-1] - 100.0) < 0.01, "the last group must complete the total"
+    assert sum(g["pct_of_total"] for g in result.groups) == pytest.approx(
+        100.0, abs=0.05)
 
 
 # ══════════════════════════════════════════════════════════
