@@ -367,9 +367,9 @@ def test_a_chat_turn_cannot_move_a_later_cache_key(monkeypatch, tmp_path):
     from app.ai import llm_client as mod
     client = mod.LLMClient()
     before = client.model
-    monkeypatch.setattr(client, "chat",
+    monkeypatch.setattr(client, "_chat_with_retries",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
-    client.chat_safe([{"role": "user", "content": "hi"}], fallback="{}")
+    client.chat([{"role": "user", "content": "hi"}], fallback="{}")
     assert client.model == before
 
 

@@ -86,9 +86,14 @@ def chat(ds_id: str, req: ChatRequest, owner: str = Depends(current_owner)):
     ]
     messages = history_msgs + [{"role": "user", "content": req.message}]
 
-    raw = client.chat_safe(
+    # The fallback is this dispatcher's own protocol, so it belongs
+    # here rather than as a default buried in the LLM client: parse_tool_call
+    # below needs something parseable more than it needs the truth about
+    # why a model was unreachable.
+    raw = client.chat(
         messages=messages,
         system=system,
+        fallback='{"tool":"none","params":{},"explanation":"Unable to process."}',
     )
     parsed = parse_tool_call(raw)
     if not parsed:

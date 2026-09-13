@@ -174,9 +174,10 @@ def metered(monkeypatch, tmp_path):
     # request arrives as "local" rather than as the account under test.
     import app.api.accounts as accounts_api
     import app.api.billing as billing_api
+    import app.main as main
     import app.services.auth as auth
     import app.services.user_store as us
-    for module in (us, accounts_api, billing_api, auth):
+    for module in (us, accounts_api, billing_api, auth, main):
         monkeypatch.setattr(module, "user_store", store, raising=False)
     return store
 

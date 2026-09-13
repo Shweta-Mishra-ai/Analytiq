@@ -130,10 +130,11 @@ npm run dev
 ```
 
 ### 3. Running Automated Tests
-Run the 37-point end-to-end integration and smoke test suite:
 ```bash
 cd backend
-python tests/smoke_test.py
+pip install -r requirements-dev.txt
+python -m pytest                       # the whole suite
+python -m pytest tests/test_smoke.py   # just the end-to-end endpoint pass
 ```
 
 ---

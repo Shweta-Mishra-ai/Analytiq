@@ -353,6 +353,22 @@ def _toc(story, s, T, entries, CW, pages=None):
 
 
 def _clean(text: str) -> str:
-    """Escape for ReportLab's mini-HTML parser."""
-    return (str(text).replace("&", "&amp;")
-            .replace("<", "&lt;").replace(">", "&gt;"))
+    """Make engine- or model-authored text safe for a ReportLab Paragraph.
+
+    The escaping is the obvious half: a column named `cost<>margin`, or
+    an ampersand anywhere, is markup to ReportLab's mini-HTML parser,
+    which either raises or silently swallows the rest of the paragraph.
+
+    The other half is markdown. Nothing in the engines emits **bold**,
+    but the narrative boxes and the executive summary carry model-
+    authored prose, and a model asked for a paragraph very often
+    returns one with emphasis in it — which this printed as literal
+    asterisks in the client's report. The health report had a cleaner
+    that stripped them and the main pipeline had one that did not; this
+    is the health report's, which is the correct one. U+2028 goes the
+    same way: ReportLab does not treat it as a line break, it treats it
+    as a glyph it has no font for.
+    """
+    s = str(text or "").replace("**", "").replace("\u2028", " ")
+    return (s.replace("&", "&amp;")
+             .replace("<", "&lt;").replace(">", "&gt;")).strip()

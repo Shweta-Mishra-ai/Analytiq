@@ -12,10 +12,7 @@ table clearly. ffmpeg can find those frames locally, for free, and
 each one then reuses the already-hardened image extraction path
 (services/table_extractor.py::extract_table_from_image).
 
-This is the same scene-change-detection technique used by tools like
-bradautomates/claude-video — a standard, publicly documented ffmpeg
-filter graph, reimplemented here directly (not vendored) so it runs as
-a plain backend function instead of an interactive agent skill.
+The frame selection is a standard ffmpeg scene-change filter graph.
 """
 from __future__ import annotations
 

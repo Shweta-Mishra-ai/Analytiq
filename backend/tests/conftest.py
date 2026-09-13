@@ -3,8 +3,9 @@ tests/conftest.py — shared pytest fixtures for the backend test suite.
 
 Forces single-user open dev mode (no admin key / password) so these tests
 don't depend on whichever machine or .env they happen to run on — see
-multi_tenant_test.py for the auth-enforced path, which manages its own
-env vars per-test.
+test_multi_tenant.py for the auth-enforced path, which turns the admin
+key on per test and points every holder of the user-store singleton at a
+temporary one.
 """
 from __future__ import annotations
 

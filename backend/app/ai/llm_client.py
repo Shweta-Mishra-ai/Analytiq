@@ -20,28 +20,42 @@ does the two things that are genuinely about *this app*:
      state, not an outage. chat_task returns None and the caller writes
      the sentence itself.
 
-The public surface is unchanged — LLMClient(api_key), .chat(),
-.chat_safe(), .chat_task(), .status(), get_client() — so no call site
-needed touching.
+Two entry points, because there are two jobs. `chat()` takes a message
+history and answers a conversation. `chat_task()` takes a system and a
+user prompt, routes by named task, and goes through the narrative cache
+— a report regenerated unchanged must not pay for the same sentences
+twice. They are not the same call with different arguments, so they are
+not one function.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
+import time
 
 from app.config import config
 from app.ai import providers, routing, tasks
 from app.ai.capabilities import Capability as C
 
 logger = logging.getLogger(__name__)
+
+
+# Retrying the whole chain, not one provider — see chat(). Three
+# attempts, 2s then 4s, because the failure these cover is a rate limit
+# that clears in seconds; anything slower to recover is better reported
+# than waited out.
+CHAT_ATTEMPTS = 3
+CHAT_BACKOFF_MIN = 2.0
+CHAT_BACKOFF_MAX = 10.0
+
+
+class NoModelConfigured(RuntimeError):
+    """No configured model can do the job at all.
+
+    Distinct from a model failing, because waiting does not fix it and
+    retrying it three times only delays the message that says so.
+    """
 
 
 # ── Task → provider routing ───────────────────────────────
@@ -149,22 +163,54 @@ class LLMClient:
     #  tool dispatcher, which both send a message history.
     # ─────────────────────────────────────────────────────
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-    )
-    def chat(self, messages: list, system: str = "") -> str:
+    def chat(self, messages: list, system: str = "",
+             fallback: str | None = None) -> str:
         """One completion from the first provider that answers.
 
-        Raises if none does — the retry above then gets a second and
-        third go at the whole chain, since the common failure is a rate
-        limit that clears in a second or two.
+        `fallback` decides what happens when none does. Left None this
+        raises, which is what a caller that can report the failure
+        wants. Given a string it returns that instead — the tool
+        dispatcher needs a parseable answer more than it needs the truth
+        about why a model was unreachable.
+
+        The whole chain is retried, not one provider, because the common
+        failure is a rate limit that clears in a second or two and the
+        next provider may be rate-limited as well. A configuration error
+        is not retried: nothing about waiting makes an unset API key
+        appear, and three exponential backoffs used to leave the chat
+        page hanging about twelve seconds before showing an error that
+        was known immediately.
         """
+        try:
+            return self._chat_with_retries(messages, system)
+        except Exception as e:                     # noqa: BLE001
+            if fallback is None:
+                raise
+            logger.error("LLM failed: %s", e)
+            return fallback
+
+    def _chat_with_retries(self, messages: list, system: str) -> str:
+        last = None
+        for attempt in range(CHAT_ATTEMPTS):
+            try:
+                return self._chat_once(messages, system)
+            except NoModelConfigured:
+                raise
+            except Exception as e:                 # noqa: BLE001
+                last = e
+                if attempt == CHAT_ATTEMPTS - 1:
+                    break
+                delay = min(CHAT_BACKOFF_MAX,
+                            CHAT_BACKOFF_MIN * (2 ** attempt))
+                logger.info("chat attempt %d/%d failed (%s); retrying in %.0fs",
+                            attempt + 1, CHAT_ATTEMPTS, e, delay)
+                time.sleep(delay)
+        raise last
+
+    def _chat_once(self, messages: list, system: str) -> str:
         chain = routing.resolve_models("tool_call")
         if not chain:
-            raise RuntimeError(
+            raise NoModelConfigured(
                 "No model is configured that can return structured JSON. Set "
                 "one of GROQ_API_KEY, OPENROUTER_API_KEY, CEREBRAS_API_KEY, "
                 "TOGETHER_API_KEY or GEMINI_API_KEY, or point LOCAL_LLM_URL "
@@ -197,20 +243,6 @@ class LLMClient:
             errors.append(f"{spec.id}: empty response")
 
         raise RuntimeError("; ".join(errors) or "no model answered")
-
-    def chat_safe(
-        self,
-        messages: list,
-        system:   str = "",
-        fallback: str = '{"tool":"none","params":{},"explanation":"Unable to process."}',
-    ) -> str:
-        """chat() but never raises — the dispatcher needs a parseable
-        answer more than it needs the truth about why one failed."""
-        try:
-            return self.chat(messages, system)
-        except Exception as e:                     # noqa: BLE001
-            logger.error(f"LLM failed: {e}")
-            return fallback
 
     # ─────────────────────────────────────────────────────
     #  Report/narrative API

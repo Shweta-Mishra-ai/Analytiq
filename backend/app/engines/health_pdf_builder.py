@@ -89,18 +89,12 @@ def _action_steps(action: object) -> list:
     return parts if len(parts) > 1 else [text]
 
 
-def _clean_text(text: object) -> str:
-    """Make engine-authored text safe and clean for a reportlab Paragraph.
+# One cleaner, in pdf/primitives. This module used to carry its own —
+# the better of the two, as it happens: it stripped markdown emphasis
+# the main pipeline's printed literally. That version is now the shared
+# one, and this is an alias so the call sites below read unchanged.
+from app.engines.pdf.primitives import _clean as _clean_text
 
-    Engine strings carry markdown emphasis (**bold**) that reportlab does
-    not understand and would render literally, and may contain &, < or >
-    from column names — which reportlab parses as markup and which would
-    otherwise raise or silently swallow the rest of the paragraph.
-    """
-    s = str(text or "")
-    s = s.replace("**", "").replace(" ", " ")
-    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return s.strip()
 
 def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                      insights: list, fname: str,

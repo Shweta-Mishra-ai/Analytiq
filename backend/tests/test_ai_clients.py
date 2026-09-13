@@ -323,12 +323,61 @@ def _fresh_client(monkeypatch, order="groq,gemini"):
     return mod.LLMClient(), mod
 
 
-def test_chat_safe_returns_fallback_instead_of_raising(monkeypatch):
+def test_chat_returns_the_fallback_instead_of_raising(monkeypatch):
     client, _ = _fresh_client(monkeypatch)
-    monkeypatch.setattr(client, "chat",
+    monkeypatch.setattr(client, "_chat_with_retries",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
-    out = client.chat_safe([{"role": "user", "content": "hi"}], fallback="FALLBACK")
+    out = client.chat([{"role": "user", "content": "hi"}], fallback="FALLBACK")
     assert out == "FALLBACK"
+
+
+def test_chat_raises_when_no_fallback_was_given(monkeypatch):
+    """A caller that can report the failure should hear about it."""
+    client, _ = _fresh_client(monkeypatch)
+    monkeypatch.setattr(client, "_chat_with_retries",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    with pytest.raises(RuntimeError, match="down"):
+        client.chat([{"role": "user", "content": "hi"}])
+
+
+def test_a_failing_provider_is_retried_the_whole_chain(monkeypatch):
+    """The failure this covers is a rate limit that clears in seconds,
+    and the next provider may be rate-limited too — so the retry is over
+    the chain, not over one provider."""
+    client, mod = _fresh_client(monkeypatch)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    calls = []
+
+    def _flaky(messages, system):
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("rate limited")
+        return "answered"
+
+    monkeypatch.setattr(client, "_chat_once", _flaky)
+    assert client.chat([{"role": "user", "content": "hi"}]) == "answered"
+    assert len(calls) == mod.CHAT_ATTEMPTS
+
+
+def test_a_configuration_error_is_not_retried(monkeypatch):
+    """Nothing about waiting makes an unset API key appear. Retrying it
+    three times with backoff left the chat page hanging about twelve
+    seconds before showing an error that was known immediately."""
+    client, mod = _fresh_client(monkeypatch)
+    slept = []
+    monkeypatch.setattr(mod.time, "sleep", lambda s: slept.append(s))
+    calls = []
+
+    def _unconfigured(messages, system):
+        calls.append(1)
+        raise mod.NoModelConfigured("no model")
+
+    monkeypatch.setattr(client, "_chat_once", _unconfigured)
+    with pytest.raises(mod.NoModelConfigured):
+        client.chat([{"role": "user", "content": "hi"}])
+
+    assert calls == [1], "a configuration error must not be retried"
+    assert slept == [], "and must not wait before saying so"
 
 
 def test_chat_task_returns_none_when_all_providers_fail(monkeypatch):

@@ -24,7 +24,6 @@ scikit-learn>=1.4.0
 xgboost>=2.0.0
 pypdf>=4.0.0
 google-genai>=1.0.0
-tenacity>=8.2.0
 # ── RAG ──
 pypdfium2>=4.28.0
 python-docx>=1.1.0
