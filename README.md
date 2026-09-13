@@ -107,7 +107,8 @@ Deployment ─ Docker · Render / Railway
 cd backend
 
 # Install dependencies
-pip install -r requirements.txt
+pip install -r requirements.txt        # to run it
+pip install -r requirements-dev.txt    # to run it and its tests
 
 # Create environment configuration
 cp .env.example .env          # Update with your actual API keys

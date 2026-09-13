@@ -18,8 +18,10 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: backend/requirements.txt
-      - run: pip install -r requirements.txt
+          cache-dependency-path: backend/requirements*.txt
+      # requirements-dev.txt pulls in requirements.txt and adds what only
+      # the tests need, so the runtime image never ships pytest.
+      - run: pip install -r requirements-dev.txt
       - run: python -m pytest -v
 
   frontend:

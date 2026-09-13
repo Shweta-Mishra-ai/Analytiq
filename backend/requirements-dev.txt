@@ -1,0 +1,14 @@
+# Test-only dependencies.
+#
+# These used to sit at the bottom of requirements.txt, which the
+# Dockerfile installs into the runtime image — so every deployment
+# shipped pytest and an HTTP client it never imports. Install both files
+# in CI; the image installs only requirements.txt.
+-r requirements.txt
+
+pytest>=8.0.0
+# TestClient's transport.
+httpx>=0.27.0
+# Reads an exported workbook back to assert on it. The app writes with
+# xlsxwriter and never reads one.
+openpyxl>=3.1.0

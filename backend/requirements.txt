@@ -5,12 +5,15 @@ pandas>=2.0.0
 numpy>=1.24.0
 plotly>=5.18.0
 scipy>=1.11.0
+# Holt-Winters for the forecast engine, one-way ANOVA for group
+# comparison, and the ADF stationarity test. Three engines, not one.
 statsmodels>=0.14.0
 matplotlib>=3.8.0
 Pillow>=10.0.0
 reportlab>=4.0.0
+# Workbooks are written with xlsxwriter; openpyxl is only needed to
+# read one back, which is a thing the tests do and the app never does.
 xlsxwriter>=3.1.0
-openpyxl>=3.1.0
 # Datasets are stored as parquet rather than pickled, so the storage
 # directory is data and not a code-execution path.
 pyarrow>=15.0.0
@@ -25,6 +28,8 @@ tenacity>=8.2.0
 # ── RAG ──
 pypdfium2>=4.28.0
 python-docx>=1.1.0
+# ── PowerPoint export ──
+python-pptx>=1.0.0
 # ── Warehouse sources ──
 # One dependency covers every SQL backend; each database's own driver
 # (psycopg[binary], pymysql, snowflake-sqlalchemy, sqlalchemy-bigquery,
@@ -32,10 +37,6 @@ python-docx>=1.1.0
 # app reports which are present and names the package for the rest, so a
 # missing driver is a message rather than an ImportError.
 sqlalchemy>=2.0.0
-# ── Testing ──
-pytest>=8.0.0
-httpx>=0.27.0
-python-pptx>=1.0.0
 
 # Semantic retrieval for the knowledge base is an optional extra, because
 # it pulls in torch: see requirements-rag.txt. Retrieval degrades to BM25

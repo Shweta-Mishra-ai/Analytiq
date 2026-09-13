@@ -14,6 +14,9 @@ import logging
 
 from typing import List, Optional
 
+import numpy as np
+from scipy.stats import false_discovery_control
+
 logger = logging.getLogger(__name__)
 
 MIN_N = 30            # below this, report nothing
@@ -22,19 +25,30 @@ FDR_Q = 0.05          # accepted false-discovery rate
 
 
 def bh_adjust(pvals: List[float]) -> List[float]:
-    """Benjamini-Hochberg adjusted p-values (q-values)."""
+    """Benjamini-Hochberg adjusted p-values (q-values).
+
+    scipy does the arithmetic — this used to be fifteen hand-rolled
+    lines, and they agreed with scipy to float epsilon on every random
+    family tested, so there was nothing to keep but the bug below.
+
+    A p-value that is not a number is treated as 1.0: no evidence. That
+    case is not hypothetical. A constant column — one budget repeated
+    down every row — makes both Pearson and Spearman return NaN, and the
+    hand-rolled version sorted the NaN into the middle of the family and
+    produced q-values for it and for its neighbours that were simply
+    wrong. A finding with no evidence must never clear the gate.
+    """
     m = len(pvals)
     if m == 0:
         return []
-    order = sorted(range(m), key=lambda i: pvals[i])
-    adjusted = [0.0] * m
-    prev = 1.0
-    for rank_from_end, idx in enumerate(reversed(order)):
-        rank = m - rank_from_end
-        q = min(prev, pvals[idx] * m / rank)
-        adjusted[idx] = q
-        prev = q
-    return adjusted
+
+    clean = np.array([
+        p if isinstance(p, (int, float)) and np.isfinite(p) and 0.0 <= p <= 1.0
+        else 1.0
+        for p in (float(x) if x is not None else 1.0 for x in pvals)
+    ], dtype=float)
+
+    return [float(q) for q in false_discovery_control(clean, method="bh")]
 
 
 def confidence_label(n: int, q: float, effect: float) -> str:

@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 from app.services.stat_guards import (
+    FDR_Q,
     apply_fdr,
     bh_adjust,
     chi2_association,
@@ -93,6 +94,30 @@ def test_apply_fdr_annotates_without_dropping():
 
 def test_apply_fdr_on_empty_family():
     assert apply_fdr([]) == []
+
+
+def test_a_p_value_that_is_not_a_number_never_clears_the_gate():
+    """A constant column — one budget repeated down every row — makes
+    both Pearson and Spearman return NaN. That NaN used to be sorted
+    into the middle of the family, producing wrong q-values for it and
+    for its neighbours. No evidence must read as no evidence."""
+    q = bh_adjust([0.001, float("nan"), 0.5])
+
+    assert q[1] == 1.0, "a NaN p-value must be treated as no evidence"
+    assert q[0] < FDR_Q, "and it must not drag a real finding down with it"
+
+
+def test_a_missing_p_value_is_also_no_evidence():
+    assert bh_adjust([0.001, None])[1] == 1.0
+
+
+def test_bh_matches_the_published_worked_example():
+    """Benjamini and Hochberg's own 1995 family, so the arithmetic is
+    pinned to something outside this repository."""
+    raw = [0.001, 0.008, 0.039, 0.041, 0.042, 0.06, 0.074, 0.205]
+    q = [round(v, 4) for v in bh_adjust(raw)]
+
+    assert q == [0.008, 0.032, 0.0672, 0.0672, 0.0672, 0.08, 0.0846, 0.205]
 
 
 # ══════════════════════════════════════════════════════════

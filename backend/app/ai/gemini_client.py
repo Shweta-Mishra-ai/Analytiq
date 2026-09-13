@@ -76,7 +76,15 @@ def get_client():
 def _run_with_hard_timeout(fn, timeout_sec: float):
     """Runs fn() in a daemon thread and gives up after timeout_sec no
     matter what the SDK itself is doing — see module docstring for why
-    this is necessary rather than trusting the SDK's own timeout."""
+    this is necessary rather than trusting the SDK's own timeout.
+
+    Not a ThreadPoolExecutor, which looks like it would say the same
+    thing in two lines and does not. Its workers are non-daemon and
+    joined by an atexit hook, so one wedged Gemini call would hold the
+    whole server open at shutdown; and `with` on the executor blocks in
+    __exit__ until the call it is timing out actually returns, which is
+    the opposite of a hard deadline. The daemon thread abandons it.
+    """
     q: "queue.Queue" = queue.Queue(maxsize=1)
 
     def _run():
