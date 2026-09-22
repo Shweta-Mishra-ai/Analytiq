@@ -95,6 +95,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.state.username = user.username
                 request.state.is_admin = True
                 return await call_next(request)
+
+            # 403, not 401, when we know perfectly well who this is and
+            # they simply are not an administrator. The distinction is
+            # not pedantry: the frontend treats 401 as "your session is
+            # dead" and throws the token away, so answering 401 here
+            # signed a paying customer out of the whole application for
+            # opening a page the nav offered them.
+            if user:
+                return JSONResponse(
+                    {"detail": "This needs an administrator."},
+                    status_code=403)
             return JSONResponse(
                 {"detail": "Admin key required"}, status_code=401)
 

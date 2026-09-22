@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Upload,
@@ -20,8 +21,9 @@ import {
   Search,
   FileLock2,
   ServerCog,
+  UserCircle2,
 } from 'lucide-react'
-import { getToken, setToken } from '../api/client'
+import { apiGet, getToken, setToken } from '../api/client'
 import CommandPalette from './CommandPalette'
 import DatasetSwitcher from './DatasetSwitcher'
 
@@ -63,7 +65,13 @@ const navGroups = [
       // "RAG" is the technique's name, not the user's word for it.
       { to: '/rag', label: 'Documents', icon: Layers },
       { to: '/reports', label: 'Reports', icon: FileText },
-      { to: '/system', label: 'System', icon: ServerCog },
+      // The System page reads /api/admin/*, which a client account is
+      // not allowed to touch. Offering it to one used to sign them out
+      // of the application entirely.
+      { to: '/system', label: 'System', icon: ServerCog, adminOnly: true },
+      // Where a plan, what it has used and what it costs to lift a
+      // ceiling all live. It used to live nowhere.
+      { to: '/account', label: 'Account & Plan', icon: UserCircle2 },
     ],
   },
 ]
@@ -75,6 +83,29 @@ const allPages = navGroups.flatMap((g) =>
 
 export default function Layout() {
   const { pathname } = useLocation()
+
+  // Whether this account may use the admin pages. Undefined until the
+  // answer arrives, and admin-only entries stay hidden until it does —
+  // showing a link and taking it away reads as a glitch, where showing
+  // it a moment late reads as loading.
+  const [isAdmin, setIsAdmin] = useState(false)
+  useEffect(() => {
+    let live = true
+    apiGet<{ is_admin: boolean }>('/api/account')
+      .then((a) => live && setIsAdmin(Boolean(a.is_admin)))
+      .catch(() => {
+        /* Signed out, or an older server. Either way: no admin nav. */
+      })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  const groups = navGroups.map((g) => ({
+    ...g,
+    items: g.items.filter((i) => !('adminOnly' in i && i.adminOnly) || isAdmin),
+  }))
+
   const current = allPages.find((p) =>
     p.to === '/' ? pathname === '/' : pathname.startsWith(p.to),
   )
@@ -96,7 +127,7 @@ export default function Layout() {
           </div>
         </div>
         <nav className="flex-1 overflow-y-auto px-3 pb-2">
-          {navGroups.map((group) => (
+          {groups.map((group) => (
             <div key={group.label} className="mb-4">
               <div className="t-label px-2.5 pb-1.5">{group.label}</div>
               <div className="space-y-0.5">

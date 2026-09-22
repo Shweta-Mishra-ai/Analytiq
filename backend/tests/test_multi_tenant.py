@@ -203,8 +203,33 @@ def test_a_knowledge_base_is_private_too(two_tenants):
 
 
 def test_a_client_token_does_not_reach_the_admin_routes(two_tenants):
+    """403, not 401: we know exactly who this is, they are simply not an
+    administrator.
+
+    The distinction is not pedantry. The frontend treats 401 as "your
+    session is dead" and discards the token, so answering 401 here
+    signed a paying customer out of the entire application for opening
+    a page the navigation had offered them.
+    """
     t, (_, _, a_headers, _), _ = two_tenants
-    assert t.client.get("/api/admin/users", headers=a_headers).status_code == 401
+
+    res = t.client.get("/api/admin/users", headers=a_headers)
+
+    assert res.status_code == 403
+    assert "administrator" in res.json()["detail"].lower()
+
+
+def test_no_token_at_all_is_still_401_on_an_admin_route(two_tenants):
+    """The other half of the distinction: an anonymous caller really has
+    not authenticated, and 401 is the honest answer."""
+    t, _, _ = two_tenants
+
+    assert t.client.get("/api/admin/users").status_code == 401
+
+
+def test_an_admin_flagged_account_still_gets_through(tenancy):
+    assert tenancy.client.get("/api/admin/users",
+                              headers=tenancy.admin).status_code == 200
 
 
 # ══════════════════════════════════════════════════════════

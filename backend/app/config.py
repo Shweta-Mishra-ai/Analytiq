@@ -155,7 +155,19 @@ class AppConfig(BaseSettings):
     # ── App meta ─────────────────────────────────────────
     app_name: str = "Analytiq"
     app_version: str = "2.0.0"
-    cors_origins: str = Field(default="*", alias="CORS_ORIGINS")
+    # Empty by default, which means no cross-origin access at all.
+    #
+    # That costs nothing: in development Vite proxies /api to the backend,
+    # so the browser only ever talks to the Vite origin, and in production
+    # FastAPI serves the built frontend itself. The app's own UI is
+    # same-origin in both, and same-origin needs no CORS headers.
+    #
+    # It closes something real. Unset APP_ADMIN_KEY with no accounts yet
+    # is single-user open mode — no authentication on any route — so a
+    # wildcard meant any page the operator happened to visit could read
+    # every dataset on their machine and send it anywhere. Somebody
+    # putting this API behind a separate front end names that origin.
+    cors_origins: str = Field(default="", alias="CORS_ORIGINS")
 
     # ── Auth ─────────────────────────────────────────────
     # APP_ADMIN_KEY gates account management (POST /api/admin/*): creating

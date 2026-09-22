@@ -24,6 +24,7 @@ const ChatPage = lazy(() => import('./pages/ChatPage'))
 const RagPage = lazy(() => import('./pages/RagPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const SystemPage = lazy(() => import('./pages/SystemPage'))
+const AccountPage = lazy(() => import('./pages/AccountPage'))
 
 function NotFound() {
   return (
@@ -79,6 +80,7 @@ export default function App() {
               <Route path="/rag" element={<RagPage />} />
               <Route path="/reports" element={<ReportsPage />} />
               <Route path="/system" element={<SystemPage />} />
+              <Route path="/account" element={<AccountPage />} />
               {/* Without this, any address that is not in the list above
                   renders an empty page inside the app shell — and a
                   blank screen reads as a crash, not as a wrong URL.

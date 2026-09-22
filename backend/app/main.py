@@ -104,14 +104,26 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=config.app_name, version=config.app_version, lifespan=lifespan)
 
+# Cross-origin access is off unless somebody asks for it by name. The
+# app's own UI never needs it — Vite proxies /api in development and
+# FastAPI serves the built frontend in production, so the browser is
+# same-origin either way.
 origins = [o.strip() for o in config.cors_origins.split(",") if o.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins or ["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if origins:
+    if "*" in origins:
+        logger.warning(
+            "CORS_ORIGINS is '*', so any website a user visits can call "
+            "this API from their browser. With APP_ADMIN_KEY unset there "
+            "is no authentication either, and that combination lets a "
+            "page read every dataset on this machine. Name the origins "
+            "you actually serve instead.")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 app.add_middleware(AuthMiddleware)
 
 # Outermost, so it wraps auth too: a 401 is a request worth

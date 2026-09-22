@@ -123,7 +123,7 @@ def signup(req: SignupRequest):
 
 
 @router.get("/account")
-def account(owner: str = Depends(current_owner)):
+def account(request: Request, owner: str = Depends(current_owner)):
     """Who this token belongs to, and what their plan allows."""
     from app.services.quota import allowance
 
@@ -132,7 +132,12 @@ def account(owner: str = Depends(current_owner)):
     return {
         "username": owner,
         "email": user.email if user else "",
-        "is_admin": bool(user.is_admin) if user else False,
+        # What the middleware actually decided, not what the user record
+        # says. They differ in single-user open mode, where there is no
+        # user record at all and every admin route is nonetheless open —
+        # so reading it off the record told the UI to hide pages that
+        # would have worked perfectly well.
+        "is_admin": bool(getattr(request.state, "is_admin", False)),
         "plan": quota.plan,
         "plan_label": quota.label,
         "branding": quota.branding,
