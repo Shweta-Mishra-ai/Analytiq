@@ -85,11 +85,12 @@ def tenancy(monkeypatch, tmp_path):
     # True, the app stays in single-user open mode, and none of this
     # tests anything.
     import app.api.accounts as accounts_api
+    import app.api.admin as admin_api
     import app.api.billing as billing_api
     import app.main as main
     import app.services.auth as auth
     import app.services.user_store as us
-    for module in (us, accounts_api, billing_api, auth, main):
+    for module in (us, accounts_api, admin_api, billing_api, auth, main):
         monkeypatch.setattr(module, "user_store", store, raising=False)
 
     app = main.app
@@ -298,7 +299,8 @@ def test_every_module_holding_a_user_store_is_redirected_by_the_fixture():
                     holders.add(rel[:-3].replace(os.sep, "."))
 
     redirected = {"app.services.user_store", "app.api.accounts",
-                  "app.api.billing", "app.services.auth", "app.main"}
+                  "app.api.admin", "app.api.billing", "app.services.auth",
+                  "app.main"}
 
     assert holders <= redirected, (
         "these modules import the user_store singleton but no test fixture "

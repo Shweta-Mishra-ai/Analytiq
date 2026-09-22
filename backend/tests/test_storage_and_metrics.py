@@ -349,11 +349,20 @@ def test_metrics_report_what_the_narrative_cache_saved(monkeypatch, tmp_path):
 
 
 def test_metrics_endpoint_is_admin_scoped():
+    """A failure message can name a column from a client's dataset, so
+    this endpoint has to sit behind the /api/admin prefix the auth
+    middleware gates, not beside it.
+
+    Read off the OpenAPI schema rather than app.routes. app.routes holds
+    a wrapper, not a path, for anything on an included router — so the
+    old form worked only while this route was declared directly on the
+    app, and reported it missing the moment it moved onto one.
+    """
     from app.services import auth
-    # /api/admin/* is gated by the auth middleware; this asserts the
-    # endpoint sits behind that prefix rather than beside it.
     from app.main import app
-    paths = {getattr(r, "path", "") for r in app.routes}
+
+    paths = set(app.openapi()["paths"])
+
     assert "/api/admin/metrics" in paths
     assert "/api/metrics" not in paths
     assert "/api/health" in auth.PUBLIC_PATHS
