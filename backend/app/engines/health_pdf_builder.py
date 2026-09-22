@@ -5,6 +5,8 @@ Single responsibility: given health dict + df, produce PDF bytes.
 Call: build_health_pdf(df, niche, health, config) -> bytes
 """
 from __future__ import annotations
+
+from types import SimpleNamespace
 import datetime
 import logging
 from typing import List, Optional
@@ -19,6 +21,9 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.pdfgen import canvas as CV
+
+from app.engines.palette import PRINT
 from app.engines.pdf_primitives import truncate_label, is_id_col
 from app.engines.present import label as _present_label, num as _present_num
 
@@ -96,6 +101,136 @@ def _action_steps(action: object) -> list:
 from app.engines.pdf.primitives import _clean as _clean_text
 
 
+def _health_canvas(c):
+    """The canvas that paints the cover, header and footer.
+
+    A 116-line class declared *inside* build_health_pdf, reading a dozen
+    values straight out of the enclosing scope — so the cover could not
+    be found, read or changed without scrolling through the whole
+    report builder. It is still a closure, because BaseDocTemplate
+    constructs the canvas itself and the values have to reach it
+    somehow, but what it closes over is now one object with named
+    fields rather than whatever happened to be in scope.
+    """
+    class _Canvas(CV.Canvas):
+        def __init__(self, fn, **kw):
+            super().__init__(fn, **kw)
+            self._sp = []
+        def showPage(self):
+            self._sp.append(dict(self.__dict__))
+            self._startPage()
+        def save(self):
+            tot = len(self._sp)
+            for state in self._sp:
+                self.__dict__.update(state)
+                self._draw_hf(tot)
+                super().showPage()
+            super().save()
+        def _draw_cover(self, tot):
+            """Full-bleed cover. Drawn on the canvas rather than as
+            flowables so it can ignore the frame margins and the running
+            header/footer, the way a real report cover does."""
+            self.setFillColor(c.dark)
+            self.rect(0, 0, c.W, c.H, fill=1, stroke=0)
+            # c.accent bar down the left edge
+            self.setFillColor(c.accent)
+            self.rect(0, 0, 6 * mm, c.H, fill=1, stroke=0)
+
+            self.setFillColor(c.white)
+            self.setFont(c._BB, 11)
+            self.drawString(22 * mm, c.H - 28 * mm, c.agency_name.upper())
+            self.setFillColor(c.accent)
+            self.rect(22 * mm, c.H - 32 * mm, 24 * mm, 0.8 * mm, fill=1, stroke=0)
+
+            # Title
+            self.setFillColor(c.white)
+            self.setFont(c._BB, 30)
+            self.drawString(22 * mm, c.H - 92 * mm, "Data Health &")
+            self.drawString(22 * mm, c.H - 106 * mm, "Business Insights")
+            self.setFillColor(HexColor(PRINT["accent_soft"]))
+            self.setFont(c._BF, 13)
+            self.drawString(22 * mm, c.H - 120 * mm, "Analysis Report")
+
+            # Grade badge
+            badge_y = c.H - 165 * mm
+            self.setFillColor(c.score_color)
+            self.circle(34 * mm, badge_y, 17 * mm, fill=1, stroke=0)
+            self.setFillColor(c.white)
+            self.setFont(c._BB, 21)
+            self.drawCentredString(34 * mm, badge_y - 3 * mm, str(c.health["score"]))
+            self.setFont(c._BF, 7)
+            self.drawCentredString(34 * mm, badge_y - 11 * mm, "/ 100")
+
+            self.setFillColor(c.white)
+            self.setFont(c._BB, 14)
+            self.drawString(58 * mm, badge_y + 4 * mm,
+                            "Grade {} — {}".format(c.health["grade"], c.health["label"]))
+            self.setFillColor(HexColor("#9FA9B8"))
+            self.setFont(c._BF, 9)
+            self.drawString(58 * mm, badge_y - 4 * mm,
+                            "{:,} rows  ·  {} columns  ·  {} domain".format(
+                                c.health["rows"], c.health["cols"], c.niche))
+
+            # Meta block
+            self.setFillColor(HexColor("#9FA9B8"))
+            self.setFont(c._BF, 8.5)
+            meta_y = 52 * mm
+            for label, value in (("DATASET", c.fname[:52]),
+                                 ("PREPARED", c.now),
+                                 ("PREPARED BY", c.agency_name)):
+                self.setFillColor(HexColor("#7A8798"))
+                self.setFont(c._BF, 6.5)
+                self.drawString(22 * mm, meta_y, label)
+                self.setFillColor(c.white)
+                self.setFont(c._BB, 9)
+                self.drawString(22 * mm, meta_y - 5 * mm, value)
+                meta_y -= 13 * mm
+
+            self.setFillColor(HexColor("#5C6979"))
+            self.setFont(c._BF, 6.5)
+            self.drawString(22 * mm, 14 * mm,
+                            "CONFIDENTIAL  ·  Findings derive solely from the supplied dataset "
+                            "and the period it covers")
+
+        def _draw_hf(self, tot):
+            # The cover carries no running header/footer or page number.
+            if self._pageNumber == 1:
+                self._draw_cover(tot)
+                return
+            # Header
+            self.setFillColor(c.dark)
+            self.rect(0, c.H - 20*mm, c.W, 20*mm, fill=1, stroke=0)
+            self.setFillColor(c.accent)
+            self.rect(0, c.H - 21*mm, c.W, 1*mm, fill=1, stroke=0)
+            self.setFillColor(c.accent)
+            self.rect(0, c.H - 20*mm, 3*mm, 20*mm, fill=1, stroke=0)
+            self.setFillColor(c.white)
+            self.setFont(c._BB, 9.5)
+            self.drawString(8*mm, c.H - 11*mm, f"{c.agency_name}  ·  Data Health & Business Insights")
+            self.setFont(c._BF, 7.5)
+            self.setFillColor(HexColor(PRINT["accent_soft"]))
+            self.drawString(8*mm, c.H - 17.5*mm, c.fname[:60])
+            self.setFillColor(c.white)
+            self.drawRightString(c.W - 8*mm, c.H - 11*mm, c.now)
+            self.setFont(c._BF, 7)
+            self.drawRightString(c.W - 8*mm, c.H - 17.5*mm, "CONFIDENTIAL")
+            # Footer
+            self.setFillColor(c.dark)
+            self.rect(0, 0, c.W, 11*mm, fill=1, stroke=0)
+            self.setFillColor(c.accent)
+            self.rect(0, 11*mm, c.W, 0.8*mm, fill=1, stroke=0)
+            self.setFillColor(c.white)
+            self.setFont(c._BF, 6.5)
+            self.drawString(8*mm, 4*mm, f"{c.agency_name}  ·  Confidential  ·  Prepared for the named recipient")
+            # Page circle
+            self.setFillColor(c.accent)
+            self.circle(c.W - 13*mm, 5.5*mm, 4.5*mm, fill=1, stroke=0)
+            self.setFillColor(c.white)
+            self.setFont(c._BB, 6.5)
+            self.drawCentredString(c.W - 13*mm, 3.8*mm, "{}/{}".format(self._pageNumber, tot))
+    return _Canvas
+
+
 def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                      insights: list, fname: str,
                      agency_name: str = "Analytiq",
@@ -140,7 +275,6 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     ROOM_TEXT  = 70 * mm    # a heading and several paragraphs
     ROOM_TABLE = 95 * mm    # a heading and a readable slice of a table
     ROOM_CHART = 150 * mm   # a chart is not worth splitting
-    from reportlab.pdfgen import canvas as CV
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -154,7 +288,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # e-commerce one, so two reports from the same product did not look
     # like the same product. The domain is named in words on the cover;
     # it does not need its own livery.
-    from app.engines.palette import PRINT, STATUS_LIGHT, grade_color
+    from app.engines.palette import STATUS_LIGHT, grade_color
 
     accent_hex  = PRINT["accent"]
     accent      = HexColor(accent_hex)
@@ -168,35 +302,18 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # as a colour from a different document — because it was.
     score_color = HexColor(grade_color(health["grade"]))
 
-    # ── Premium fonts — fall back to Helvetica if not found ──────────────
-    import os as _os
-    from reportlab.pdfbase import pdfmetrics as _pm
-    from reportlab.pdfbase.ttfonts import TTFont as _TTF
+    # ── Fonts ───────────────────────────────────────────
+    # The same three Carlito faces the rest of the reports use, from the
+    # one place that registers them. This module used to run its own
+    # registration loop under private aliases — the identical files,
+    # loaded again under a second set of names, on every single build —
+    # and because that loop had no already-registered check, a long-lived
+    # process re-registered them once per report forever.
+    from app.engines.pdf.theme import (FONT_BODY as _BF, FONT_BOLD as _BB,
+                                       FONT_ITALIC as _BI,
+                                       register_premium_fonts)
 
-    # health_pdf_builder sits at backend/app/engines/, so the backend root
-    # — where assets/ lives — is three levels up. The old two-level walk
-    # resolved to backend/app/assets, which does not exist, so this
-    # silently fell back to Helvetica on every run.
-    from app.engines.pdf.theme import _FONT_DIR
-
-    _BF, _BB, _BI = "Helvetica", "Helvetica-Bold", "Helvetica-Oblique"
-    _FONTS = [
-        ("HDF-Reg",    "Carlito-Regular.ttf",    "_BF"),
-        ("HDF-Bold",   "Carlito-Bold.ttf",        "_BB"),
-        ("HDF-Italic", "Carlito-Italic.ttf",      "_BI"),
-    ]
-    for alias, fname_f, var in _FONTS:
-        font_path = _os.path.join(_FONT_DIR, fname_f)
-        if not _os.path.exists(font_path):
-            logger.warning("Font not found at %s — using Helvetica fallback", font_path)
-            continue
-        try:
-            _pm.registerFont(_TTF(alias, font_path))
-            if alias == "HDF-Reg":    _BF = alias
-            if alias == "HDF-Bold":   _BB = alias
-            if alias == "HDF-Italic": _BI = alias
-        except Exception:
-            logger.warning("Font registration failed for %s", alias, exc_info=True)
+    register_premium_fonts()
 
     def ps(name, **kw): return ParagraphStyle(name, **kw)
     ST = {
@@ -220,123 +337,14 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
 
     buf = _io.BytesIO()
 
-    # ── Canvas with header/footer ─────────────────────────
-    class _Canvas(CV.Canvas):
-        def __init__(self, fn, **kw):
-            super().__init__(fn, **kw)
-            self._sp = []
-        def showPage(self):
-            self._sp.append(dict(self.__dict__))
-            self._startPage()
-        def save(self):
-            tot = len(self._sp)
-            for state in self._sp:
-                self.__dict__.update(state)
-                self._draw_hf(tot)
-                super().showPage()
-            super().save()
-        def _draw_cover(self, tot):
-            """Full-bleed cover. Drawn on the canvas rather than as
-            flowables so it can ignore the frame margins and the running
-            header/footer, the way a real report cover does."""
-            self.setFillColor(dark)
-            self.rect(0, 0, W, H, fill=1, stroke=0)
-            # accent bar down the left edge
-            self.setFillColor(accent)
-            self.rect(0, 0, 6 * mm, H, fill=1, stroke=0)
-
-            self.setFillColor(white)
-            self.setFont(_BB, 11)
-            self.drawString(22 * mm, H - 28 * mm, agency_name.upper())
-            self.setFillColor(accent)
-            self.rect(22 * mm, H - 32 * mm, 24 * mm, 0.8 * mm, fill=1, stroke=0)
-
-            # Title
-            self.setFillColor(white)
-            self.setFont(_BB, 30)
-            self.drawString(22 * mm, H - 92 * mm, "Data Health &")
-            self.drawString(22 * mm, H - 106 * mm, "Business Insights")
-            self.setFillColor(HexColor(PRINT["accent_soft"]))
-            self.setFont(_BF, 13)
-            self.drawString(22 * mm, H - 120 * mm, "Analysis Report")
-
-            # Grade badge
-            badge_y = H - 165 * mm
-            self.setFillColor(score_color)
-            self.circle(34 * mm, badge_y, 17 * mm, fill=1, stroke=0)
-            self.setFillColor(white)
-            self.setFont(_BB, 21)
-            self.drawCentredString(34 * mm, badge_y - 3 * mm, str(health["score"]))
-            self.setFont(_BF, 7)
-            self.drawCentredString(34 * mm, badge_y - 11 * mm, "/ 100")
-
-            self.setFillColor(white)
-            self.setFont(_BB, 14)
-            self.drawString(58 * mm, badge_y + 4 * mm,
-                            "Grade {} — {}".format(health["grade"], health["label"]))
-            self.setFillColor(HexColor("#9FA9B8"))
-            self.setFont(_BF, 9)
-            self.drawString(58 * mm, badge_y - 4 * mm,
-                            "{:,} rows  ·  {} columns  ·  {} domain".format(
-                                health["rows"], health["cols"], niche))
-
-            # Meta block
-            self.setFillColor(HexColor("#9FA9B8"))
-            self.setFont(_BF, 8.5)
-            meta_y = 52 * mm
-            for label, value in (("DATASET", fname[:52]),
-                                 ("PREPARED", now),
-                                 ("PREPARED BY", agency_name)):
-                self.setFillColor(HexColor("#7A8798"))
-                self.setFont(_BF, 6.5)
-                self.drawString(22 * mm, meta_y, label)
-                self.setFillColor(white)
-                self.setFont(_BB, 9)
-                self.drawString(22 * mm, meta_y - 5 * mm, value)
-                meta_y -= 13 * mm
-
-            self.setFillColor(HexColor("#5C6979"))
-            self.setFont(_BF, 6.5)
-            self.drawString(22 * mm, 14 * mm,
-                            "CONFIDENTIAL  ·  Findings derive solely from the supplied dataset "
-                            "and the period it covers")
-
-        def _draw_hf(self, tot):
-            # The cover carries no running header/footer or page number.
-            if self._pageNumber == 1:
-                self._draw_cover(tot)
-                return
-            # Header
-            self.setFillColor(dark)
-            self.rect(0, H - 20*mm, W, 20*mm, fill=1, stroke=0)
-            self.setFillColor(accent)
-            self.rect(0, H - 21*mm, W, 1*mm, fill=1, stroke=0)
-            self.setFillColor(accent)
-            self.rect(0, H - 20*mm, 3*mm, 20*mm, fill=1, stroke=0)
-            self.setFillColor(white)
-            self.setFont(_BB, 9.5)
-            self.drawString(8*mm, H - 11*mm, f"{agency_name}  ·  Data Health & Business Insights")
-            self.setFont(_BF, 7.5)
-            self.setFillColor(HexColor(PRINT["accent_soft"]))
-            self.drawString(8*mm, H - 17.5*mm, fname[:60])
-            self.setFillColor(white)
-            self.drawRightString(W - 8*mm, H - 11*mm, now)
-            self.setFont(_BF, 7)
-            self.drawRightString(W - 8*mm, H - 17.5*mm, "CONFIDENTIAL")
-            # Footer
-            self.setFillColor(dark)
-            self.rect(0, 0, W, 11*mm, fill=1, stroke=0)
-            self.setFillColor(accent)
-            self.rect(0, 11*mm, W, 0.8*mm, fill=1, stroke=0)
-            self.setFillColor(white)
-            self.setFont(_BF, 6.5)
-            self.drawString(8*mm, 4*mm, f"{agency_name}  ·  Confidential  ·  Prepared for the named recipient")
-            # Page circle
-            self.setFillColor(accent)
-            self.circle(W - 13*mm, 5.5*mm, 4.5*mm, fill=1, stroke=0)
-            self.setFillColor(white)
-            self.setFont(_BB, 6.5)
-            self.drawCentredString(W - 13*mm, 3.8*mm, "{}/{}".format(self._pageNumber, tot))
+    # Exactly what the canvas needs, named, instead of a dozen values
+    # reached out of the enclosing scope.
+    _ctx = SimpleNamespace(
+        W=W, H=H, _BB=_BB, _BF=_BF, accent=accent, dark=dark, white=white,
+        score_color=score_color, agency_name=agency_name, fname=fname,
+        health=health, niche=niche, now=now,
+    )
+    _Canvas = _health_canvas(_ctx)
 
     doc = BaseDocTemplate(
         buf, pagesize=A4,
