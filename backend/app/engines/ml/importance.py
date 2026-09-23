@@ -114,14 +114,20 @@ def get_feature_importance(
     for rank, (i, (feat, imp, direction)) in enumerate(ranked, 1):
         pct = float(imp) * 100
 
+        # "Decreases effect on target" was the negative branch, which is
+        # not a sentence and does not say decreases *what*. Name what a
+        # reader can act on: which way the prediction moves.
+        which_way = ("pushes the prediction up" if direction == "positive"
+                     else "pushes the prediction down"
+                     if direction == "negative"
+                     else "moves the prediction either way")
+
         if pct > 30:
-            explanation = "Dominant feature — drives {:.0f}% of predictions. {}influence.".format(
-                pct, "Positive " if direction == "positive"
-                else "Negative " if direction == "negative" else "Mixed ")
+            explanation = "Dominant — drives {:.0f}% of predictions, and {}.".format(
+                pct, which_way)
         elif pct > 10:
-            explanation = "Important feature ({:.0f}% contribution). {}effect on target.".format(
-                pct, "Increases " if direction == "positive"
-                else "Decreases " if direction == "negative" else "Mixed ")
+            explanation = "Important ({:.0f}% contribution), and {}.".format(
+                pct, which_way)
         elif pct > 3:
             explanation = "Moderate contribution ({:.0f}%). Minor {} effect.".format(
                 pct, direction)

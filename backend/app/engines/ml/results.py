@@ -31,9 +31,23 @@ class ModelResult:
     # Regression metrics
     mae:            Optional[float] = None
     rmse:           Optional[float] = None
-    # Classification metrics
+    # Classification metrics, at the default 0.5 cut
     f1:             Optional[float] = None
     roc_auc:        Optional[float] = None
+    # And at an operating threshold chosen rather than assumed.
+    #
+    # 0.5 is the right cut only when the classes are balanced and the
+    # two kinds of error cost the same. On an 80/20 attrition file the
+    # default gave F1 0.17 and caught 11% of the leavers — a model the
+    # page called "best" and nobody could use. The same model at its
+    # own best threshold catches most of them. The predictive engine
+    # behind the PDF had done this from the start; this page had not,
+    # so one product shipped two standards.
+    threshold:       Optional[float] = None
+    threshold_basis: str = ""
+    precision_at_threshold: Optional[float] = None
+    recall_at_threshold:    Optional[float] = None
+    f1_at_threshold:        Optional[float] = None
     # Model object (not serialized)
     model:          Any = field(default=None, repr=False)
     is_best:        bool = False

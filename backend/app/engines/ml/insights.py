@@ -19,6 +19,25 @@ from app.engines.ml.results import MLReport
 #  INSIGHTS GENERATOR
 # ══════════════════════════════════════════════════════════
 
+def _default_recall(report: MLReport) -> float:
+    """Share of real cases the model catches at the 0.5 cut."""
+    try:
+        from sklearn.metrics import recall_score
+        import numpy as _np
+        y_true = _np.asarray(report.y_test)
+        y_pred = _np.asarray(report.y_pred)
+        classes = sorted(set(y_true.ravel().tolist()))
+        if len(classes) != 2:
+            return 0.0
+        positive = classes[-1]
+        return float(recall_score((y_true == positive).astype(int),
+                                  (y_pred == positive).astype(int),
+                                  zero_division=0))
+    except Exception:
+        logger.debug("default-threshold recall failed", exc_info=True)
+        return 0.0
+
+
 def _generate_insights(report: MLReport) -> List[str]:
     insights = []
     best = report.best_model
@@ -79,11 +98,38 @@ def _generate_insights(report: MLReport) -> List[str]:
             "Consider regularization or more training data.".format(best.overfit_gap))
 
     # Top feature
+    # Where to cut, and what it is worth. A classification model is
+    # reported at the 0.5 default, which on an imbalanced problem
+    # describes a model nobody can use: on an 80/20 attrition file the
+    # best model scored F1 0.17 and caught 11% of the leavers. The same
+    # model, cut where it performs best, catches 64% of them. The
+    # threshold is a business decision; the reader cannot make it
+    # without being told there is one.
+    if (report.task == "classification" and best.threshold is not None
+            and best.f1_at_threshold is not None
+            and best.f1 is not None
+            and best.f1_at_threshold > best.f1 + 0.02):
+        insights.append(
+            "Every score above is measured at the default 0.5 cut-off. "
+            "Cut at {:.2f} instead and the same model catches {:.0f}% of "
+            "cases rather than {:.0f}%, with {:.0f}% of what it flags "
+            "turning out to be real — F1 {:.2f} against {:.2f}. Nothing "
+            "about the model changed; 0.5 is simply not a neutral "
+            "choice on data this uneven.".format(
+                best.threshold,
+                (best.recall_at_threshold or 0) * 100,
+                _default_recall(report) * 100,
+                (best.precision_at_threshold or 0) * 100,
+                best.f1_at_threshold, best.f1))
+
     if report.feature_importance:
+        # The explanation already carries the percentage — prefixing it
+        # with the same number printed "'OverTime=No' (25% contribution).
+        # Important feature (25% contribution)." in the same breath.
         top = report.feature_importance[0]
         insights.append(
-            "Most important predictor: '{}' ({:.0f}% contribution). {}".format(
-                top.feature, top.importance*100, top.explanation))
+            "Most important predictor: '{}'. {}".format(
+                top.feature, top.explanation))
 
     # Model comparison
     if len(report.models) >= 2:

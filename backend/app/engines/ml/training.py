@@ -93,6 +93,60 @@ def _evaluate_regression(y_true, y_pred) -> Dict:
     return {"r2": round(r2, 4), "mae": round(mae, 4), "rmse": round(rmse, 4)}
 
 
+def _at_operating_threshold(y_true, y_prob) -> dict:
+    """What the model does at a cut chosen rather than assumed.
+
+    0.5 is right only when the classes are balanced and a miss costs
+    what a false alarm costs. On an 80/20 attrition file it gave F1 0.17
+    and caught 11% of the leavers, which is a model nobody can act on —
+    and the very same model, cut where it performs best, catches most of
+    them. Reporting only the default was discarding recall the model had
+    already earned.
+
+    The threshold itself is a business decision; what this does is show
+    the reader there is one to make, and what it is worth.
+    """
+    if y_prob is None:
+        return {}
+    try:
+        import numpy as _np
+        from sklearn.metrics import f1_score, precision_score, recall_score
+
+        proba = _np.asarray(y_prob)
+        if proba.ndim == 2:
+            if proba.shape[1] != 2:
+                return {}         # multi-class: one cut does not describe it
+            proba = proba[:, 1]
+
+        classes = sorted(set(_np.asarray(y_true).ravel().tolist()))
+        if len(classes) != 2:
+            return {}
+        positive = classes[-1]
+        truth = (_np.asarray(y_true) == positive).astype(int)
+
+        best_t, best_f1 = 0.5, -1.0
+        for t in _np.arange(0.05, 0.95, 0.01):
+            f1 = float(f1_score(truth, (proba >= t).astype(int),
+                                zero_division=0))
+            if f1 > best_f1:
+                best_t, best_f1 = float(t), f1
+
+        pred = (proba >= best_t).astype(int)
+        return {
+            "threshold": round(best_t, 2),
+            "threshold_basis": ("maximises F1 — balances missed cases "
+                                "against false alarms"),
+            "precision_at_threshold": round(float(
+                precision_score(truth, pred, zero_division=0)), 4),
+            "recall_at_threshold": round(float(
+                recall_score(truth, pred, zero_division=0)), 4),
+            "f1_at_threshold": round(best_f1, 4),
+        }
+    except Exception:
+        logger.debug("operating threshold search failed", exc_info=True)
+        return {}
+
+
 def _evaluate_classification(y_true, y_pred, y_prob=None) -> Dict:
     acc = accuracy_score(y_true, y_pred)
     avg = "binary" if len(np.unique(y_true)) == 2 else "weighted"
@@ -172,6 +226,7 @@ def train_models(
                     y_prob = None
                 metrics = _evaluate_classification(y_test, y_pred_test, y_prob)
                 metric_name = "Accuracy"
+                metrics.update(_at_operating_threshold(y_test, y_prob))
 
             gap   = train_s - test_s
             o_lbl = ("None" if gap < 0.05
@@ -191,6 +246,11 @@ def train_models(
                 rmse=metrics.get("rmse"),
                 f1=metrics.get("f1"),
                 roc_auc=metrics.get("roc_auc"),
+                threshold=metrics.get("threshold"),
+                threshold_basis=metrics.get("threshold_basis", ""),
+                precision_at_threshold=metrics.get("precision_at_threshold"),
+                recall_at_threshold=metrics.get("recall_at_threshold"),
+                f1_at_threshold=metrics.get("f1_at_threshold"),
                 model=pipe,
             ))
 

@@ -24,6 +24,12 @@ interface ModelResult {
   mae?: number
   rmse?: number
   roc_auc?: number
+  // Where the model performs best, as opposed to the 0.5 everything
+  // above is measured at. On uneven data the two describe very
+  // different models.
+  threshold?: number
+  recall_at_threshold?: number
+  f1_at_threshold?: number
   is_best: boolean
 }
 
@@ -193,7 +199,7 @@ export default function MlPage() {
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="text-mute">
-                    {['Model', 'CV score', 'Test score', 'Overfit', 'Extra'].map((h) => (
+                    {['Model', 'CV score', 'Test score', 'Overfit', 'Extra', 'Best cut-off'].map((h) => (
                       <th key={h} className="px-2 py-2">{h}</th>
                     ))}
                   </tr>
@@ -218,6 +224,17 @@ export default function MlPage() {
                       <td className="px-2 py-2 text-mute">
                         {m.mae != null && `MAE ${m.mae.toLocaleString(undefined, { maximumFractionDigits: 2 })}`}
                         {m.roc_auc != null && ` AUC ${m.roc_auc.toFixed(3)}`}
+                      </td>
+                      <td className="px-2 py-2 text-mute">
+                        {m.threshold != null ? (
+                          <span title="The cut-off this model performs best at, and what it catches there. Everything left of this column is measured at the default 0.5.">
+                            {m.threshold.toFixed(2)}
+                            {m.recall_at_threshold != null &&
+                              ` · catches ${(m.recall_at_threshold * 100).toFixed(0)}%`}
+                          </span>
+                        ) : (
+                          '—'
+                        )}
                       </td>
                     </tr>
                   ))}
