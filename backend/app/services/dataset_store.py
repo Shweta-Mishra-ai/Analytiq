@@ -92,9 +92,26 @@ class DatasetStore:
 
     _MEM_LIMIT = 8  # datasets kept in RAM; older ones reload from disk
 
-    def __init__(self, base_dir: Optional[str] = None):
+    def __init__(self, base_dir: Optional[str] = None, blobs=None):
         self.base_dir = base_dir or os.path.join(config.data_dir, "datasets")
         os.makedirs(self.base_dir, exist_ok=True)
+        # Local disk stays the working store — parquet wants a path, and
+        # so does the integrity layer — but it is a cache in front of the
+        # blob store rather than the only copy.
+        #
+        # It had been the only copy, and the container's disk is not a
+        # place to keep a client's data: Render happens to mount a volume,
+        # railway.json declares none at all, and on either platform a
+        # second instance has a second disk. A dataset was present on one
+        # request and missing on the next.
+        if blobs is not None:
+            self.blobs = blobs
+        elif base_dir is not None:
+            self.blobs = None          # an explicit directory means a test
+        else:
+            from app.services.blobstore import build_store
+            store = build_store("datasets")
+            self.blobs = store if getattr(store, "durable", False) else None
         self._lock = threading.RLock()
         self._mem: Dict[str, Dict[str, Any]] = {}      # "owner/id" -> {raw, active, meta}
         self._caches: Dict[str, Dict[str, Any]] = {}   # "owner/id" -> {key -> (hash, obj)}
@@ -122,6 +139,68 @@ class DatasetStore:
 
     def _mkey(self, owner: str, ds_id: str) -> str:
         return f"{owner}/{ds_id}"
+
+    # ── durable copies ───────────────────────────────────
+    # The frames, what they mean, and the record of what was done to
+    # them. Not cache_*.bin: those are a fitted model or an engine
+    # result, they regenerate from the frame in seconds, and shipping
+    # them to object storage on every analysis would cost more than
+    # recomputing them ever does.
+    DURABLE = ("meta.json", "raw.parquet", "active.parquet",
+               "raw.parquet.schema.json", "active.parquet.schema.json",
+               "integrity.json", "audit.jsonl")
+
+    def _blob_key(self, owner: str, ds_id: str, name: str) -> str:
+        return "{}/{}/{}".format(self._safe(owner), self._safe(ds_id), name)
+
+    def _back_up(self, owner: str, ds_id: str, *names: str) -> None:
+        """Copy what was just written to the durable store."""
+        if self.blobs is None:
+            return
+        for name in names:
+            path = self._path(owner, ds_id, name)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "rb") as fh:
+                    self.blobs.put(self._blob_key(owner, ds_id, name),
+                                   fh.read())
+            except Exception:
+                # A dataset the client can still use beats no dataset at
+                # all, so a failure to back up is logged, not raised.
+                logger.warning("could not back up %s for %s/%s", name,
+                               owner, ds_id, exc_info=True)
+
+    def _restore(self, owner: str, ds_id: str, name: str) -> bool:
+        """Bring one file back from the durable store, if it is there.
+
+        This is what makes a cold container — a redeploy, a restart, or
+        simply a different instance of the same service — able to answer
+        for a dataset it has never seen.
+        """
+        if self.blobs is None:
+            return False
+        path = self._path(owner, ds_id, name)
+        if os.path.exists(path):
+            return True
+        try:
+            data = self.blobs.get(self._blob_key(owner, ds_id, name))
+        except Exception:
+            logger.warning("could not read %s for %s/%s from durable store",
+                           name, owner, ds_id, exc_info=True)
+            return False
+        if data is None:
+            return False
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        from app.services.blobstore import atomic_write
+        atomic_write(path, data)
+        logger.info("restored %s for %s/%s from durable storage",
+                    name, owner, ds_id)
+        return True
+
+    def _restore_all(self, owner: str, ds_id: str) -> None:
+        for name in self.DURABLE:
+            self._restore(owner, ds_id, name)
 
     # ── lifecycle ────────────────────────────────────────
     def dataset_dir(self, owner: str, ds_id: str) -> str:
@@ -169,28 +248,69 @@ class DatasetStore:
         return meta
 
     def list_meta(self, owner: str) -> list[DatasetMeta]:
+        # Both sides. Listing only the local directory is what made a
+        # restarted container answer "you have no datasets" to an
+        # account whose uploads were sitting safely in object storage.
+        ids = set()
         owner_dir = os.path.join(self.base_dir, self._safe(owner))
-        if not os.path.isdir(owner_dir):
-            return []
+        if os.path.isdir(owner_dir):
+            ids.update(os.listdir(owner_dir))
+        ids.update(self._durable_ids(owner))
+
         out = []
-        for ds_id in sorted(os.listdir(owner_dir)):
-            meta = self.get_meta(owner, ds_id)
+        for ds_id in sorted(ids):
+            try:
+                meta = self.get_meta(owner, ds_id)
+            except ValueError:
+                continue          # not one of ours; _safe rejected it
             if meta:
                 out.append(meta)
         out.sort(key=lambda m: m.uploaded_at, reverse=True)
         return out
 
+    def _durable_ids(self, owner: str) -> set:
+        """Dataset ids this owner has in the durable store."""
+        if self.blobs is None:
+            return set()
+        try:
+            prefix = self._safe(owner)
+            keys = self.blobs.list_prefix(prefix)
+        except Exception:
+            logger.warning("could not list durable datasets for %s", owner,
+                           exc_info=True)
+            return set()
+        found = set()
+        for key in keys:
+            parts = str(key).split("/")
+            if len(parts) >= 3 and parts[0] == prefix:
+                found.add(parts[1])
+        return found
+
+    def _durable_owners(self) -> set:
+        if self.blobs is None:
+            return set()
+        try:
+            keys = self.blobs.list_prefix("")
+        except Exception:
+            logger.warning("could not list durable dataset owners",
+                           exc_info=True)
+            return set()
+        return {str(k).split("/")[0] for k in keys if "/" in str(k)}
+
     def list_all_meta(self) -> list[DatasetMeta]:
         """Every dataset across every owner. Internal use only (cleanup
         sweep) — never expose this to a client-facing route."""
+        owners = set(self._durable_owners())
+        if os.path.isdir(self.base_dir):
+            owners.update(
+                d for d in os.listdir(self.base_dir)
+                if os.path.isdir(os.path.join(self.base_dir, d)))
         out = []
-        if not os.path.isdir(self.base_dir):
-            return out
-        for owner in sorted(os.listdir(self.base_dir)):
-            owner_dir = os.path.join(self.base_dir, owner)
-            if not os.path.isdir(owner_dir):
+        for owner in sorted(owners):
+            try:
+                out.extend(self.list_meta(owner))
+            except ValueError:
                 continue
-            out.extend(self.list_meta(owner))
         return out
 
     def get_meta(self, owner: str, ds_id: str) -> Optional[DatasetMeta]:
@@ -199,7 +319,8 @@ class DatasetStore:
             if mkey in self._mem:
                 return self._mem[mkey]["meta"]
         p = self._path(owner, ds_id, "meta.json")
-        if not os.path.exists(p):
+        if not os.path.exists(p) and not self._restore(owner, ds_id,
+                                                       "meta.json"):
             return None
         try:
             with open(p, "r", encoding="utf-8") as f:
@@ -225,6 +346,17 @@ class DatasetStore:
             existed = os.path.isdir(d)
             if existed:
                 shutil.rmtree(d, ignore_errors=True)
+            # And from the durable store, or the next cold container
+            # restores a dataset the client deleted.
+            if self.blobs is not None:
+                try:
+                    if self.blobs.delete_prefix(
+                            "{}/{}".format(self._safe(owner),
+                                           self._safe(ds_id))):
+                        existed = True
+                except Exception:
+                    logger.warning("could not remove %s/%s from durable "
+                                   "storage", owner, ds_id, exc_info=True)
         # The in-memory entry is dropped either way, so reporting False
         # when only the directory was missing told the caller "not
         # found" about a dataset it had just deleted — the API answered
@@ -260,6 +392,11 @@ class DatasetStore:
                     self._mem[mkey]["meta"] = meta
             integrity.record_change(self._dir(owner, ds_id), df,
                                     event=event, actor=owner, detail=detail)
+        # The integrity layer writes straight into the dataset directory,
+        # so the store has to carry its files across too — a restored
+        # dataset whose audit trail did not come with it can no longer
+        # say what was done to it, which is the whole point of having one.
+        self._back_up(owner, ds_id, "integrity.json", "audit.jsonl")
 
     def reset_active(self, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
         """Restore active df back to the raw upload."""
@@ -277,12 +414,15 @@ class DatasetStore:
         integrity.record_event(self._dir(owner, ds_id), event,
                                self.get_df(owner, ds_id), actor=owner,
                                detail=detail)
+        self._back_up(owner, ds_id, "integrity.json", "audit.jsonl")
 
     def integrity(self, owner: str, ds_id: str) -> Optional[dict]:
         """Recomputed on every call, deliberately: an integrity verdict
         that is cached is a verdict about the past."""
         if self.get_meta(owner, ds_id) is None:
             return None
+        self._restore(owner, ds_id, "integrity.json")
+        self._restore(owner, ds_id, "audit.jsonl")
         return integrity.summary(self._dir(owner, ds_id),
                                  self.get_raw_df(owner, ds_id),
                                  self.get_df(owner, ds_id))
@@ -380,20 +520,31 @@ class DatasetStore:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(asdict(meta), f)
         os.replace(tmp, p)
+        self._back_up(owner, ds_id, "meta.json")
 
     def _save_df(self, owner: str, ds_id: str, which: str,
                  df: pd.DataFrame) -> list[str]:
-        return write_frame(self._path(owner, ds_id, f"{which}.parquet"), df)
+        written = write_frame(self._path(owner, ds_id, f"{which}.parquet"), df)
+        self._back_up(owner, ds_id, "{}.parquet".format(which),
+                      "{}.parquet.schema.json".format(which))
+        return written
 
     def _load(self, which: str, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
         mkey = self._mkey(owner, ds_id)
         with self._lock:
             if mkey in self._mem:
                 return self._mem[mkey][which]
+        # A cold container has the dataset in the durable store and
+        # nothing on disk. Fetch it rather than answering "no such
+        # dataset" about something the client uploaded an hour ago.
+        self._restore(owner, ds_id, f"{which}.parquet")
+        self._restore(owner, ds_id, f"{which}.parquet.schema.json")
         df = read_frame(self._path(owner, ds_id, f"{which}.parquet"))
         if df is None:
             return None
         other = "raw" if which == "active" else "active"
+        self._restore(owner, ds_id, f"{other}.parquet")
+        self._restore(owner, ds_id, f"{other}.parquet.schema.json")
         other_df = read_frame(self._path(owner, ds_id, f"{other}.parquet"))
         meta = self.get_meta(owner, ds_id)
         with self._lock:

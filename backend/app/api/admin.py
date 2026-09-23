@@ -54,27 +54,47 @@ async def llm_status():
 
 @router.get("/storage")
 async def storage_status():
-    """Where generated reports are kept, and whether they survive a
-    deploy.
+    """Where a client's data is kept, and whether it survives a deploy.
 
-    An operator cannot tell this from the outside: reports work
+    An operator cannot tell this from the outside: everything works
     perfectly on a container that has not restarted yet. Naming it
     plainly is the difference between finding out here and finding out
-    when a client opens a share link.
+    when a client opens a share link, or logs in and their uploads are
+    gone.
     """
     from app.services.artifacts import store as artifacts
+    from app.services.dataset_store import store as datasets
 
     blobs = artifacts.blobs
-    durable = bool(getattr(blobs, "durable", False))
+    reports_durable = bool(getattr(blobs, "durable", False))
+    data_durable = datasets.blobs is not None
+
+    if data_durable:
+        data_detail = (
+            "Uploads are written to object storage as well as this "
+            "container's disk, so a restart, a redeploy or a second "
+            "instance can still serve them.")
+    else:
+        data_detail = (
+            "Uploads live only on this container's disk. They survive a "
+            "request but not a deploy, and a second instance has a "
+            "different disk — the same account sees its data on one "
+            "request and not the next. Set S3_BUCKET, or mount a "
+            "persistent volume and run a single instance.")
+
     return {
         "artifacts": blobs.describe(),
-        "durable": durable,
+        "durable": reports_durable,
         "detail": (
             "Reports are kept in object storage and survive a restart."
-            if durable else
+            if reports_durable else
             "Reports are on this container's disk. They survive a request "
             "but not a deploy — set S3_BUCKET to keep them."
         ),
+        "datasets": (datasets.blobs.describe() if data_durable
+                     else "local directory {}".format(datasets.base_dir)),
+        "datasets_durable": data_durable,
+        "datasets_detail": data_detail,
     }
 
 
