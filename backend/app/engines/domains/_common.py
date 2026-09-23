@@ -533,8 +533,14 @@ def rate_insights(df: pd.DataFrame, outcome_col: str, outcome_noun: str,
                     outcome_noun.capitalize(), problem, problem_rate,
                     gap.overall))
 
+        # "… separates them on {}" collided with every outcome whose
+        # name starts with a preposition: logistics reads "separates
+        # them on on-time delivery". Phrased so the noun never has to
+        # follow a word it might repeat, and so no verb has to agree
+        # with it — the noun is plural in some domains (returns) and
+        # singular in others (churn).
         out["actions"].append(
-            "Compare {} against {} — {} separates them on {}.".format(
+            "Compare {} against {}: {} between them in {}.".format(
                 problem, target, multiple, outcome_noun))
 
         out["insights"].append(build_insight(
