@@ -144,14 +144,47 @@ _NEUTRAL = Direction(
 )
 
 
-def direction_for(target: str) -> Direction:
-    """The vocabulary for a predicted column, from its name.
+def _declared_by_domain(target: str, domain: str):
+    """What the domain registry says, when it is talking about this
+    column.
 
-    Deliberately the column name and nothing else. Inferring direction
-    from the data — treating whichever class is rarer as the bad one —
-    would call a 9% win rate a risk and a 91% retention rate a problem.
+    A spec declares `outcome_good` for its own outcome — a human wrote
+    it down per domain — which beats inferring anything from a column
+    name. It only applies when the predicted column really is that
+    outcome, so the keywords have to match: a model trained on some
+    other field of an insurance file is not insurance's claim flag and
+    must not borrow its direction.
     """
-    answer = higher_is_better(target)
+    if not domain:
+        return None
+    try:
+        from app.engines.domains.registry import spec_for
+        spec = spec_for(domain)
+    except Exception:
+        logger.debug("no spec for domain %r", domain, exc_info=True)
+        return None
+    if spec is None or spec.outcome_good is None:
+        return None
+
+    flat = "".join(ch for ch in str(target).lower() if ch.isalnum())
+    for keyword in (spec.outcome_keywords or ()):
+        key = "".join(ch for ch in str(keyword).lower() if ch.isalnum())
+        if key and key in flat:
+            return bool(spec.outcome_good)
+    return None
+
+
+def direction_for(target: str, domain: str = "") -> Direction:
+    """The vocabulary for a predicted column.
+
+    The domain's own declaration first, where it applies, then the
+    column name. Never the data: inferring direction from which class
+    is rarer would call a 9% win rate a risk and a 91% retention rate
+    a problem.
+    """
+    answer = _declared_by_domain(target, domain)
+    if answer is None:
+        answer = higher_is_better(target)
     if answer is True:
         return _OPPORTUNITY
     if answer is False:

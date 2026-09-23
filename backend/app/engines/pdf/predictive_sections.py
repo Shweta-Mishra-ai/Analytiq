@@ -180,7 +180,7 @@ def _leakage_note(story, s, T, dr):
 
 def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
                         top_cluster=None, driver_chart=None,
-                        risk_heatmap=None):
+                        risk_heatmap=None, domain: str = ""):
     """Model drivers, honest accuracy, and the highest-risk segment.
 
     `dr` is a predictive.DriverResult, or None to skip the section. This
@@ -196,7 +196,7 @@ def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
     # it: a model predicting `won` must not call the two best reps in
     # the company the highest-risk segment, nor offer to help avoid
     # ninety-eight of their wins.
-    D = direction_for(dr.target)
+    D = direction_for(dr.target, domain)
 
     verdict = getattr(dr, "verdict", None)
     if verdict is not None and not verdict.usable:

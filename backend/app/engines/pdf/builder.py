@@ -273,7 +273,8 @@ def build_pdf(
         # listed "Predictive Risk Analysis" in its contents and then
         # printed "Predictive Opportunity Analysis" on the page.
         from app.engines.outcome_direction import direction_for
-        _add_toc(direction_for(getattr(predictive, "target", "")).section_title)
+        _add_toc(direction_for(getattr(predictive, "target", ""),
+                               domain).section_title)
     if forecast is not None:
         _add_toc("Outlook")
     if has_deep_page(domain):
@@ -351,7 +352,8 @@ def build_pdf(
                                 avg_salary_k=avg_salary_k,
                                 top_cluster=top_cluster,
                                 driver_chart=driver_chart,
-                                risk_heatmap=risk_heatmap)
+                                risk_heatmap=risk_heatmap,
+                                domain=domain)
             story.append(PageBreak())
 
         if forecast is not None:

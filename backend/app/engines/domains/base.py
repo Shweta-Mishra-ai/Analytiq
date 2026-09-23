@@ -102,6 +102,10 @@ _LOWER_IS_BETTER_TOKENS = {
     "abandoned", "abandonment", "escalated", "readmitted", "bounced",
     "unsubscribed", "downgraded", "terminated", "resigned", "exited",
     "attrited", "stockout", "stockouts", "deceased",
+    # `dropped_out` tokenises to {dropped, out}; every compound that
+    # uses it — dropped out, dropped calls, dropped packets — is the
+    # bad end.
+    "dropped", "dropout", "dropouts",
 }
 
 _HIGHER_IS_BETTER_TOKENS = {
@@ -123,7 +127,7 @@ _HIGHER_IS_BETTER_TOKENS = {
     "completed", "completion", "completions", "delivered", "onboarded",
     "subscribed", "accepted", "approved", "qualified", "survived",
     "survival", "success", "successes", "successful", "attained",
-    "attainment", "achieved", "achievement",
+    "attainment", "achieved", "achievement", "sold",
 }
 
 

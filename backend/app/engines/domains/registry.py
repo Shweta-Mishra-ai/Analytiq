@@ -867,7 +867,10 @@ register(DomainSpec(
               "excess", "limit", "settlement", "incurred", "product",
               "exposure"),
     insight_fn=_insights_insurance,
-    outcome_keywords=("claimed", "hasclaim", "claimflag", "lapsed"),
+    # "claim" is the stem every one of the specific spellings shares,
+    # and a file that names the column `claim_filed` matched none of
+    # them — so the outcome pass found nothing to analyse on it.
+    outcome_keywords=("claim", "claimed", "hasclaim", "claimflag", "lapsed"),
     outcome_noun="claim rate",
     pdf_theme="Corporate Light",
     chart_metrics=("lossratio", "premium", "claimamount", "claims",

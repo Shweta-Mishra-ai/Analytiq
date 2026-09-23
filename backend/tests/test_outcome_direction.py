@@ -117,3 +117,40 @@ def test_every_direction_fills_every_field():
 
 def test_the_section_subtitle_takes_the_target_name():
     assert "Won" in direction_for("won").section_sub.format("Won")
+
+
+# ══════════════════════════════════════════════════════════
+#  The domain's own declaration comes first
+# ══════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize("target,domain,desirable", [
+    ("on_time", "logistics", True),
+    ("sold", "realestate", True),
+    ("claim_filed", "insurance", False),
+    ("won", "sales", True),
+    ("Attrition", "hr", False),
+])
+def test_the_domain_spec_answers_where_it_applies(target, domain, desirable):
+    """A spec declares outcome_good for its own outcome, written down
+    per domain by somebody who knew. That beats inferring anything from
+    a column name — `on_time` tokenises to {on, time} and matches no
+    list at all, and `time` could not be added without misreading
+    `response_time`, where lower is better."""
+    assert direction_for(target, domain).desirable is desirable
+
+
+def test_a_domain_does_not_lend_its_direction_to_an_unrelated_column():
+    """A model trained on some other field of a sales file is not the
+    win flag, and must not borrow its direction."""
+    assert direction_for("deal_size", "sales").desirable is None
+    assert direction_for("days_in_pipeline", "sales").desirable is None
+
+
+def test_the_column_name_still_answers_without_a_domain():
+    assert direction_for("won").desirable is True
+    assert direction_for("churned").desirable is False
+
+
+def test_an_unknown_domain_degrades_to_the_column_name():
+    assert direction_for("won", "not-a-domain").desirable is True
+    assert direction_for("mystery_flag", "not-a-domain").desirable is None
