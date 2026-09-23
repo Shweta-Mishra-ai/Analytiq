@@ -51,6 +51,15 @@ class ColumnStats:
     # Missing
     missing_count: int = 0
     missing_pct: float = 0.0
+    # A column holding two values has no distribution to describe.
+    # Skew, kurtosis and normality are all defined on it and all
+    # meaningless — a 0/1 outcome flag at a 25% rate scores a skew of
+    # 1.13, and the report duly called it "heavily right-skewed" and
+    # said its average was "pulled up by a few unusually high values".
+    # The average of a flag is the rate; there are no outliers.
+    is_binary: bool = False
+    binary_rate: Optional[float] = None     # share of the higher value
+    binary_values: Optional[tuple] = None
     # Categorical specific
     unique_count: int = 0
     top_value: Optional[str] = None
@@ -184,6 +193,20 @@ def _numeric_stats(s: pd.Series, name: str) -> ColumnStats:
     cs.q1       = round(float(clean.quantile(0.25)), 4)
     cs.q3       = round(float(clean.quantile(0.75)), 4)
     cs.iqr      = round(cs.q3 - cs.q1, 4)
+
+    # ── Two-value columns ─────────────────────────────────
+    # Everything below this point describes the shape of a spread, and
+    # a column with two values does not have one. Answer the question
+    # that column actually poses — how often is it the higher value —
+    # and leave the distribution fields unset rather than filled with
+    # numbers that are real and mean nothing.
+    if cs.unique_count == 2:
+        lo, hi = sorted(clean.unique())
+        cs.is_binary = True
+        cs.binary_values = (float(lo), float(hi))
+        cs.binary_rate = round(float((clean == hi).mean()) * 100, 2)
+        cs.outlier_method_recommended = "not applicable"
+        return cs
 
     # ── Skewness ──────────────────────────────────────────
     skew = float(clean.skew())

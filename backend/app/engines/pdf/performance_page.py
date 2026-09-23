@@ -143,15 +143,38 @@ def _outcome_column(df, spec):
     return None, "", False
 
 
+def deep_page_title(domain: str) -> str:
+    """The heading this page prints, for whoever needs to name it.
+
+    The contents page built its own version of this string — "{}
+    Analysis" against the page's "{} Performance Analysis" — and the
+    page-number map is keyed on the heading, so the entry matched
+    nothing and the line printed with the number column blank.
+    """
+    from app.engines.domains.registry import label_for
+
+    label = (label_for(domain) or "Business").strip()
+    # .title() was applied unconditionally, which capitalises `sales`
+    # correctly and turns `HR` into `Hr` and `SaaS` into `Saas`. Only a
+    # label that is entirely lower case needs the help; one that already
+    # carries capitals chose them.
+    if label.islower():
+        label = label.title()
+    # `general` is labelled "Business Analytics", and "Business
+    # Analytics Performance Analysis" says analysis twice.
+    if label.lower().endswith(" analytics"):
+        label = label[: -len(" analytics")]
+    return "{} Performance Analysis".format(label)
+
+
 def _domain_performance_page(story, s, T, df, config, CW, profile=None,
                              domain="general"):
     """KPI scorecard, outcome breakdown, and segment ranking."""
-    from app.engines.domains.registry import label_for, spec_for
+    from app.engines.domains.registry import spec_for
     from app.engines.kpi_engine import compute_kpis
 
     spec = spec_for(domain)
-    label = label_for(domain) or "Business"
-    _sec(story, s, T, "{} Performance Analysis".format(label.title()),
+    _sec(story, s, T, deep_page_title(domain),
          "Headline measures, who the outcome happens to, and how "
          "segments rank — computed from the submitted data")
 

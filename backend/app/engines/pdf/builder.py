@@ -29,7 +29,7 @@ from app.engines.pdf.primitives import (
     _sec, _toc,
 )
 from app.engines.pdf.narrative_sections import (
-    _exec_summary, _top_insights, _dq_note, _benchmark_section, _attrition_page, _domain_label,
+    _exec_summary, _top_insights, _dq_note, _benchmark_section, _attrition_page,
     _has_reference_ranges, _exec_dashboard, _forecast_section,
 )
 from app.engines.pdf.predictive_sections import _predictive_section
@@ -267,11 +267,18 @@ def build_pdf(
     if attrition:
         _add_toc("Attrition Deep Dive")
     if _has_predictive_section(predictive):
-        _add_toc("Predictive Risk Analysis")
+        # The heading depends on which way the predicted column points,
+        # so the contents entry has to be asked the same question. It
+        # used to be the literal string, which meant a sales report
+        # listed "Predictive Risk Analysis" in its contents and then
+        # printed "Predictive Opportunity Analysis" on the page.
+        from app.engines.outcome_direction import direction_for
+        _add_toc(direction_for(getattr(predictive, "target", "")).section_title)
     if forecast is not None:
         _add_toc("Outlook")
     if has_deep_page(domain):
-        _add_toc("{} Analysis".format(_domain_label(domain).title()))
+        from app.engines.pdf.performance_page import deep_page_title
+        _add_toc(deep_page_title(domain))
     _add_toc("Dataset Overview & Descriptive Statistics")
     if stats_report:
         _add_toc("Statistical Analysis")

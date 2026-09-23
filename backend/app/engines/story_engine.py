@@ -248,8 +248,9 @@ def _build_narrative_summary(
         top_critical = next((i for i in deduped if i.severity == "critical"), None)
         if top_critical:
             headline = (
-                f"{top_critical.problem} This is the most urgent finding in the "
-                f"dataset — {n_crit} critical issue{'s' if n_crit > 1 else ''} total."
+                f"{_stop(top_critical.problem)} This is the most urgent "
+                f"finding in the dataset — {n_crit} critical "
+                f"issue{'s' if n_crit > 1 else ''} total."
             )
 
     # A real business finding (even 'warning' severity) leads over a correlation.
@@ -371,6 +372,21 @@ def _build_narrative_summary(
 #  MAIN
 # ══════════════════════════════════════════════════════════
 
+def _stop(text) -> str:
+    """End a sentence that is about to have another joined onto it.
+
+    An insight's `problem` is written as a clause and stored without
+    terminal punctuation, so interpolating it in front of the next
+    sentence produced "...44.6% in sales_rep 'Rep 08' This is the most
+    urgent finding" on the first two pages of every report that had a
+    critical finding.
+    """
+    out = str(text or "").rstrip()
+    if out and out[-1] not in ".!?":
+        out += "."
+    return out
+
+
 def generate_story(df: pd.DataFrame) -> StoryReport:
     domain, confidence = detect_domain(df)
 
@@ -405,13 +421,31 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
         except Exception:
             logger.warning("general insight merge failed", exc_info=True)
 
-    # De-duplicate the flat string lists (identical findings never repeat)
+    # De-duplicate the flat string lists.
+    #
+    # Exact string equality is not enough, and the top-up above is why.
+    # When a domain engine comes back thin the general engine's lists
+    # are appended, and the general engine runs the same outcome pass
+    # over the same column under its own name for it. On a sales file
+    # the Executive Summary carried
+    #
+    #   ! Win rate in sales_rep 'Rep 01' is 9.5% against 25.3% overall...
+    #   ! Won in sales_rep 'Rep 01' is 9.5% against 25.3% overall...
+    #
+    # — one finding, twice, identical but for the noun, so the exact
+    # check passed both. Two risks where there is one changes what the
+    # reader counts.
+    from app.engines.domains.registry import _fingerprint
     for key in ("findings", "risks", "opportunities"):
-        seen_k, uniq = set(), []
+        seen_k, seen_marks, uniq = set(), set(), []
         for item in raw.get(key, []):
-            if item not in seen_k:
-                seen_k.add(item)
-                uniq.append(item)
+            mark = _fingerprint(item)
+            if item in seen_k or (mark and mark in seen_marks):
+                continue
+            seen_k.add(item)
+            if mark:
+                seen_marks.add(mark)
+            uniq.append(item)
         raw[key] = uniq
 
     insights = raw.get("insights",[])

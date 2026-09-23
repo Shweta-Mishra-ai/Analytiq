@@ -92,6 +92,16 @@ _LOWER_IS_BETTER_TOKENS = {
     "readmission", "readmissions", "mortality", "reject", "rejects",
     "rejection", "rejections", "bounce", "unsubscribe", "unsubscribes",
     "fraud", "breach", "breaches", "shrinkage", "downgrade", "downgrades",
+    # Past tenses and outcome-flag spellings. A column is far more often
+    # named `churned` than `churn`, and the bare stems matched neither —
+    # so an HR file's `terminated` and a lender's `defaulted` came back
+    # as "direction unknown" and were written up in neutral wording that
+    # helped nobody.
+    "churned", "cancelled", "canceled", "lapsed", "defaulted",
+    "delinquent", "delinquency", "rejected", "denied", "failed",
+    "abandoned", "abandonment", "escalated", "readmitted", "bounced",
+    "unsubscribed", "downgraded", "terminated", "resigned", "exited",
+    "attrited", "stockout", "stockouts", "deceased",
 }
 
 _HIGHER_IS_BETTER_TOKENS = {
@@ -104,6 +114,16 @@ _HIGHER_IS_BETTER_TOKENS = {
     "throughput", "yield", "engagement", "adoption", "renewal",
     "renewals", "win", "wins", "growth", "units", "volume", "orders",
     "customers", "subscribers", "signups", "attendance",
+    # The same inflection problem, and `won` is the one that mattered
+    # most: it is the standard name for the outcome column on a sales
+    # extract, it matched nothing, and the whole predictive section was
+    # written as if a win were a hazard.
+    "won", "converted", "renewed", "retained", "upsell", "upsells",
+    "upgrade", "upgrades", "activated", "activation", "activations",
+    "completed", "completion", "completions", "delivered", "onboarded",
+    "subscribed", "accepted", "approved", "qualified", "survived",
+    "survival", "success", "successes", "successful", "attained",
+    "attainment", "achieved", "achievement",
 }
 
 

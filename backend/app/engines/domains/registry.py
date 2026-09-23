@@ -351,17 +351,63 @@ def _drop_repeats(extra: dict, existing: dict) -> dict:
             continue
         kept.append(insight)
 
-    if not dropped:
-        return extra
-    logger.info("dropped %d outcome insight(s) the engine already made",
-                dropped)
     trimmed = dict(extra)
     trimmed["insights"] = kept
     if not kept:
         # The supporting prose belonged to the insights that went.
         for field in ("findings", "risks", "opportunities", "actions"):
             trimmed[field] = []
+        if dropped:
+            logger.info("dropped %d outcome insight(s) the engine already "
+                        "made", dropped)
+        return trimmed
+
+    # The prose lists need the same treatment, and used to be waved
+    # through whenever a single insight survived. On a sales file the
+    # Executive Summary then carried
+    #
+    #   ! Win rate in sales_rep 'Rep 01' is 9.5% against 25.3% overall...
+    #   ! Won in sales_rep 'Rep 01' is 9.5% against 25.3% overall...
+    #
+    # which is one finding, twice, under the engine's name for the
+    # column and then the shared pass's. Two risks where there is one
+    # is not a formatting problem: it changes what the reader counts.
+    for field in ("findings", "risks", "opportunities", "actions"):
+        lines = list(extra.get(field) or [])
+        if not lines:
+            continue
+        already = [_fingerprint(x) for x in (existing.get(field) or [])]
+        survivors = []
+        for line in lines:
+            mark = _fingerprint(line)
+            if mark and mark in already:
+                dropped += 1
+                continue
+            survivors.append(line)
+            already.append(mark)
+        trimmed[field] = survivors
+
+    if dropped:
+        logger.info("dropped %d outcome line(s) the engine already made",
+                    dropped)
     return trimmed
+
+
+def _fingerprint(line) -> tuple:
+    """What makes two sentences the same finding: the group and the rate.
+
+    Deliberately not the whole string. The two duplicates differ in
+    every word before the group name, so comparing text finds nothing;
+    what they share is that they are about `Rep 01` at `9.5%` against
+    `25.3%`, and that is the finding.
+    """
+    text = str(line or "")
+    groups = tuple(sorted(m.strip().lower()
+                          for m in re.findall(r"'([^']+)'", text)))
+    numbers = tuple(re.findall(r"\d+\.\d+%|\d+%", text)[:3])
+    if not groups and not numbers:
+        return ()
+    return (groups, numbers)
 
 
 # ══════════════════════════════════════════════════════════

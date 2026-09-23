@@ -22,6 +22,7 @@ from reportlab.platypus import (
     Paragraph, Spacer, Table, TableStyle, Image, KeepTogether,
 )
 
+from app.engines.outcome_direction import direction_for
 from app.engines.pdf.theme import (
     _c,
 )
@@ -88,7 +89,7 @@ def _model_note(story, s, T, dr, CW):
         story.append(Spacer(1, 2 * mm))
 
 
-def _decision_table(story, s, T, dr, CW):
+def _decision_table(story, s, T, dr, CW, D=None):
     """What acting on the top N% of the ranking would actually yield.
 
     AUC answers "does the model rank correctly". It does not answer the
@@ -100,19 +101,20 @@ def _decision_table(story, s, T, dr, CW):
     bands = list(getattr(dr, "decision_bands", None) or [])
     if not bands:
         return
+    if D is None:
+        D = direction_for(getattr(dr, "target", ""))
 
     story.append(Spacer(1, 3 * mm))
     story.append(Paragraph("Where to Act", s["h3"]))
-    _exhibit(story, s, T, "Expected yield at each size of intervention")
-    story.append(Paragraph(
-        "Records ranked by predicted risk. Each row is a different size of "
-        "intervention: how many records it covers, how many of the events "
-        "it would reach, and how much better that is than choosing at "
-        "random.", s["body"]))
+    _exhibit(story, s, T, "Expected yield at each size of {}".format(
+        "shortlist" if D.desirable else "intervention"))
+    story.append(Paragraph(D.bands_intro, s["body"]))
     story.append(Spacer(1, 2 * mm))
 
-    rows = [["If you act on", "Records", "Events reached",
-             "Hit rate", "Share of all events", "vs random"]]
+    reached = "{} reached".format(D.event_noun_plural.title())
+    rows = [["If you act on", "Records", reached,
+             "Hit rate", "Share of all {}".format(D.event_noun_plural),
+             "vs random"]]
     for b in bands:
         rows.append([
             "top {}%".format(b.budget_pct),
@@ -190,6 +192,12 @@ def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
 
     tgt = str(dr.target).replace("_", " ").title()
 
+    # Which way this outcome points. Everything below is written from
+    # it: a model predicting `won` must not call the two best reps in
+    # the company the highest-risk segment, nor offer to help avoid
+    # ninety-eight of their wins.
+    D = direction_for(dr.target)
+
     verdict = getattr(dr, "verdict", None)
     if verdict is not None and not verdict.usable:
         # Say that the data does not support a prediction. Dropping the
@@ -197,7 +205,7 @@ def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
         # and "we looked and found nothing" is a real result a client
         # should be told — particularly before they act as though there
         # were a signal.
-        _sec(story, s, T, "Predictive Risk Analysis",
+        _sec(story, s, T, D.section_title,
              "Whether {} can be predicted from the rest of the "
              "dataset".format(tgt))
         story.append(Spacer(1, 3 * mm))
@@ -215,9 +223,7 @@ def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
 
     if not dr.top_drivers:
         return
-    _sec(story, s, T, "Predictive Risk Analysis",
-         "A model trained to predict {} — drivers, accuracy, and the "
-         "highest-risk segment".format(tgt))
+    _sec(story, s, T, D.section_title, D.section_sub.format(tgt))
     story.append(Spacer(1, 3 * mm))
 
     # NaN-safe: an undertrained model returns NaN rather than a number, and
@@ -236,7 +242,7 @@ def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
         {"label": "RECORDS USED", "value": "{:,}".format(dr.n_rows),
          "sub": "{} features".format(dr.n_features), "color": T["accent"]},
         {"label": "BASE RATE", "value": "{:.0f}%".format(dr.base_rate),
-         "sub": "overall event rate", "color": T["text_muted"]},
+         "sub": D.base_sub, "color": T["text_muted"]},
     ], CW)
     story.append(Spacer(1, 3 * mm))
 
@@ -297,25 +303,21 @@ def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
         lift = tc.rate / tc.base_rate if tc.base_rate else 0
         _narrative_box(
             story, s, T,
-            "<b>Largest risk cluster:</b> records where <b>{}</b> — {:,} of "
-            "them — show a {:.0f}% event rate ({:.1f}x the {:.0f}% base) and "
-            "account for <b>{:.0f}% of all events</b> in the dataset. This is "
-            "the most concentrated addressable pocket of risk: a targeted "
-            "intervention here reaches the most affected records for the "
-            "least effort.".format(
-                tc.description, tc.n, tc.rate, lift, tc.base_rate,
-                tc.share_of_events))
+            "<b>{}:</b> records where <b>{}</b> — {:,} of "
+            "them — show a {:.0f}% rate ({:.1f}x the {:.0f}% base) and "
+            "account for <b>{:.0f}% of all {}</b> in the dataset. {}".format(
+                D.cluster_label, tc.description, tc.n, tc.rate, lift,
+                tc.base_rate, tc.share_of_events, D.event_noun_plural,
+                D.cluster_tail))
         story.append(Spacer(1, 3 * mm))
 
     if risk_heatmap:
         try:
             story.append(KeepTogether([
-                Paragraph("Risk Concentration Map", s["h3"]),
+                Paragraph(D.heatmap_title, s["h3"]),
                 Image(io.BytesIO(risk_heatmap), width=CW * 0.90,
                       height=CW * 0.60),
-                Paragraph("Darker cells carry a higher event rate. The "
-                          "hottest cell is the segment to address first.",
-                          s["sm"]),
+                Paragraph(D.heatmap_caption, s["sm"]),
             ]))
             story.append(Spacer(1, 3 * mm))
         except Exception:
@@ -326,44 +328,92 @@ def _predictive_section(story, s, T, dr, CW, avg_salary_k: float = 0.0,
         prof = dr.high_risk_profile or "the model's highest-probability profile"
         _narrative_box(
             story, s, T,
-            "<b>Highest-risk segment:</b> {:,} records fall in the model's "
-            "top-risk quintile and show an actual event rate of "
-            "<b>{:.0f}%</b> — {:.1f}x the {:.0f}% base rate. Shared profile: "
-            "{}. This is where intervention has the highest expected return; "
-            "pull this list from the source system and act on it "
-            "first.".format(dr.high_risk_n, dr.high_risk_rate, lift,
-                            dr.base_rate, prof))
+            "<b>{}:</b> {:,} records fall in the model's top quintile and "
+            "show an actual rate of <b>{:.0f}%</b> — {:.1f}x the {:.0f}% "
+            "base rate. Shared profile: {}. {}".format(
+                D.segment_label, dr.high_risk_n, dr.high_risk_rate, lift,
+                dr.base_rate, prof, D.segment_tail))
         story.append(Spacer(1, 3 * mm))
 
         expected_events = int(round(dr.high_risk_n * dr.high_risk_rate / 100.0))
-        avoidable = int(round(dr.high_risk_n *
-                              max(dr.high_risk_rate - dr.base_rate, 0) / 100.0))
+        gap_pts = max(dr.high_risk_rate - dr.base_rate, 0)
+        in_segment = int(round(dr.high_risk_n * gap_pts / 100.0))
         story.append(Paragraph("Scenario and Expected Value", s["h3"]))
-        if avg_salary_k and avg_salary_k > 0 and avoidable > 0:
-            lo = avoidable * avg_salary_k * 0.5
-            hi = avoidable * avg_salary_k * 2.0
-            roi_line = (
-                " Costed at the {:,.0f}K replacement cost supplied for this "
-                "report and the published 50-200% band, the avoidable share "
-                "is roughly <b>{:,.0f}K-{:,.0f}K</b> per cycle. That unit "
-                "cost is an assumption you supplied, not a figure measured "
-                "from this data — substitute your own for a board-ready "
-                "number.".format(
-                    avg_salary_k, lo, hi))
-        else:
-            roi_line = (
-                " No replacement cost was supplied with this report, so no "
-                "monetary figure is asserted here. Enter one at report setup "
-                "to translate the avoidable events into a range.")
-        _narrative_box(
-            story, s, T,
-            "<b>If nothing changes:</b> at the segment's current rate, about "
-            "<b>{:,}</b> of these {:,} records are expected to record the "
-            "event next cycle. <b>Roughly {:,}</b> of those are potentially "
-            "avoidable — the excess above the {:.0f}% base rate — if the "
-            "drivers above are addressed for this segment.{}".format(
-                expected_events, dr.high_risk_n, avoidable, dr.base_rate,
-                roi_line))
 
-    _decision_table(story, s, T, dr, CW)
+        if D.desirable:
+            # The upside of a good outcome is not in this segment — this
+            # segment is already winning. It is in everyone else, and it
+            # is bounded by what the rest of the file could gain if it
+            # matched this rate. Saying "N avoidable" here, as the one
+            # risk-shaped wording used to, offered to prevent successes.
+            rest = max(dr.n_rows - dr.high_risk_n, 0)
+            upside = int(round(rest * gap_pts / 100.0))
+            body = (
+                "<b>What this segment is worth:</b> at its current rate, "
+                "about <b>{:,}</b> of these {:,} records are expected to "
+                "convert again next cycle — {:.0f} points above the {:.0f}% "
+                "base. The remaining {:,} records sit at or below that base: "
+                "closing the gap entirely would be about <b>{:,}</b> more "
+                "{} a cycle. Treat that as a ceiling rather than a "
+                "forecast — this group ranks top partly because of who is "
+                "in it, and not every one of those characteristics can be "
+                "copied.".format(
+                    expected_events, dr.high_risk_n, gap_pts, dr.base_rate,
+                    rest, upside, D.event_noun_plural))
+            if avg_salary_k and avg_salary_k > 0 and upside > 0:
+                body += (
+                    " At the {:,.0f}K unit value supplied for this report "
+                    "that ceiling is roughly <b>{:,.0f}K</b> per cycle. The "
+                    "unit value is your assumption, not a figure measured "
+                    "from this data.".format(avg_salary_k,
+                                             upside * avg_salary_k))
+            _narrative_box(story, s, T, body)
+
+        elif D.desirable is False:
+            if avg_salary_k and avg_salary_k > 0 and in_segment > 0:
+                lo = in_segment * avg_salary_k * 0.5
+                hi = in_segment * avg_salary_k * 2.0
+                roi_line = (
+                    " Costed at the {:,.0f}K replacement cost supplied for "
+                    "this report and the published 50-200% band, the "
+                    "avoidable share is roughly <b>{:,.0f}K-{:,.0f}K</b> per "
+                    "cycle. That unit cost is an assumption you supplied, "
+                    "not a figure measured from this data — substitute your "
+                    "own for a board-ready number.".format(
+                        avg_salary_k, lo, hi))
+            else:
+                roi_line = (
+                    " No replacement cost was supplied with this report, so "
+                    "no monetary figure is asserted here. Enter one at "
+                    "report setup to translate the avoidable events into a "
+                    "range.")
+            _narrative_box(
+                story, s, T,
+                "<b>If nothing changes:</b> at the segment's current rate, "
+                "about <b>{:,}</b> of these {:,} records are expected to "
+                "record the event next cycle. <b>Roughly {:,}</b> of those "
+                "are potentially avoidable — the excess above the {:.0f}% "
+                "base rate — if the drivers above are addressed for this "
+                "segment.{}".format(
+                    expected_events, dr.high_risk_n, in_segment,
+                    dr.base_rate, roi_line))
+
+        else:
+            # Direction unknown. State the arithmetic and stop: calling
+            # the gap either avoidable or an upside would be a guess
+            # about what the column means, and guessing is what produced
+            # the wrong report in the first place.
+            _narrative_box(
+                story, s, T,
+                "<b>At the current rate:</b> about <b>{:,}</b> of these "
+                "{:,} records are expected to show {} again next cycle, "
+                "{:.0f} points above the {:.0f}% base — a difference of "
+                "roughly <b>{:,}</b> records. Whether that gap is worth "
+                "closing or worth protecting depends on what <b>{}</b> "
+                "means in your business; the column name does not say, so "
+                "this report does not assume.".format(
+                    expected_events, dr.high_risk_n, tgt.lower(), gap_pts,
+                    dr.base_rate, in_segment, tgt))
+
+    _decision_table(story, s, T, dr, CW, D)
     _leakage_note(story, s, T, dr)

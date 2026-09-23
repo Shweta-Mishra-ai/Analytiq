@@ -507,11 +507,18 @@ def rate_insights(df: pd.DataFrame, outcome_col: str, outcome_noun: str,
         # a count is what gets a plan approved.
         excess = int(round(problem_n * abs(problem_rate - gap.overall) / 100))
         if excess > 0 and verdict:
+            # Counted in records, not in the outcome noun. Several
+            # domains name their outcome as a rate — "win rate", "pass
+            # rate", "on-time delivery" — and the sentence came out as
+            # "about 55 more win rate", which is not a quantity of
+            # anything. A record is always countable and always right.
             out["opportunities"].append(
-                "Moving {} to the {:.1f}% average is about {:,} {} {} across "
-                "the {:,} records in that group.".format(
-                    problem, gap.overall, excess,
-                    "more" if good else "fewer", outcome_noun, problem_n))
+                "Moving {} to the {:.1f}% average is about {:,} of its "
+                "{:,} records {} — that is the size of the gap, in "
+                "records.".format(
+                    problem, gap.overall, excess, problem_n,
+                    "reaching the outcome that do not today" if good
+                    else "no longer affected"))
 
         severity = ("critical" if gap.spread >= 20 else
                     "high" if gap.spread >= 10 else "warning")

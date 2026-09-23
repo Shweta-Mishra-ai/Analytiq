@@ -193,6 +193,21 @@ def _stats_section(story, s, T, stats_report, CW):
             if getattr(cs, "std", None) == 0:
                 continue
             shown += 1
+
+            # A flag is a rate, not a shape. Describing `won` as
+            # "Non-normal | heavily right-skewed | Outliers: 0" was three
+            # true statements that told the reader nothing and implied
+            # a tail that does not exist.
+            if getattr(cs, "is_binary", False):
+                lo, hi = getattr(cs, "binary_values", (0.0, 1.0))
+                story.append(Paragraph(
+                    "• <b>{}</b>: two values — {:.4g} in {:.1f}% of records, "
+                    "{:.4g} in the rest. A column with two values has no "
+                    "distribution to describe.".format(
+                        _PL(col), hi, cs.binary_rate or 0.0, lo),
+                    s["bl"]))
+                continue
+
             normal = "Normal" if getattr(cs, "is_normal", False) else "Non-normal"
             sk_lbl = getattr(cs, "skew_label", "") or ""
             outs   = getattr(cs, "outlier_count_iqr", 0)
