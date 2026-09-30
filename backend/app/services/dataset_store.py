@@ -260,9 +260,22 @@ class DatasetStore:
 
     @staticmethod
     def _hash_df(df: pd.DataFrame) -> str:
+        # Hash every row, not a 100-row sample. Sampling head(100) meant any
+        # edit from row 101 onward that kept the shape and dtypes left the
+        # hash unchanged, so cache_get returned a stale profile/stats/BI
+        # result for data that had actually changed. hash_pandas_object
+        # digests all cells cheaply; we fold it down to one digest.
         sig = f"{df.shape}|{list(df.columns)}|{list(df.dtypes.astype(str))}"
-        sample = df.head(100).to_json(default_handler=str)
-        return hashlib.md5((sig + sample).encode()).hexdigest()
+        try:
+            row_hashes = pd.util.hash_pandas_object(df, index=True).values
+            content = hashlib.md5(row_hashes.tobytes()).hexdigest()
+        except Exception:
+            # Unhashable cell types (e.g. lists) — fall back to a full,
+            # not partial, JSON encoding so correctness is preserved.
+            logger.debug("_hash_df: hash_pandas_object failed, full JSON fallback",
+                         exc_info=True)
+            content = hashlib.md5(df.to_json(default_handler=str).encode()).hexdigest()
+        return hashlib.md5((sig + content).encode()).hexdigest()
 
 
 store = DatasetStore()

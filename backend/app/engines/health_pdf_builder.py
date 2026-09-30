@@ -414,6 +414,25 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     story.append(kpi_tbl)
     story.append(Spacer(1, 5*mm))
 
+    # When readiness found a blocking issue, the score above was capped so
+    # the grade can't read "Excellent" on data that isn't fit to analyse.
+    # Say so plainly, and name the blockers, so the held-down grade is
+    # explained rather than looking arbitrary — and so this report agrees
+    # with the Main Report's "not ready to analyse" verdict on the same file.
+    if not health.get("ready", True) and health.get("blockers"):
+        issues_txt = "; ".join(
+            "{} ({})".format(b.get("issue", ""), b.get("column", ""))
+            for b in health["blockers"][:4])
+        story.append(Paragraph(
+            "<b>Grade capped:</b> the data is complete but not yet fit to "
+            "analyse — figures that depend on the following are provisional "
+            "until resolved: {}.".format(issues_txt),
+            ParagraphStyle("cap", fontName=_BF, fontSize=8.5,
+                           textColor=HexColor("#B45309"),
+                           backColor=HexColor("#FEF3C7"),
+                           borderPadding=6, leading=12)))
+        story.append(Spacer(1, 4*mm))
+
     # Dataset summary table
     story.append(Paragraph("Dataset Summary", ST["h3"]))
     num_cols_list = df.select_dtypes(include="number").columns.tolist()

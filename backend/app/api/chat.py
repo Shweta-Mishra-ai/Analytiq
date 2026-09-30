@@ -44,6 +44,17 @@ def chat(ds_id: str, req: ChatRequest, owner: str = Depends(current_owner)):
         raise HTTPException(404, "Dataset not found")
     if not config.groq_api_key:
         raise HTTPException(503, "GROQ_API_KEY is not configured on the server")
+    # AI chat embeds a sample of the client's data in the prompt and sends
+    # it to Groq's cloud API. In privacy mode that is not allowed, so refuse
+    # explicitly rather than letting the call fail deep in the client and
+    # surface as a vague "couldn't understand" — and never send the rows.
+    from app.ai.local_llm import privacy_mode
+    if privacy_mode():
+        raise HTTPException(
+            503, "LLM_PRIVACY_MODE is on: AI chat sends dataset rows to a "
+                 "third-party API and is disabled. Turn privacy mode off to "
+                 "use chat, or query the data through the analysis pages, "
+                 "which run entirely on the server.")
 
     client = get_client(config.groq_api_key)
     system = build_chat_system_prompt(df)

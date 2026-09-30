@@ -69,6 +69,32 @@ def compute_health(df: pd.DataFrame) -> dict:
         score = max(0.0, 100.0 - missing_pct)
     score = max(int(round(score)), 0)
 
+    # A dataset can be 100% complete and still be unfit to analyse — numbers
+    # stored as text, dates as text, or an identifier that repeats and so
+    # double-counts every total. The quality score above measures tidiness,
+    # not fitness, so on its own it let the Health Report cover read
+    # "Grade A+ — Excellent" for the very file the Main Report opens by
+    # calling "not ready to analyse". A blocking readiness issue caps the
+    # headline: a report a client acts on cannot be graded Excellent while
+    # its own figures may be wrong. The blockers are returned so the PDF can
+    # say why the grade is held down rather than leaving it unexplained.
+    _READY_CAP = 69   # caps the grade at "Fair" (60–69 band) when unfit
+    ready, blockers = True, []
+    try:
+        from app.engines.readiness import assess_readiness
+        assessment = assess_readiness(df)
+        ready = bool(getattr(assessment, "ready", True))
+        blockers = [
+            {"column": getattr(b, "column", ""),
+             "issue":  getattr(b, "issue", "")}
+            for b in getattr(assessment, "blockers", []) or []
+        ]
+    except Exception:
+        logger.warning("readiness assessment failed in compute_health — "
+                       "grade not capped", exc_info=True)
+    if not ready and score > _READY_CAP:
+        score = _READY_CAP
+
     grade_map = [(90,"A+","Excellent","#22d3a5"),
                  (80,"A", "Very Good","#42b983"),
                  (70,"B+","Good",     "#60a5fa"),
@@ -89,6 +115,8 @@ def compute_health(df: pd.DataFrame) -> dict:
         "rows":        rows,
         "cols":        cols,
         "num_cols":    len(num_cols),
+        "ready":       ready,
+        "blockers":    blockers,
     }
 
 

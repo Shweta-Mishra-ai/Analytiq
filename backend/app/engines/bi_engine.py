@@ -13,6 +13,7 @@ warnings.filterwarnings("ignore")
 from scipy import stats as scipy_stats
 
 from app.services.stat_guards import apply_fdr, chi2_association
+from app.engines.domains.base import is_id_column
 
 logger = logging.getLogger(__name__)
 
@@ -837,7 +838,12 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
     if len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
 
-    num_cols = df.select_dtypes(include="number").columns.tolist()
+    # Exclude identifiers: an order_id or customer_id is not a measure, and
+    # benchmarking/root-cause/pareto over it produces noise like "root cause
+    # of low order_id" or charts an ID "over time". This single filter feeds
+    # every analysis below.
+    num_cols = [c for c in df.select_dtypes(include="number").columns
+                if not is_id_column(c, df[c])]
     cat_cols = [c for c in text_columns(df)
                 if 2 <= df[c].nunique() <= 25]
 

@@ -181,6 +181,27 @@ async def run_cleanup():
 
 # ── Serve built frontend (production single-container deploy) ──
 _static = os.path.join(os.path.dirname(__file__), "..", "static")
+_static_root = os.path.realpath(_static)
+
+
+def _safe_static_file(full_path: str) -> str | None:
+    """Resolve `full_path` against the static root and return it only if it
+    stays inside that root and is a real file. Returns None otherwise.
+
+    Without this, `os.path.join(_static, "../../etc/passwd")` escapes the
+    static directory and the SPA fallback would serve any file the process
+    can read — application source, the token-signing secret in DATA_DIR,
+    the pickled user store. `realpath` collapses `..` and symlinks so the
+    containment check is on the actual resolved path, not the literal one.
+    """
+    if not full_path:
+        return None
+    target = os.path.realpath(os.path.join(_static_root, full_path))
+    if target != _static_root and not target.startswith(_static_root + os.sep):
+        return None
+    return target if os.path.isfile(target) else None
+
+
 if os.path.isdir(_static):
     app.mount("/assets", StaticFiles(directory=os.path.join(_static, "assets")),
               name="assets")
@@ -195,7 +216,7 @@ if os.path.isdir(_static):
         if full_path.startswith("api/"):
             from fastapi import HTTPException
             raise HTTPException(404, f"No API route matches /{full_path}")
-        target = os.path.join(_static, full_path)
-        if full_path and os.path.isfile(target):
+        target = _safe_static_file(full_path)
+        if target is not None:
             return FileResponse(target)
-        return FileResponse(os.path.join(_static, "index.html"))
+        return FileResponse(os.path.join(_static_root, "index.html"))

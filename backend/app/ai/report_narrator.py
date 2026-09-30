@@ -114,8 +114,16 @@ def _clean_output(text: str) -> str:
 
 def _bar_stats(df: pd.DataFrame, x: str, y: str) -> dict:
     try:
-        grp = df.groupby(x)[y].mean().sort_values(ascending=False)
-        avg = float(df[y].mean())
+        # Aggregate with SUM to match make_bar_chart, which sums. When the
+        # caption used mean while the bars showed totals, the two disagreed:
+        # a revenue-by-region bar showed the high-volume region towering over
+        # the rest while the text underneath named a different "leader" by
+        # per-row average. The picture and its caption must tell one story,
+        # so both aggregate the same way. "Organisation average" here is the
+        # average group total (total ÷ number of groups), the right baseline
+        # for a total-per-group bar.
+        grp = df.groupby(x)[y].sum().sort_values(ascending=False)
+        avg = float(grp.mean())
         return {
             "ok": True, "chart": "bar",
             "x_col": x, "y_col": y,
@@ -166,7 +174,10 @@ def _hist_stats(df: pd.DataFrame, col: str) -> dict:
 
 def _pie_stats(df: pd.DataFrame, x: str, y: str) -> dict:
     try:
-        grp   = df.groupby(x)[y].mean().sort_values(ascending=False)
+        # SUM, to match make_pie_chart. A pie shows each segment's share of
+        # the total, so the shares in the caption must be computed from the
+        # same totals the slices are drawn from — not from per-row means.
+        grp   = df.groupby(x)[y].sum().sort_values(ascending=False)
         total = grp.sum()
         return {
             "ok": True, "chart": "pie",
@@ -249,13 +260,19 @@ def _fb_bar(s: dict) -> str:
 def _fb_hist(s: dict) -> str:
     if not s.get("ok"):
         return f"Distribution of {s.get('metric_label','metric')} reveals key patterns."
+    # Metric-neutral wording. This fallback runs for every domain, so it
+    # must not assume the rows are employees or that "low" is the bad end —
+    # for revenue, low is the concern; for defect rate, high is. It states
+    # the shape and the right central measure, and points at the tail
+    # without prescribing a domain-specific intervention.
     return (
         f"{s['metric_label']} typical value is {s['use_val']} "
         f"(range: {s['min']}–{s['max']}). "
         f"{'Skewed distribution — use ' + s['use_stat'] + ' (' + str(s['use_val']) + ') for accurate reporting.' if s['shape'] != 'symmetric' else 'Symmetric distribution — mean is a reliable central measure.'} "
-        f"Employees below {s['q1']} (bottom 25%) represent the highest-risk group. "
-        f"Strategic Action: Focus retention interventions on employees below "
-        f"{s['q1']} to address the most at-risk segment first."
+        f"The middle half of records falls between {s['q1']} and {s['q3']}; "
+        f"values outside that band are where this metric varies most. "
+        f"Strategic Action: Review the low and high tails to confirm whether "
+        f"they are genuine cases or data issues before acting on the average."
     )
 
 
@@ -532,8 +549,13 @@ def generate_chart_narrative(
     Never throws — all exceptions handled internally.
     """
     try:
+        from app.engines.domains.base import is_id_column
         title = chart_title.lower()
-        num   = df.select_dtypes(include="number").columns.tolist()
+        # Identifiers (order_id, customer_id) are not measures. Excluding
+        # them here keeps the generic fallback from, e.g., averaging
+        # order_id by region and captioning a revenue chart with it.
+        num   = [c for c in df.select_dtypes(include="number").columns
+                 if not is_id_column(c, df[c])]
         cat   = text_columns(df)
 
         # ── Correlation ───────────────────────────────────
@@ -576,7 +598,11 @@ def generate_chart_narrative(
             return _fb_pie(s)
 
         # ── Trend / Line ──────────────────────────────────
-        elif "trend" in title or "line" in title:
+        # "over time" is the title make_line_chart uses for a time series
+        # ("{col} Over Time"). Without it here the title matched no branch
+        # and fell through to the generic bar fallback, which captioned the
+        # time-series chart with an unrelated column grouped by a category.
+        elif "trend" in title or "line" in title or "over time" in title:
             col = next((c for c in num
                          if c.lower().replace("_","") in
                          title.replace("_","").replace(" ","")),

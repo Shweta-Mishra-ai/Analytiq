@@ -64,7 +64,16 @@ class LLMClient:
         reraise=True,
     )
     def chat(self, messages: list, system: str = "") -> str:
-        """Existing Groq chat — unchanged."""
+        """Existing Groq chat — sends the request to Groq's cloud API.
+
+        Privacy-mode chokepoint: this method (used by AI chat, which embeds
+        a sample of the client's dataframe in `system`) must refuse when
+        LLM_PRIVACY_MODE is on, the same as the Gemini client does. Without
+        this the privacy guarantee advertised on /api/health is false — the
+        rows still reach a third-party API through chat.
+        """
+        from app.ai.local_llm import assert_cloud_allowed
+        assert_cloud_allowed("Groq")
         full = []
         if system:
             full.append({"role": "system", "content": system})
@@ -159,8 +168,15 @@ class LLMClient:
         Simple Groq call for report tasks.
         Uses low temperature to reduce hallucination.
         No tenacity retry — fast fail preferred for reports.
+
+        Same privacy-mode chokepoint as chat(): refuse before any client
+        data reaches Groq. chat_task() already restricts the provider order
+        to ["local"] in privacy mode, but guarding here as well means a new
+        call site cannot reintroduce the leak.
         """
+        from app.ai.local_llm import assert_cloud_allowed
         try:
+            assert_cloud_allowed("Groq")
             resp = self._client.chat.completions.create(
                 messages=[
                     {"role": "system", "content": system},

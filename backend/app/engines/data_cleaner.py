@@ -242,12 +242,21 @@ def auto_clean(df: pd.DataFrame) -> tuple[pd.DataFrame, CleaningReport]:
         _cols = ", ".join(_q(c) for c in df.columns)
         report.add("all_columns", "{} duplicate rows".format(dupes_removed),
                    "rows removed", n_before, n_after, dupes_removed,
-                   sql=("DELETE FROM {table} a USING (\n"
-                        "  SELECT MIN(ctid) AS keep_ctid, " + _cols + "\n"
-                        "  FROM {table} GROUP BY " + _cols + " HAVING COUNT(*) > 1\n"
-                        ") d\nWHERE a.ctid <> d.keep_ctid;\n"
-                        "-- Postgres form (ctid). On other engines use\n"
-                        "-- ROW_NUMBER() OVER (PARTITION BY <all columns>) and delete rn > 1."))
+                   sql=("-- Keep one row per group of identical rows, delete the rest.\n"
+                        "-- ROW_NUMBER() partitions by every column, so only the 2nd+\n"
+                        "-- copy within each duplicate group is removed; unique rows have\n"
+                        "-- rn = 1 and are never touched.\n"
+                        "DELETE FROM {table}\n"
+                        "WHERE ctid IN (\n"
+                        "  SELECT ctid FROM (\n"
+                        "    SELECT ctid,\n"
+                        "           ROW_NUMBER() OVER (PARTITION BY " + _cols + ") AS rn\n"
+                        "    FROM {table}\n"
+                        "  ) t\n"
+                        "  WHERE t.rn > 1\n"
+                        ");\n"
+                        "-- ctid is Postgres-specific. On engines without it, dedupe via\n"
+                        "-- SELECT DISTINCT into a new table, or partition by a real key."))
 
     # ── 5. Per-column cleaning ─────────────────────────────
     for col in df.columns:
@@ -272,6 +281,45 @@ def auto_clean(df: pd.DataFrame) -> tuple[pd.DataFrame, CleaningReport]:
     return df, report
 
 
+# Columns whose text should never be coerced to numbers/dates even if the
+# values happen to parse — identifiers and free text. Matches the loader's
+# own skip list so the two stages agree.
+_COERCE_SKIP_KEYWORDS = ("id", "name", "code", "sku", "url", "link", "image",
+                         "description", "address", "email", "phone", "zip",
+                         "postal", "account", "reference", "ref")
+_DATE_KEYWORDS = ("date", "time", "created", "updated", "timestamp", "dob",
+                  "day", "month", "year")
+# A leading currency symbol, thousands separators, a trailing percent, or
+# accounting-style parentheses for negatives — the things that stop an
+# otherwise-numeric column from parsing as a number.
+_NUMERIC_TEXT_RE = re.compile(r"^\s*\(?\s*[-+]?[$£€₹¥]?\s*[\d,]*\.?\d+\s*%?\s*\)?\s*$")
+
+
+def _coerce_numeric_text(s: pd.Series) -> "pd.Series | None":
+    """Try to read a text column as numbers, stripping currency symbols,
+    thousands separators, a trailing %, and accounting-negative parentheses.
+    Returns the numeric series if ≥80% of non-null values convert, else None.
+    A percent column is divided by 100 so '15%' becomes 0.15, not 15."""
+    non_null = s.dropna().astype(str)
+    if non_null.empty:
+        return None
+    looks_numeric = non_null.str.match(_NUMERIC_TEXT_RE).mean()
+    if looks_numeric < 0.80:
+        return None
+    is_pct = non_null.str.contains("%").mean() > 0.5
+    cleaned = (s.astype(str)
+                .str.replace(r"[,$£€₹¥%\s]", "", regex=True)
+                .str.replace(r"^\((.*)\)$", r"-\1", regex=True))
+    converted = pd.to_numeric(cleaned, errors="coerce")
+    if converted.notna().sum() / max(s.notna().sum(), 1) < 0.80:
+        return None
+    if is_pct:
+        converted = converted / 100.0
+    # Keep values that failed to convert as NA rather than inventing zeros;
+    # the missing-value step downstream then handles them explicitly.
+    return converted
+
+
 def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
     """Apply all relevant cleaning to one column."""
     s = df[col]
@@ -290,6 +338,53 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
                        "whitespace stripped", ws_count, 0, ws_count,
                        sql="UPDATE {{table}} SET {c} = TRIM({c}) WHERE {c} <> TRIM({c});".format(
                            c=_q(col)))
+
+    # ── 5a.5. Coerce number-as-text and date-as-text ───────
+    # Readiness tells the client "auto-clean does this", and until now it
+    # didn't: a "$1,234.56" price stayed text, got mode-filled with a string,
+    # and was silently dropped from every mean, chart and model. Coerce here
+    # so the promise holds and the money/date columns actually reach the
+    # analysis. Identifiers and free-text columns are skipped by name.
+    if is_text_dtype(df[col]) and col in df.columns:
+        col_lower = str(col).lower()
+        if not any(kw in col_lower for kw in _COERCE_SKIP_KEYWORDS):
+            converted_num = _coerce_numeric_text(df[col])
+            if converted_num is not None:
+                n_fixed = int(converted_num.notna().sum())
+                df[col] = converted_num
+                s = df[col]
+                report.add(col, "numbers stored as text (currency/separators)",
+                           "converted to numeric", "text", "numeric", n_fixed,
+                           sql=("-- strip currency symbols and thousands separators,\n"
+                                "-- then cast. Adjust the type to your warehouse.\n"
+                                "ALTER TABLE {{table}} ALTER COLUMN {c} TYPE numeric\n"
+                                "  USING NULLIF(regexp_replace({c}::text,\n"
+                                "    '[^0-9.\\-]', '', 'g'), '')::numeric;").format(
+                                    c=_q(col)))
+            elif any(kw in col_lower for kw in _DATE_KEYWORDS):
+                import warnings as _warnings
+                # Mixed/unknown date formats fall back to dateutil per element;
+                # that's expected here, so silence the "could not infer format"
+                # UserWarning rather than letting it clutter every clean.
+                with _warnings.catch_warnings():
+                    _warnings.simplefilter("ignore", UserWarning)
+                    converted_dt = pd.to_datetime(df[col], errors="coerce",
+                                                  dayfirst=False)
+                    # Retry day-first if month-first left most values unparsed —
+                    # "13/02/2024" only parses one way.
+                    if converted_dt.notna().mean() < 0.70:
+                        alt = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
+                        if alt.notna().mean() > converted_dt.notna().mean():
+                            converted_dt = alt
+                if converted_dt.notna().sum() / max(df[col].notna().sum(), 1) >= 0.80:
+                    n_fixed = int(converted_dt.notna().sum())
+                    df[col] = converted_dt
+                    s = df[col]
+                    report.add(col, "dates stored as text",
+                               "parsed to datetime", "text", "datetime", n_fixed,
+                               sql=("ALTER TABLE {{table}} ALTER COLUMN {c} TYPE date\n"
+                                    "  USING {c}::date;  -- adjust the format if needed").format(
+                                        c=_q(col)))
 
     # ── 5b. Handle missing values ──────────────────────────
     missing = s.isna().sum()

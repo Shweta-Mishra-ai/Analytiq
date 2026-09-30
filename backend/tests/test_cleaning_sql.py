@@ -269,8 +269,50 @@ def test_dedupe_keeps_one_row_of_each_group(messy_df):
     dedupe = [a for a in report.actions if "duplicate rows" in a.issue]
     assert dedupe, "duplicates were not removed"
     sql = dedupe[0].sql
-    assert "HAVING COUNT(*) > 1" in sql
-    assert "MIN(ctid)" in sql, "no row is preserved from each duplicate group"
+    # The correct dedupe keeps one row per group of identical rows via a
+    # ROW_NUMBER() partition. The earlier form —
+    #   DELETE FROM t a USING (... GROUP BY ... HAVING COUNT(*)>1) d
+    #   WHERE a.ctid <> d.keep_ctid
+    # was an UNCORRELATED cross join (no a.col = d.col), so it deleted every
+    # row, not just the extra copies. Guard against its return.
+    assert "ROW_NUMBER() OVER (PARTITION BY" in sql
+    assert "rn > 1" in sql
+    assert "USING (" not in sql, "regressed to the uncorrelated cross-join delete"
+
+
+def test_dedupe_sql_actually_keeps_one_per_group():
+    """Execute the generated dedupe SQL and prove it removes only the extra
+    copies. Run on SQLite (ctid→rowid), which supports ROW_NUMBER windows —
+    the original uncorrelated-join form emptied the whole table here."""
+    import sqlite3
+    import pandas as pd
+    from app.engines.data_cleaner import auto_clean
+
+    df = pd.DataFrame({
+        "region":  ["N", "N", "S", "S", "E", "W"],
+        "revenue": [10, 10, 20, 20, 30, 40],
+        "units":   [1, 1, 2, 2, 3, 4],
+    })
+    _cleaned, report = auto_clean(df)
+    dedupe = [a for a in report.actions if "duplicate rows" in a.issue]
+    assert dedupe, "duplicates were not removed"
+
+    sql = dedupe[0].sql.replace("{table}", "sales").replace("ctid", "rowid")
+    # Drop comment lines (they may themselves contain ';'), then take the
+    # single executable statement.
+    code = "\n".join(ln for ln in sql.splitlines()
+                     if not ln.lstrip().startswith("--"))
+    stmt = code.split(";")[0].strip() + ";"
+
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE sales(region TEXT, revenue NUMERIC, units INT)")
+    con.executemany("INSERT INTO sales VALUES (?,?,?)",
+                    list(df.itertuples(index=False, name=None)))
+    con.execute(stmt)
+    remaining = con.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+    con.close()
+    # 6 rows in, two duplicate pairs → 4 distinct rows must survive.
+    assert remaining == 4, f"expected 4 survivors, got {remaining}"
 
 
 # ══════════════════════════════════════════════════════════

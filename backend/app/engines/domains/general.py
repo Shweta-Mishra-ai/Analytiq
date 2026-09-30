@@ -198,15 +198,25 @@ def _is_obvious_segment_pair(cat: str, num: str) -> bool:
 
 def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
     """
-    Find the categorical × numeric pair with the strongest, statistically
-    significant group difference (Kruskal-Wallis, p<0.01). Returns a dict of
-    display fields, or None when nothing defensible exists. Skips mechanically
-    obvious pairs (age-by-seniority) so the report never headlines a truism.
+    Find the categorical × numeric pair with the strongest group difference
+    (Kruskal-Wallis) that survives multiple-testing correction. Returns a dict
+    of display fields, or None when nothing defensible exists. Skips
+    mechanically obvious pairs (age-by-seniority) so the report never
+    headlines a truism.
+
+    Up to 5 categorical × 6 numeric = 30 pairs are tested here. Picking the
+    single most significant of 30 raw tests at p<0.01 is exactly the garden
+    of forking paths the methodology appendix says this report guards against
+    — about one spurious "significant" segment gap is expected from chance in
+    a family that size. So every candidate's p-value is collected and
+    Benjamini-Hochberg is applied over the whole family; only pairs whose
+    q-value clears FDR_Q are eligible, and the strongest of those is reported.
     """
     from scipy import stats as scipy_stats
+    from app.services.stat_guards import bh_adjust, FDR_Q
     cat_cols = [c for c in df.select_dtypes(include=["object", "string"]).columns
                 if 2 <= df[c].nunique(dropna=True) <= 12]
-    best = None
+    candidates = []
     for cat in cat_cols[:5]:
         for num in num_cols[:6]:
             if _is_obvious_segment_pair(cat, num):
@@ -219,7 +229,7 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
                 if len(groups) < 2:
                     continue
                 h, p = scipy_stats.kruskal(*groups)
-                if np.isnan(h) or p >= 0.01:
+                if np.isnan(h) or np.isnan(p):
                     continue
                 med = sub.groupby(cat)[num].median().sort_values()
                 lo, hi = float(med.iloc[0]), float(med.iloc[-1])
@@ -240,19 +250,34 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
                 standardised = abs(hi - lo) / spread
                 if ratio < MIN_SEGMENT_RATIO and standardised < MIN_SEGMENT_EFFECT:
                     continue
-                score = float(h)
-                if best is None or score > best["h"]:
-                    best = {
-                        "cat": cat, "num": num, "h": float(h),
-                        "ptxt": "p<0.001" if p < 0.001 else "p={:.3f}".format(p),
-                        "k": len(groups), "n": len(sub),
-                        "lo_seg": str(med.index[0])[:30], "hi_seg": str(med.index[-1])[:30],
-                        "lo": lo, "hi": hi,
-                        "ratio": min(ratio, 999.0),
-                    }
+                candidates.append({
+                    "cat": cat, "num": num, "h": float(h), "p": float(p),
+                    "k": len(groups), "n": len(sub),
+                    "lo_seg": str(med.index[0])[:30], "hi_seg": str(med.index[-1])[:30],
+                    "lo": lo, "hi": hi,
+                    "ratio": min(ratio, 999.0),
+                })
             except Exception:
                 logger.warning("segment difference test failed (%s × %s)",
                                cat, num, exc_info=True)
+
+    if not candidates:
+        return None
+
+    # Family-wise FDR control over every pair tested, then keep the strongest
+    # survivor. bh_adjust returns q-values aligned to the input order.
+    qvals = bh_adjust([c["p"] for c in candidates])
+    survivors = [dict(c, q=q) for c, q in zip(candidates, qvals) if q < FDR_Q]
+    if not survivors:
+        logger.info("segment difference: %d candidate(s) failed FDR correction "
+                    "— reporting none", len(candidates))
+        return None
+
+    best = max(survivors, key=lambda c: c["h"])
+    best["ptxt"] = ("p<0.001" if best["p"] < 0.001
+                    else "p={:.3f}".format(best["p"]))
+    best["ptxt"] += (", q<0.001" if best["q"] < 0.001
+                     else ", q={:.3f}".format(best["q"]))
     return best
 
 

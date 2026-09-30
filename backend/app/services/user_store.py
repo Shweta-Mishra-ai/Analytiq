@@ -9,8 +9,10 @@ hashlib) to match the rest of the project's minimal-dependency style.
 from __future__ import annotations
 import logging
 
+import base64
 import hashlib
 import hmac
+import json
 import os
 import pickle
 import secrets
@@ -24,6 +26,13 @@ from app.config import config
 logger = logging.getLogger(__name__)
 
 _PBKDF2_ITERATIONS = 200_000
+
+
+class UserStoreLoadError(RuntimeError):
+    """Raised when an existing account store cannot be read. Deliberately
+    fatal: silently treating an unreadable store as empty would drop the
+    whole app into single-user open mode — auth disabled — which is the
+    opposite of what a corrupted-or-tampered accounts file should do."""
 
 
 @dataclass
@@ -52,7 +61,13 @@ class UserStore:
     """Thread-safe, disk-backed store of client accounts."""
 
     def __init__(self, path: Optional[str] = None):
-        self.path = path or os.path.join(config.data_dir, "users.pkl")
+        # Accounts are stored as JSON, not pickle: the file holds only
+        # usernames, timestamps and base64 salt/hash, so it needs no code
+        # execution to read, and unpickling an accounts file an attacker
+        # could influence is a needless RCE surface. A legacy users.pkl is
+        # migrated once, on first load.
+        self.path = path or os.path.join(config.data_dir, "users.json")
+        self._legacy_path = os.path.join(os.path.dirname(self.path), "users.pkl")
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self._lock = threading.RLock()
         self._users: dict[str, User] = self._load()
@@ -60,17 +75,53 @@ class UserStore:
     def _load(self) -> dict[str, User]:
         if os.path.exists(self.path):
             try:
-                with open(self.path, "rb") as f:
-                    return pickle.load(f)
-            except Exception:
-                return {}
+                with open(self.path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                return {u: User(
+                    username=u,
+                    salt=base64.b64decode(d["salt"]),
+                    password_hash=base64.b64decode(d["password_hash"]),
+                    created_at=float(d["created_at"]),
+                    is_admin=bool(d.get("is_admin", False)),
+                ) for u, d in raw.items()}
+            except Exception as e:
+                # Fail closed — do NOT return {} (that would disable auth).
+                raise UserStoreLoadError(
+                    f"Account store at {self.path} exists but could not be "
+                    f"read ({e}). Refusing to start with auth disabled. "
+                    f"Restore the file from backup or remove it deliberately "
+                    f"to reset to open mode.") from e
+        # One-time migration of a legacy pickle store.
+        if os.path.exists(self._legacy_path):
+            try:
+                with open(self._legacy_path, "rb") as f:
+                    users = pickle.load(f)
+                logger.info("Migrating legacy users.pkl → users.json")
+                self._users = users
+                self._save()
+                return users
+            except Exception as e:
+                raise UserStoreLoadError(
+                    f"Legacy account store {self._legacy_path} exists but "
+                    f"could not be read ({e}). Refusing to start with auth "
+                    f"disabled.") from e
         return {}
 
     def _save(self) -> None:
+        payload = {u: {
+            "salt": base64.b64encode(usr.salt).decode("ascii"),
+            "password_hash": base64.b64encode(usr.password_hash).decode("ascii"),
+            "created_at": usr.created_at,
+            "is_admin": usr.is_admin,
+        } for u, usr in self._users.items()}
         tmp = self.path + ".tmp"
-        with open(tmp, "wb") as f:
-            pickle.dump(self._users, f, protocol=pickle.HIGHEST_PROTOCOL)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
         os.replace(tmp, self.path)
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            logger.debug("could not chmod %s", self.path, exc_info=True)
 
     def is_empty(self) -> bool:
         with self._lock:

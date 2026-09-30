@@ -135,8 +135,14 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
             logger.warning("%s unexpected failure", exc_info=True)
             continue
 
-    # Categorical drivers
-    cat_cols = [c for c in df.select_dtypes(include=["object", "string"]).columns
+    # Categorical drivers. Bool columns are included deliberately: pandas
+    # counts bool as neither "number" nor "object"/"string", so a Yes/No
+    # field the cleaner converted to bool (OverTime, Attrition-style flags)
+    # would otherwise vanish from the driver search entirely — dropping the
+    # single strongest attrition driver on a typical HR file. A bool is just
+    # a 2-level categorical, which is exactly what crosstab/chi-square wants.
+    cat_cols = [c for c in df.select_dtypes(
+                    include=["object", "string", "bool", "boolean"]).columns
                 if c != attr_col and df[c].nunique() <= 20]
     for col in cat_cols[:6]:
         try:
