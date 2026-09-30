@@ -194,3 +194,49 @@ def test_m5_corrupt_user_store_fails_closed(tmp_path):
     p.write_text("{ this is not valid json")
     with pytest.raises(UserStoreLoadError):
         UserStore(str(p))
+
+
+# ── ML pipeline: date/ID targets, XGBoost on integer classes ───────────────
+def test_ml_targets_skip_dates_and_ids():
+    from app.engines.ml_engine import suggest_targets
+    import pandas as pd, numpy as np
+    rng = np.random.default_rng(0)
+    n = 300
+    df = pd.DataFrame({
+        "order_id":   np.arange(n),
+        "order_date": pd.date_range("2024-01-01", periods=n, freq="D"),
+        "region":     rng.choice(["N", "S", "E", "W"], n),
+        "revenue":    rng.normal(100, 20, n),
+    })
+    cols = [t["column"] for t in suggest_targets(df)]
+    assert "order_id" not in cols, "ID offered as ML target"
+    assert "order_date" not in cols, "datetime offered as ML target"
+    assert "region" in cols and "revenue" in cols
+
+
+def test_ml_targets_no_crash_on_datetime_column():
+    # A parsed datetime column used to crash suggest_targets with
+    # abs(Timestamp). It must return cleanly now.
+    from app.engines.ml_engine import suggest_targets
+    import pandas as pd, numpy as np
+    df = pd.DataFrame({
+        "ts":     pd.date_range("2024-01-01", periods=120, freq="h"),
+        "amount": np.arange(120.0),
+        "grp":    (["a", "b", "c"] * 40),
+    })
+    out = suggest_targets(df)          # must not raise
+    assert all(s["column"] != "ts" for s in out)
+
+
+def test_ml_xgboost_trains_on_integer_classes():
+    from app.engines.ml_engine import run_ml_pipeline
+    import pandas as pd, numpy as np
+    rng = np.random.default_rng(1)
+    n = 400
+    x1 = rng.normal(0, 1, n)
+    # integer class labels 1..4 (not 0-indexed) — the case XGBoost rejected
+    y = np.clip((x1 * 1.5 + rng.normal(0, 0.5, n)).round().astype(int), 1, 4)
+    df = pd.DataFrame({"f1": x1, "f2": rng.normal(0, 1, n), "rating": y})
+    report = run_ml_pipeline(df, "rating")
+    names = [m.name for m in report.models]
+    assert "XGBoost" in names, "XGBoost was dropped on integer class target"

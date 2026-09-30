@@ -96,6 +96,11 @@ class MLReport:
 #  TASK DETECTION
 # ══════════════════════════════════════════════════════════
 
+# Above this many distinct values, a column is not a useful classification
+# target for this pipeline (and tree models fail on rare classes in the split).
+_MAX_TARGET_CLASSES = 30
+
+
 def detect_task(series: pd.Series) -> Tuple[str, str]:
     """
     Detect if target is regression or classification.
@@ -129,22 +134,57 @@ def suggest_targets(df: pd.DataFrame) -> List[Dict]:
     Suggest good target columns.
     Returns ranked list with task type and reason.
     """
+    from app.engines.domains.base import is_id_column
     suggestions = []
     for col in df.columns:
         s = df[col].dropna()
         if len(s) < 10:
             continue
 
-        # Skip ID-like columns
-        if s.nunique() / max(len(s), 1) > 0.95 and len(s) > 50:
+        # Skip datetime/timedelta columns: a raw timestamp is not a target
+        # this pipeline can model, and scoring it as "continuous numeric"
+        # crashes on abs(Timestamp). (A date column the cleaner now parses to
+        # datetime used to reach here and 500 the whole ML page.)
+        if (pd.api.types.is_datetime64_any_dtype(s)
+                or pd.api.types.is_timedelta64_dtype(s)):
             continue
 
+        # Skip identifiers — predicting a customer_id or order_id is
+        # meaningless. Catches both near-unique columns and named ids.
+        if is_id_column(col, df[col]):
+            continue
+        # Near-unique columns are id-like — but ONLY when they are text or
+        # integer. A continuous float target (revenue, salary, price) is
+        # almost always ~100% unique and is a perfectly good regression
+        # target; the old rule skipped every one of them, so the ML page
+        # never offered a continuous outcome to predict.
+        if (not pd.api.types.is_float_dtype(s)
+                and s.nunique() / max(len(s), 1) > 0.95 and len(s) > 50):
+            continue
+
+        # Skip date-like text columns (e.g. an unparsed "order_date"): a date
+        # is not a target this pipeline predicts, and as a string it would be
+        # scored as a high-cardinality classification target.
+        if is_text_dtype(s):
+            parsed = pd.to_datetime(s, errors="coerce")
+            if parsed.notna().mean() > 0.8:
+                continue
+
         task, reason = detect_task(s)
+
+        # A classification target with too many classes is not something this
+        # pipeline can model usefully — it also makes tree models fail when a
+        # rare class lands entirely in the test split. Cap it so such a column
+        # is never offered as a target.
+        if task == "classification" and s.nunique() > _MAX_TARGET_CLASSES:
+            continue
+
         score = 0
 
         # Prefer columns that are informative
         if task == "regression":
-            cv = s.std() / abs(s.mean()) if s.mean() != 0 else 0
+            mean = float(s.mean())
+            cv = float(s.std()) / abs(mean) if mean != 0 else 0.0
             score = min(cv, 1.0)
         else:
             # Prefer balanced classes
@@ -188,11 +228,18 @@ def prepare_features(
         available = [c for c in selected_features if c in df.columns]
         df = df[available]
     else:
-        # Drop ID-like columns
+        # Drop ID-like and empty columns
+        from app.engines.domains.base import is_id_column
         drop_cols = []
         for col in df.columns:
             s = df[col].dropna()
             if len(s) == 0:
+                drop_cols.append(col)
+                continue
+            # Identifiers (EmployeeID, order_id, …) are not predictors: they
+            # carry no signal, and an integer id would otherwise slip through
+            # as a numeric feature and pollute feature importance.
+            if is_id_column(col, df[col]):
                 drop_cols.append(col)
                 continue
             # High cardinality string → drop
@@ -307,23 +354,36 @@ def train_models(
     Train all models, cross-validate, evaluate on holdout.
     Returns list of ModelResult sorted by cv_score descending.
     """
-    # Encode classification target
+    # Encode classification target to contiguous 0..k-1 labels. This must
+    # happen for integer targets too, not just strings: XGBoost requires the
+    # classes to be exactly [0..k-1], so a target like a 1–5 rating or
+    # 1–9 count made XGBoost fail every fit ("Invalid classes inferred …
+    # Expected [0 1 2 3], got [1 2 3 4]") and be silently dropped from the
+    # leaderboard. Encoding here keeps XGBoost in play; the fitted encoder is
+    # returned so predictions decode back to the original labels.
     if task == "classification":
-        if y.dtype == object or str(y.dtype) == "str":
-            if target_encoder is None:
-                target_encoder = LabelEncoder()
-            y = pd.Series(
-                target_encoder.fit_transform(y.astype(str)),
-                index=y.index
-            )
-        else:
-            y = y.astype(int)
+        if target_encoder is None:
+            target_encoder = LabelEncoder()
+        y_values = (y.astype(str)
+                    if (y.dtype == object or str(y.dtype) == "str") else y)
+        y = pd.Series(target_encoder.fit_transform(y_values), index=y.index)
 
-    # Train/test split — stratified for classification
-    stratify = y if task == "classification" and y.nunique() <= 20 else None
+    # Train/test split — stratified for classification, but only when every
+    # class has at least 2 rows. Stratifying with a singleton class raises and
+    # would 500 the whole training call before any model runs; fall back to an
+    # unstratified split instead of crashing.
+    min_class = int(y.value_counts().min()) if task == "classification" else 0
+    stratify = (y if task == "classification"
+                and y.nunique() <= 20 and min_class >= 2 else None)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=stratify
     )
+
+    # Cross-validation needs at least `cv` members in the smallest training
+    # class; cap cv so a small-but-valid target doesn't make every fit fail.
+    cv_folds = 5
+    if task == "classification":
+        cv_folds = max(2, min(5, min_class))
 
     scoring = "r2" if task == "regression" else "f1_weighted"
     results = []
@@ -335,7 +395,7 @@ def train_models(
             # Cross-validation on training set
             cv_scores = cross_val_score(
                 pipe, X_train, y_train,
-                cv=5, scoring=scoring, n_jobs=-1
+                cv=cv_folds, scoring=scoring, n_jobs=-1
             )
 
             # Fit on full training set
@@ -549,12 +609,21 @@ def predict_what_if(
                 except Exception:
                     result["prediction_label"] = str(pred)
 
-            # Probability
+            # Probability, keyed by the real class labels (decode the
+            # encoded 0..k-1 class ids back through the target encoder so the
+            # keys read as the user's own values, not 0/1/2).
             try:
                 proba = pipe.predict_proba(X_input)[0]
+                classes = list(pipe.classes_)
+                if ml_report.target_encoder is not None:
+                    try:
+                        classes = list(ml_report.target_encoder.inverse_transform(
+                            [int(c) for c in classes]))
+                    except Exception:
+                        classes = list(pipe.classes_)
                 result["probabilities"] = {
                     str(c): round(float(p), 4)
-                    for c, p in zip(pipe.classes_, proba)
+                    for c, p in zip(classes, proba)
                 }
                 result["confidence"] = round(float(max(proba)) * 100, 1)
             except Exception:
