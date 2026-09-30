@@ -240,3 +240,41 @@ def test_ml_xgboost_trains_on_integer_classes():
     report = run_ml_pipeline(df, "rating")
     names = [m.name for m in report.models]
     assert "XGBoost" in names, "XGBoost was dropped on integer class target"
+
+
+# ── Drivers: detect binary outcomes beyond HR churn ────────────────────────
+def test_drivers_detects_sales_won_lost():
+    from app.engines.predictive import find_binary_target, compute_drivers, _to_binary
+    import pandas as pd, numpy as np
+    rng = np.random.default_rng(3)
+    n = 400
+    rep = rng.choice(["R1", "R2", "R3"], n)
+    won = np.where(rep == "R3", rng.random(n) < 0.15, rng.random(n) < 0.5)
+    df = pd.DataFrame({
+        "order_id": np.arange(n),
+        "sales_rep": rep,
+        "revenue": rng.normal(1000, 200, n),
+        "status": np.where(won, "Won", "Lost"),
+    })
+    # status (Won/Lost) must be detected as the binary outcome
+    assert find_binary_target(df) == "status"
+    # and it must map to a non-degenerate 0/1 split
+    y = _to_binary(df["status"])
+    assert y is not None and y.nunique() == 2
+    result = compute_drivers(df, "status")
+    assert result is not None
+    factors = [d[0] if isinstance(d, tuple) else d for d in result.top_drivers]
+    assert "order_id" not in factors, "id leaked into drivers"
+
+
+# ── Dashboard KPIs / fields must not treat ids as measures ─────────────────
+def test_dashboard_kpis_exclude_ids(tmp_path):
+    from app.services.filters import field_catalog
+    import pandas as pd, numpy as np
+    df = pd.DataFrame({
+        "order_id": np.arange(200),
+        "revenue": np.random.default_rng(0).normal(100, 10, 200),
+    })
+    cat = {f["name"]: f for f in field_catalog(df)}
+    assert cat["order_id"]["is_id"] is True
+    assert cat["revenue"]["is_id"] is False

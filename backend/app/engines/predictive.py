@@ -20,8 +20,20 @@ from app.services.dtypes import is_categorical_like
 
 logger = logging.getLogger(__name__)
 
-_BINARY_TARGET_NAMES = ("attrition", "left", "churn", "churned", "exited",
-                        "resigned", "terminated", "is_fraud", "default")
+# Column names that commonly hold a binary business outcome, across domains
+# — HR (attrition), finance (default/fraud), sales (won/lost), ecommerce and
+# marketing (converted/subscribed), and generic status/outcome flags. The
+# nunique()==2 check below still guards against a multi-value "status".
+_BINARY_TARGET_NAMES = (
+    "attrition", "left", "churn", "churned", "exited", "resigned",
+    "terminated", "is_fraud", "fraud", "default",
+    "status", "outcome", "result", "disposition",
+    "won", "lost", "win", "closed_won", "is_won", "deal_status",
+    "converted", "conversion", "subscribed", "subscription",
+    "active", "inactive", "cancelled", "canceled", "renewed",
+    "refunded", "returned", "approved", "rejected",
+    "success", "failed", "failure", "retained", "paid", "unpaid",
+)
 
 
 @dataclass
@@ -210,7 +222,16 @@ def _to_binary(s: pd.Series) -> Optional[pd.Series]:
     if pd.api.types.is_numeric_dtype(s):
         hi = max(vals)
         return (s == hi).astype(int)
-    truthy = {"yes", "1", "true", "left", "churned", "y", "t"}
+    # The "event" (positive) class across domains — an employee leaving, a
+    # deal won, a customer converting/subscribing, a payment made. Without
+    # the sales/marketing/finance words here, a Won/Lost column mapped both
+    # classes to 0 (neither is "yes"/"left") and looked degenerate.
+    truthy = {"yes", "1", "true", "y", "t",
+              "left", "churned", "exited", "resigned", "terminated",
+              "won", "win", "success", "successful", "closed won", "closed_won",
+              "converted", "subscribed", "active", "renewed", "approved",
+              "retained", "paid", "completed", "returned", "default",
+              "fraud", "fraudulent"}
     return s.astype(str).str.lower().str.strip().isin(truthy).astype(int)
 
 

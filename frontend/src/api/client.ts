@@ -131,6 +131,7 @@ export interface Field {
   kind: 'numeric' | 'categorical' | 'datetime'
   missing_pct: number
   unique: number
+  is_id?: boolean
   values?: string[]
   min?: number | string
   max?: number | string

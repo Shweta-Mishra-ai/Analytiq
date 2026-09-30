@@ -67,11 +67,20 @@ def field_catalog(df: pd.DataFrame, max_unique: int = 50) -> list[dict]:
             kind = "numeric"
         else:
             kind = "categorical"
+        # Flag identifiers so the dashboard and chart builder don't offer
+        # "Σ order_id" as a KPI or chart an id by default — an id is a
+        # column to filter or list by, not a measure to aggregate.
+        from app.engines.domains.base import is_id_column
+        try:
+            is_id = bool(is_id_column(col, s))
+        except Exception:
+            is_id = False
         entry: dict[str, Any] = {
             "name": str(col),
             "kind": kind,
             "missing_pct": round(float(s.isna().mean()) * 100, 1),
             "unique": int(s.nunique()),
+            "is_id": is_id,
         }
         if kind == "categorical" and s.nunique() <= max_unique:
             entry["values"] = [str(v) for v in s.dropna().unique().tolist()[:max_unique]]

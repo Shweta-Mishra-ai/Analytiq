@@ -61,9 +61,15 @@ export default function DashboardPage() {
     apiGet<{ fields: Field[] }>(`/api/charts/${ds}/fields`)
       .then((r) => {
         setFields(r.fields)
-        const nums = r.fields.filter((f) => f.kind === 'numeric')
+        // Identifiers are not measures — never auto-chart or aggregate them
+        // (a default "order_id by region" tile is noise).
+        const nums = r.fields.filter((f) => f.kind === 'numeric' && !f.is_id)
         const cats = r.fields.filter(
-          (f) => f.kind === 'categorical' && f.unique > 1 && f.unique <= 30,
+          (f) =>
+            f.kind === 'categorical' &&
+            !f.is_id &&
+            f.unique > 1 &&
+            f.unique <= 30,
         )
         const dates = r.fields.filter((f) => f.kind === 'datetime')
         const auto: TileSpec[] = []

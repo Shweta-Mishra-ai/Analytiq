@@ -67,7 +67,11 @@ def fields(ds_id: str, owner: str = Depends(current_owner)):
 @router.post("/{ds_id}/kpis")
 def kpis(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
     df = _df(owner, ds_id, body.filters)
-    num_cols = df.select_dtypes(include="number").columns.tolist()
+    from app.engines.domains.base import is_id_column
+    # Summing an identifier is meaningless ("Σ order_id"), so exclude ids
+    # from the measure cards — keep only real numeric measures.
+    num_cols = [c for c in df.select_dtypes(include="number").columns
+                if not is_id_column(c, df[c])]
     cards = [
         {"label": "Rows", "value": len(df), "format": "int"},
         {"label": "Columns", "value": df.shape[1], "format": "int"},
