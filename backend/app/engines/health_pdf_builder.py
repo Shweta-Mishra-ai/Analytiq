@@ -83,11 +83,15 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     CW   = W - 36 * mm
     now  = datetime.datetime.now().strftime("%B %d, %Y")
 
+    # One professional navy accent for every niche. The per-niche green
+    # (sales) and orange (e-commerce) accents were the loud, unprofessional
+    # brand colours on the report; domains are distinguished by their section
+    # labels, not by a colour swap.
     NICHE_COLORS = {
-        "hr":        "#1565C0",
-        "sales":     "#2E7D32",
-        "ecommerce": "#E64A19",
-        "finance":   "#0D47A1",
+        "hr":        "#1B4FD8",
+        "sales":     "#1B4FD8",
+        "ecommerce": "#1B4FD8",
+        "finance":   "#1B4FD8",
         "general":   "#1B4FD8",
     }
     accent_hex  = NICHE_COLORS.get(niche, "#1B4FD8")

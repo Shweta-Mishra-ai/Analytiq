@@ -50,83 +50,46 @@ CW_DEFAULT = W - 36 * mm   # content width (18mm each side)
 
 
 # ══════════════════════════════════════════════════════════
-#  DOMAIN COLOUR THEMES  (matches your existing THEMES keys)
+#  REPORT COLOUR THEME  (single professional palette)
 # ══════════════════════════════════════════════════════════
+#
+# One restrained corporate palette for every domain: deep navy with a blue
+# accent. The old per-domain themes headlined a loud orange (e-commerce) and
+# a bright green (sales) as the dominant brand colour, which read as
+# unprofessional on a client deliverable. The only colour that varies by
+# finding is the small severity chip (red / amber / green / blue), which is a
+# conventional status signal, not brand colour. Domains now differ only by
+# their label text, not by a colour swap.
 
-THEMES = {
-    "Corporate Light": {
+def _navy_theme(domain_label: str) -> dict:
+    return {
         "cover_bg":    "#0A1628", "cover_accent": "#1B4FD8",
         "header_bg":   "#0A1628", "header_text":  "#FFFFFF",
         "accent":      "#1B4FD8", "accent2":      "#60A5FA",
         "text":        "#1F2937", "text_muted":   "#6B7280",
         "bg_light":    "#EFF6FF", "bg_card":      "#F8FAFF",
         "border":      "#E5E7EB",
-        "positive":    "#10B981", "negative":     "#EF4444",
-        "warning":     "#F59E0B", "info":         "#3B82F6",
+        # Semantic status colours only — kept for severity chips, never used
+        # as the dominant brand colour.
+        "positive":    "#0F766E", "negative":     "#DC2626",
+        "warning":     "#B45309", "info":         "#2563EB",
         "critical_bg": "#FEE2E2", "warning_bg":   "#FEF3C7",
-        "positive_bg": "#D1FAE5", "info_bg":      "#DBEAFE",
-        "domain_label":"BUSINESS ANALYTICS",
-        "domain_badge":"#1B4FD8",
-    },
-    "HR Blue": {
-        "cover_bg":    "#0A1F4E", "cover_accent": "#1976D2",
-        "header_bg":   "#0A1F4E", "header_text":  "#FFFFFF",
-        "accent":      "#1976D2", "accent2":      "#90CAF9",
-        "text":        "#1A2035", "text_muted":   "#5A6482",
-        "bg_light":    "#E8F0FE", "bg_card":      "#F5F8FF",
-        "border":      "#C5D3F0",
-        "positive":    "#2E7D32", "negative":     "#C62828",
-        "warning":     "#E65100", "info":         "#1565C0",
-        "critical_bg": "#FFEBEE", "warning_bg":   "#FFF3E0",
-        "positive_bg": "#E8F5E9", "info_bg":      "#E3F2FD",
-        "domain_label":"HR & PEOPLE ANALYTICS",
-        "domain_badge":"#1976D2",
-    },
-    "Ecommerce Orange": {
-        "cover_bg":    "#3E1500", "cover_accent": "#F4511E",
-        "header_bg":   "#BF360C", "header_text":  "#FFFFFF",
-        "accent":      "#F4511E", "accent2":      "#FFAB91",
-        "text":        "#1A1A1A", "text_muted":   "#5A5A5A",
-        "bg_light":    "#FBE9E7", "bg_card":      "#FFF8F6",
-        "border":      "#FFCCBC",
-        "positive":    "#2E7D32", "negative":     "#B71C1C",
-        "warning":     "#E65100", "info":         "#1565C0",
-        "critical_bg": "#FFEBEE", "warning_bg":   "#FFF3E0",
-        "positive_bg": "#E8F5E9", "info_bg":      "#E8F0FE",
-        "domain_label":"E-COMMERCE ANALYTICS",
-        "domain_badge":"#F4511E",
-    },
-    "Sales Green": {
-        "cover_bg":    "#0A2710", "cover_accent": "#2E7D32",
-        "header_bg":   "#1B5E20", "header_text":  "#FFFFFF",
-        "accent":      "#2E7D32", "accent2":      "#A5D6A7",
-        "text":        "#1A2A1A", "text_muted":   "#4A6A4A",
-        "bg_light":    "#E8F5E9", "bg_card":      "#F5FBF5",
-        "border":      "#C8E6C9",
-        "positive":    "#1B5E20", "negative":     "#B71C1C",
-        "warning":     "#E65100", "info":         "#1565C0",
-        "critical_bg": "#FFEBEE", "warning_bg":   "#FFF3E0",
-        "positive_bg": "#E8F5E9", "info_bg":      "#E8F0FE",
-        "domain_label":"SALES PERFORMANCE ANALYTICS",
-        "domain_badge":"#2E7D32",
-    },
-    "Dark Tech": {
-        "cover_bg":    "#0D1117", "cover_accent": "#58A6FF",
-        "header_bg":   "#0D1117", "header_text":  "#E6EDF3",
-        "accent":      "#58A6FF", "accent2":      "#3FB950",
-        "text":        "#E6EDF3", "text_muted":   "#8B949E",
-        "bg_light":    "#161B22", "bg_card":      "#1C2128",
-        "border":      "#30363D",
-        "positive":    "#3FB950", "negative":     "#F85149",
-        "warning":     "#D29922", "info":         "#58A6FF",
-        "critical_bg": "#1C1010", "warning_bg":   "#1C1800",
-        "positive_bg": "#0D1A0F", "info_bg":      "#0D1421",
-        "domain_label":"TECHNICAL ANALYTICS",
-        "domain_badge":"#58A6FF",
-    },
+        "positive_bg": "#CCFBF1", "info_bg":      "#DBEAFE",
+        "domain_label": domain_label,
+        "domain_badge": "#1B4FD8",
+    }
+
+
+THEMES = {
+    "Corporate Light":   _navy_theme("BUSINESS ANALYTICS"),
+    "HR Blue":           _navy_theme("HR & PEOPLE ANALYTICS"),
+    "Ecommerce Orange":  _navy_theme("E-COMMERCE ANALYTICS"),
+    "Sales Green":       _navy_theme("SALES PERFORMANCE ANALYTICS"),
+    "Dark Tech":         _navy_theme("TECHNICAL ANALYTICS"),
 }
 
-# Auto-select theme by domain
+# Every domain now resolves to the same navy palette; the theme only carries
+# the domain's label. Keys are kept so an explicit theme_name still resolves.
 DOMAIN_THEMES = {
     "hr":        "HR Blue",
     "ecommerce": "Ecommerce Orange",
@@ -745,10 +708,10 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
          "color": T["accent"]},
         {"label": "MISSING DATA",  "value": "{:.1f}%".format(miss_pct),
          "sub": "0% = perfect",
-         "color": T["positive"] if miss_pct == 0 else T["warning"]},
+         "color": T["accent"] if miss_pct == 0 else T["negative"]},
         {"label": "QUALITY SCORE", "value": str(qual),
          "sub": "Grade {}".format(grade) if grade else "/ 100",
-         "color": T["positive"]},
+         "color": T["accent"]},
     ], CW)
 
     _readiness_block(story, s, T, df, CW)
@@ -1535,15 +1498,19 @@ def build_pdf(
     n_charts  = len(chart_data)
     qual      = getattr(profile, "overall_quality_score", "—")
 
+    # Cover KPI figures read in the brand navy accent, not green — a green
+    # "QUALITY 99.8" on the cover was the loud, informal note on an otherwise
+    # formal front page. Only a genuinely bad figure (notable missing data)
+    # switches to red; nothing on the cover is green or amber.
     kpis_cover = [
         {"label": "RECORDS",      "value": "{:,}".format(n_rows),
          "sub":   "Clean dataset", "color": T["accent"]},
         {"label": "QUALITY",      "value": str(qual),
-         "sub":   "/ 100",         "color": T["positive"]},
+         "sub":   "/ 100",         "color": T["accent"]},
         {"label": "CHARTS",       "value": str(n_charts),
          "sub":   "Incl. in report","color": T["accent"]},
         {"label": "MISSING DATA", "value": "{:.1f}%".format(miss_pct),
-         "sub":   "0% = perfect",  "color": T["positive"] if miss_pct < 1 else T["warning"]},
+         "sub":   "0% = perfect",  "color": T["accent"] if miss_pct < 1 else T["negative"]},
     ]
 
     # ── Cover page ────────────────────────────────────────

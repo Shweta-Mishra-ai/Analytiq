@@ -95,12 +95,16 @@ def compute_health(df: pd.DataFrame) -> dict:
     if not ready and score > _READY_CAP:
         score = _READY_CAP
 
-    grade_map = [(90,"A+","Excellent","#22d3a5"),
-                 (80,"A", "Very Good","#42b983"),
-                 (70,"B+","Good",     "#60a5fa"),
-                 (60,"B", "Fair",     "#fbbf24"),
-                 (50,"C", "Needs Work","#f97316"),
-                 (0, "D", "Poor",    "#ef4444")]
+    # Navy-family grade colours — no green, no orange. Strong grades read in
+    # the brand navy/blue, middling grades in a neutral slate, and only a
+    # genuinely poor grade in a restrained red. The word ("Excellent"/"Fair"/
+    # "Poor") carries the judgement; the colour stays professional.
+    grade_map = [(90,"A+","Excellent", "#1B4FD8"),
+                 (80,"A", "Very Good", "#1B4FD8"),
+                 (70,"B+","Good",      "#2563EB"),
+                 (60,"B", "Fair",      "#475569"),
+                 (50,"C", "Needs Work","#475569"),
+                 (0, "D", "Poor",      "#DC2626")]
     grade, label, color = next(
         (g, ln, c) for thresh, g, ln, c in grade_map if score >= thresh)
 
