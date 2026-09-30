@@ -766,29 +766,37 @@ def _generate_key_insights(
 ) -> Tuple[List[str], str]:
     insights = []
 
-    # Pareto insights
+    # Pareto / concentration insights — a senior analyst frames a top-heavy
+    # split as both a focus opportunity AND a dependency risk, not just
+    # "focus on top performers".
     for p in report.pareto:
         if p.pareto_holds:
             insights.append(
-                "Pareto holds for '{}' by '{}': top {:.0f}% of groups "
-                "drive {:.0f}% of value. Focus resources on top performers.".format(
-                    p.value_col, p.group_col,
-                    20, p.top_groups_share)
+                "'{}' is concentrated: the top 20% of '{}' account for about "
+                "{:.0f}% of the total. That is where to focus effort — but it "
+                "is also a dependency to watch, since the result leans on a "
+                "small set of groups.".format(
+                    p.value_col, p.group_col, p.top_groups_share)
             )
         else:
             insights.append(
-                "Value in '{}' is evenly distributed across '{}' segments — "
-                "no single group dominates.".format(p.value_col, p.group_col)
+                "'{}' is spread fairly evenly across '{}' — no small set of "
+                "groups drives the total, so broad measures will move it more "
+                "than targeting a few.".format(p.value_col, p.group_col)
             )
 
-    # Root cause insights
+    # Driver insights. Deliberately NOT called "root cause": this is a
+    # difference between high and low performers, i.e. an association to
+    # investigate, not an established cause.
     for rc in report.root_causes:
         if rc.drivers:
+            diff = rc.drivers[0]["diff_pct"] if rc.drivers[0].get("diff_pct") else 0
             insights.append(
-                "Root cause of low '{}': '{}' is the top driver "
-                "({:.0f}% difference between low and high performers).".format(
-                    rc.target_col, rc.top_driver,
-                    rc.drivers[0]["diff_pct"] if rc.drivers[0].get("diff_pct") else 0)
+                "The factor that most separates high and low '{}' groups is "
+                "'{}' ({:.0f}% difference between them). Treat it as the first "
+                "hypothesis to test, not a proven cause — confirm it holds "
+                "after accounting for group size and mix.".format(
+                    rc.target_col, rc.top_driver, diff)
             )
 
     # Cohort insights

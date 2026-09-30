@@ -296,3 +296,32 @@ def test_correlation_pvalue_not_zero_and_q_separate():
     assert "p<0.001" in c.label
     # q_value exists and is the multiple-comparison-adjusted value
     assert hasattr(c, "q_value") and c.q_value >= c.p_value
+
+
+# ── Narrative voice: senior-analyst, not robotic template ──────────────────
+def test_chart_narratives_read_human():
+    from app.ai.report_narrator import generate_chart_narrative, _humanize
+    import pandas as pd, numpy as np
+    rng = np.random.default_rng(0)
+    n = 2000
+    df = pd.DataFrame({
+        "region": rng.choice(["North", "South", "East", "West"], n, p=[.2, .2, .2, .4]),
+        "revenue": rng.gamma(2, 1000, n).round(2),
+        "units": rng.integers(1, 10, n),
+    })
+    banned = ["Strategic Action:", "requiring attention",
+              "Maintain this balance and monitor quarterly",
+              "replicate '"]
+    for title in ["revenue by region", "revenue Over Time",
+                  "Distribution: revenue", "Correlation Matrix",
+                  "revenue Share by region"]:
+        txt = generate_chart_narrative(df, title)
+        for phrase in banned:
+            assert phrase not in txt, f"template phrase {phrase!r} in {title!r}: {txt}"
+        # big raw numbers should be humanized, not printed in full
+        assert "5301335" not in txt
+
+    # humanizer sanity
+    assert _humanize(5301335.94) == "5.30M"
+    assert _humanize(12727) == "12.7K"
+    assert _humanize(0.42) == "0.42"

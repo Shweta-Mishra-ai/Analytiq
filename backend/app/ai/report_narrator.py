@@ -73,6 +73,27 @@ _DOMAIN_LABELS = {
 from app.services.dtypes import text_columns
 
 
+def _humanize(v) -> str:
+    """Format a number the way an analyst writes it in prose: 5.3M, 12.7K,
+    1,240, 0.42 — not 5301335.94. Keeps reports readable and professional."""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if n != n:  # NaN
+        return "n/a"
+    a = abs(n)
+    if a >= 1_000_000_000:
+        return f"{n/1_000_000_000:.2f}B"
+    if a >= 1_000_000:
+        return f"{n/1_000_000:.2f}M"
+    if a >= 10_000:
+        return f"{n/1_000:.1f}K"
+    if a >= 1:
+        return f"{n:,.0f}" if a >= 100 else f"{n:,.1f}"
+    return f"{n:.3g}"
+
+
 def clean_col(col: str) -> str:
     low = col.lower().strip()
     if low in _COL_MAP:
@@ -246,15 +267,37 @@ def _corr_stats(df: pd.DataFrame) -> list:
 def _fb_bar(s: dict) -> str:
     if not s.get("ok"):
         return f"Analysis of {s.get('metric_label','metric')} by group reveals performance patterns."
-    return (
-        f"{s['metric_label']} across {s['n_groups']} {s['dimension_label']} groups: "
-        f"'{s['top']}' leads at {s['top_val']} while '{s['worst']}' trails "
-        f"at {s['worst_val']} — a {s['gap_pct']:.0f}% gap requiring attention. "
-        f"{s['above_avg']} of {s['n_groups']} groups exceed the organisation "
-        f"average of {s['org_avg']}. "
-        f"Strategic Action: Conduct root-cause review in '{s['worst']}' and "
-        f"replicate '{s['top']}' practices to close the {s['gap_pct']:.0f}% gap."
+    metric, dim = s['metric_label'], s['dimension_label']
+    top, worst = s['top'], s['worst']
+    gap = s['gap_pct']
+    vals = s.get("all_values") or {}
+    total = sum(v for v in vals.values()) or 0.0
+    top_share = (s['top_val'] / total * 100) if total else 0.0
+
+    # A senior analyst scales the language to the size of the gap rather than
+    # calling every difference "requiring attention".
+    if gap < 15:
+        return (
+            f"{metric} is broadly comparable across the {s['n_groups']} "
+            f"{dim} groups — {top} is highest at {_humanize(s['top_val'])} and "
+            f"{worst} lowest at {_humanize(s['worst_val'])}, a spread of only "
+            f"{gap:.0f}%. On this evidence {dim} is not a meaningful lever for "
+            f"{metric}; look elsewhere for what moves it."
+        )
+    lead = (
+        f"{metric} is concentrated in {top} ({_humanize(s['top_val'])}, "
+        f"{top_share:.0f}% of the total), while {worst} is lowest at "
+        f"{_humanize(s['worst_val'])} — a {gap:.0f}% spread across {dim}. "
     )
+    # Distinguish a total (sum) from a rate: a leader on a summed metric may
+    # simply have more volume, which is the first thing to rule out.
+    caveat = (
+        f"Before reading this as {top} outperforming, rule out mix and size: "
+        f"a higher total often just reflects more volume in {top}. Compare "
+        f"per-unit or per-customer figures, and check whether the gap holds "
+        f"once {dim} size is controlled for."
+    )
+    return lead + caveat
 
 
 def _fb_hist(s: dict) -> str:
@@ -265,75 +308,118 @@ def _fb_hist(s: dict) -> str:
     # for revenue, low is the concern; for defect rate, high is. It states
     # the shape and the right central measure, and points at the tail
     # without prescribing a domain-specific intervention.
+    metric = s['metric_label']
+    if s['shape'] != 'symmetric':
+        shape_note = (
+            f"The distribution is {s['shape']}, so the average is pulled by the "
+            f"tail — use the median ({_humanize(s['use_val'])}) as the typical "
+            f"value, not the mean."
+        )
+    else:
+        shape_note = (
+            f"The distribution is roughly symmetric, so the average "
+            f"({_humanize(s['use_val'])}) is a fair summary of a typical value."
+        )
     return (
-        f"{s['metric_label']} typical value is {s['use_val']} "
-        f"(range: {s['min']}–{s['max']}). "
-        f"{'Skewed distribution — use ' + s['use_stat'] + ' (' + str(s['use_val']) + ') for accurate reporting.' if s['shape'] != 'symmetric' else 'Symmetric distribution — mean is a reliable central measure.'} "
-        f"The middle half of records falls between {s['q1']} and {s['q3']}; "
-        f"values outside that band are where this metric varies most. "
-        f"Strategic Action: Review the low and high tails to confirm whether "
-        f"they are genuine cases or data issues before acting on the average."
+        f"{metric} runs from {_humanize(s['min'])} to {_humanize(s['max'])}, "
+        f"with the middle half between {_humanize(s['q1'])} and "
+        f"{_humanize(s['q3'])}. {shape_note} The values outside that middle band "
+        f"are worth a look before acting on any average — check whether they are "
+        f"real cases or data-entry errors, since a skewed field can distort every "
+        f"downstream figure."
     )
 
 
 def _fb_pie(s: dict) -> str:
     if not s.get("ok"):
         return "Composition chart reveals segment distribution patterns."
+    metric, dim = s['metric_label'], s['dimension_label']
+    top_seg, top_pct, top2 = s['top_seg'], s['top_pct'], s['top2_pct']
+    n = s['n_segments']
+    even = 100.0 / n if n else 0.0     # share if perfectly even
+
+    if top_pct >= 50:
+        return (
+            f"{metric} is dominated by {top_seg}, which alone accounts for "
+            f"{top_pct:.0f}% of the total across {n} {dim} segments "
+            f"(top two: {top2:.0f}%). That is genuine concentration risk: the "
+            f"result depends heavily on one segment, so report {top_seg} "
+            f"separately and stress-test what happens to the total if it moves."
+        )
+    if top_pct >= 1.5 * even:
+        return (
+            f"{metric} leans toward {top_seg} at {top_pct:.0f}% of the total "
+            f"(an even split across {n} {dim} segments would be ~{even:.0f}% "
+            f"each; top two: {top2:.0f}%). Worth watching, but no single "
+            f"segment controls the outcome — segment-level tracking is enough."
+        )
     return (
-        f"{s['metric_label']} composition across {s['n_segments']} "
-        f"{s['dimension_label']} segments: "
-        f"'{s['top_seg']}' holds {s['top_pct']}%, "
-        f"top 2 combined: {s['top2_pct']}%. "
-        f"{'Concentration risk — business is over-reliant on a dominant segment.' if not s['balanced'] else 'Well-balanced distribution — no single segment dominates.'} "
-        f"Strategic Action: "
-        f"{'Diversify activity away from the dominant segment to reduce concentration risk.' if not s['balanced'] else 'Maintain this balance and monitor quarterly for emerging concentration.'}"
+        f"{metric} is spread fairly evenly across the {n} {dim} segments — "
+        f"the largest, {top_seg}, holds {top_pct:.0f}% against an even-split "
+        f"expectation of ~{even:.0f}%. No concentration concern here; the "
+        f"aggregate is a fair summary of the whole."
     )
 
 
 def _fb_trend(s: dict) -> str:
     if not s.get("ok"):
         return f"Trend analysis of {s.get('metric_label','metric')} shows performance over time."
-    return (
-        f"{s['metric_label']} trend: overall average {s['mean']} "
-        f"(range {s['min']}–{s['max']}). "
-        f"Values have {s['trend_dir']} by {abs(s['trend_pct']):.1f}% "
-        f"from the first to second half of the data — "
-        f"{'a positive signal worth sustaining.' if s['trend_dir'] == 'improved' else 'a declining trend requiring immediate investigation.' if s['trend_dir'] == 'declined' else 'a consistently stable pattern.'} "
-        f"Variability across the range is {s['cv']}% "
-        f"({'high — inconsistent performance' if s['cv'] > 30 else 'moderate' if s['cv'] > 15 else 'stable'}). "
-        f"Strategic Action: "
-        f"{'Identify and address the root causes of the decline before the next review cycle.' if s['trend_dir'] == 'declined' else 'Continue current practices and monitor monthly for early warning signals.'}"
-    )
+    metric = s['metric_label']
+    pct, direction, cv = s['trend_pct'], s['trend_dir'], s['cv']
+    move = (f"the second half of the period averaged {_humanize(s['sec_half'])} "
+            f"versus {_humanize(s['first_half'])} in the first half, "
+            f"{'up' if pct > 0 else 'down'} {abs(pct):.0f}%")
+
+    if direction == "stable":
+        body = (
+            f"{metric} held broadly flat over the period (first half "
+            f"{_humanize(s['first_half'])}, second half {_humanize(s['sec_half'])}, "
+            f"a {abs(pct):.0f}% move) around an average of {_humanize(s['mean'])}."
+        )
+    else:
+        body = (
+            f"{metric} {direction} over the period — {move}, around an average "
+            f"of {_humanize(s['mean'])}."
+        )
+    # Be honest that a first-half/second-half comparison is a coarse read, not
+    # a trend test — a senior analyst wouldn't oversell it.
+    noise = ("" if cv <= 30 else
+             f" Note the series is volatile (variation ~{cv:.0f}% of the mean), "
+             f"so part of this swing is noise rather than a settled trend.")
+    caveat = (" This splits the period in two halves; confirm it against a "
+              "month-by-month view before treating it as a real trend."
+              if direction != "stable" else "")
+    return body + noise + caveat
 
 
 def _fb_corr(pairs: list, df: pd.DataFrame) -> str:
     if not pairs:
         return (
-            "The correlation matrix shows no meaningful relationships between "
-            "variables (all |r| < 0.15). Each variable operates independently — "
-            "single-variable interventions are unlikely to create cross-metric spillover. "
-            "Strategic Action: Design targeted interventions per metric rather than "
-            "expecting compound effects."
+            "No pair of numeric fields moves together to any meaningful degree "
+            "(all |r| < 0.15). In practice that means these metrics are driven "
+            "by different things — there is no single lever here that would move "
+            "several at once, so treat each on its own terms."
         )
     a, b, r = pairs[0]
     direction = "positive" if r > 0 else "negative"
-    meaning   = (f"higher {clean_col(a)} tends to occur alongside higher {clean_col(b)}"
+    meaning   = (f"higher {clean_col(a)} tends to go with higher {clean_col(b)}"
                  if r > 0 else
-                 f"as {clean_col(a)} increases, {clean_col(b)} tends to decrease")
+                 f"higher {clean_col(a)} tends to go with lower {clean_col(b)}")
+    shared = r**2 * 100
+    strength_word = ("a strong" if abs(r) >= 0.7 else "a moderate"
+                     if abs(r) >= 0.4 else "a weak")
     second = ""
     if len(pairs) > 1:
         a2, b2, r2 = pairs[1]
-        second = (f" Second strongest: {clean_col(a2)} and {clean_col(b2)} "
-                  f"(r={r2:.2f}, r²={r2**2:.2f}).")
+        second = (f" The next strongest is {clean_col(a2)} and {clean_col(b2)} "
+                  f"(r={r2:.2f}).")
     return (
-        f"The correlation matrix reveals {len(pairs)} meaningful relationships "
-        f"across the dataset. "
-        f"Strongest: {clean_col(a)} and {clean_col(b)} (r={r:.2f}, {direction}) — "
-        f"{meaning}. "
-        f"r²={r**2:.2f} means only {r**2*100:.0f}% of variance is shared — "
-        f"this is association, not causation.{second} "
-        f"Strategic Action: Test the {clean_col(a)}–{clean_col(b)} relationship "
-        f"through a controlled analysis before committing to a causal explanation."
+        f"The clearest relationship is {strength_word} {direction} one between "
+        f"{clean_col(a)} and {clean_col(b)} (r={r:.2f}): {meaning}. But the two "
+        f"share only {shared:.0f}% of their variation (r²={r**2:.2f}), so most of "
+        f"what drives {clean_col(b)} lies elsewhere — and this is association, "
+        f"not proof that one causes the other. Confirm it holds within key "
+        f"segments before acting on it.{second}"
     )
 
 
