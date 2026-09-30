@@ -1498,19 +1498,21 @@ def build_pdf(
     n_charts  = len(chart_data)
     qual      = getattr(profile, "overall_quality_score", "—")
 
-    # Cover KPI figures read in the brand navy accent, not green — a green
-    # "QUALITY 99.8" on the cover was the loud, informal note on an otherwise
-    # formal front page. Only a genuinely bad figure (notable missing data)
-    # switches to red; nothing on the cover is green or amber.
+    # Cover KPI figures sit on the dark navy cover, so they must be LIGHT to
+    # read — white for the figures, a light red only for a genuinely bad one.
+    # (Navy figures on the dark cover were unreadable; green was readable but
+    # loud. White is both legible and formal.) No green, no orange.
+    _cover_good = "#FFFFFF"
+    _cover_bad  = "#FCA5A5"   # light red, legible on dark
     kpis_cover = [
         {"label": "RECORDS",      "value": "{:,}".format(n_rows),
-         "sub":   "Clean dataset", "color": T["accent"]},
+         "sub":   "Clean dataset", "color": _cover_good},
         {"label": "QUALITY",      "value": str(qual),
-         "sub":   "/ 100",         "color": T["accent"]},
+         "sub":   "/ 100",         "color": _cover_good},
         {"label": "CHARTS",       "value": str(n_charts),
-         "sub":   "Incl. in report","color": T["accent"]},
+         "sub":   "Incl. in report","color": _cover_good},
         {"label": "MISSING DATA", "value": "{:.1f}%".format(miss_pct),
-         "sub":   "0% = perfect",  "color": T["accent"] if miss_pct < 1 else T["negative"]},
+         "sub":   "0% = perfect",  "color": _cover_good if miss_pct < 1 else _cover_bad},
     ]
 
     # ── Cover page ────────────────────────────────────────
