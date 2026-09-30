@@ -51,17 +51,26 @@ class ColumnStats:
     cardinality_label: Optional[str] = None  # "low", "medium", "high"
 
 
+def _fmt_p(p: float) -> str:
+    """Format a p-value for display without ever printing 'p=0.0000'. A
+    p-value is never exactly zero; a tiny one reads as '<0.001'."""
+    if p < 0.001:
+        return "p<0.001"
+    return "p={:.3f}".format(p)
+
+
 @dataclass
 class CorrelationInsight:
     col_a: str
     col_b: str
     pearson_r: float
     spearman_r: float
-    p_value: float
-    is_significant: bool
+    p_value: float          # raw (unadjusted) p-value
+    is_significant: bool    # decided on the BH-adjusted q-value
     strength: str      # "strong", "moderate", "weak"
     direction: str     # "positive", "negative"
     label: str         # human-readable
+    q_value: float = 1.0    # Benjamini-Hochberg adjusted p across all pairs
 
 
 @dataclass
@@ -282,29 +291,34 @@ def _correlation_analysis(
             direction = "positive" if pearson_r > 0 else "negative"
             significant = p_val < 0.05
 
-            label = "{} {} correlation between '{}' and '{}' (r={:.2f}, p={:.4f})".format(
+            label = "{} {} correlation between '{}' and '{}' (r={:.2f}, {})".format(
                 strength.title(), direction, a, b,
-                round(pearson_r, 2), round(p_val, 4)
+                round(pearson_r, 2), _fmt_p(float(p_val))
             )
 
             insights.append(CorrelationInsight(
                 col_a=a, col_b=b,
                 pearson_r=round(float(pearson_r), 4),
                 spearman_r=round(float(spearman_r), 4),
-                p_value=round(float(p_val), 6),
+                # Keep full precision: rounding a real p like 2e-15 to 6
+                # decimals printed it as 0.0, which is not a valid p-value.
+                p_value=float(p_val),
                 is_significant=significant,
                 strength=strength,
                 direction=direction,
                 label=label,
             ))
 
-    # re-decide significance on BH-adjusted p across all tested pairs
+    # Adjust for multiple comparisons across all tested pairs and decide
+    # significance on the BH q-value — but keep the raw p in p_value and put
+    # the adjusted value in its own q_value field, rather than overwriting
+    # p_value with q (which made the field name lie).
     if insights:
         from app.services.stat_guards import FDR_Q, bh_adjust
         qvals = bh_adjust([c.p_value for c in insights])
         for c, q in zip(insights, qvals):
+            c.q_value = float(q)
             c.is_significant = bool(q < FDR_Q)
-            c.p_value = round(float(q), 6)
 
     return sorted(insights, key=lambda x: abs(x.pearson_r), reverse=True)
 

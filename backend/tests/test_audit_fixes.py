@@ -278,3 +278,21 @@ def test_dashboard_kpis_exclude_ids(tmp_path):
     cat = {f["name"]: f for f in field_catalog(df)}
     assert cat["order_id"]["is_id"] is True
     assert cat["revenue"]["is_id"] is False
+
+
+# ── Stats: p-value never prints as 0, raw p kept separate from BH q ─────────
+def test_correlation_pvalue_not_zero_and_q_separate():
+    from app.engines.stats_engine import analyze
+    import numpy as np, pandas as pd
+    rng = np.random.default_rng(1)
+    df = pd.DataFrame({"x": rng.normal(0, 1, 300)})
+    df["y"] = 0.5 * df["x"] + rng.normal(0, 0.9, 300)
+    c = [c for c in analyze(df).correlations
+         if {c.col_a, c.col_b} == {"x", "y"}][0]
+    # raw p is a real, strictly-positive value (not rounded to 0.0)
+    assert 0 < c.p_value < 1e-6
+    # label must not print "p=0.0000"
+    assert "p=0.0000" not in c.label
+    assert "p<0.001" in c.label
+    # q_value exists and is the multiple-comparison-adjusted value
+    assert hasattr(c, "q_value") and c.q_value >= c.p_value

@@ -1180,15 +1180,20 @@ def _stats_section(story, s, T, stats_report, CW):
     if sig:
         story.append(Spacer(1, 2*mm))
         story.append(Paragraph("Significant Correlations (Correct Interpretation)", s["h3"]))
+        def _pfmt(p):
+            # A real p-value is never exactly 0; show "<0.0001" rather than
+            # "0.0000" when it rounds away.
+            p = float(p)
+            return "<0.0001" if 0 <= p < 0.0001 else "{:.4f}".format(p)
         rows = [[c.col_a, c.col_b,
                  str(round(c.pearson_r, 4)),
-                 str(round(getattr(c, "p_value", 0), 4)),
+                 _pfmt(getattr(c, "q_value", getattr(c, "p_value", 1.0))),
                  c.strength.title(),
                  "r²={:.3f} — {:.1f}% variance shared. Association only.".format(
                      c.pearson_r**2, c.pearson_r**2 * 100)]
                 for c in sig[:6]]
         _gtable(story, T,
-                ["Col A", "Col B", "r", "p", "Strength", "Interpretation"],
+                ["Col A", "Col B", "r", "q (BH-adj)", "Strength", "Interpretation"],
                 rows, [CW*x for x in [0.17, 0.17, 0.08, 0.08, 0.12, 0.38]])
 
 
