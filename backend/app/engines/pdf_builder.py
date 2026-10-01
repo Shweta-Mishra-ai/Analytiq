@@ -362,13 +362,21 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
 #  REUSABLE COMPONENT HELPERS
 # ══════════════════════════════════════════════════════════
 
-def _sec(story: list, s: dict, T: dict, title: str, sub: str = ""):
-    story.append(Spacer(1, 3*mm))
-    story.append(HRFlowable(width="100%", thickness=3,
-                             color=_c(T["accent"]), spaceAfter=3))
-    story.append(Paragraph(title, s["h2"]))
+def _sec_flowables(s: dict, T: dict, title: str, sub: str = "") -> list:
+    """The section-header flowables, so a caller can keep them together with
+    the first block that follows (a lone header stranded at the top of an
+    otherwise-blank page is the 'empty page' a reader notices)."""
+    out = [Spacer(1, 3*mm),
+           HRFlowable(width="100%", thickness=3,
+                      color=_c(T["accent"]), spaceAfter=3),
+           Paragraph(title, s["h2"])]
     if sub:
-        story.append(Paragraph(sub, s["sm"]))
+        out.append(Paragraph(sub, s["sm"]))
+    return out
+
+
+def _sec(story: list, s: dict, T: dict, title: str, sub: str = ""):
+    story.extend(_sec_flowables(s, T, title, sub))
 
 
 def _kpi_row(story: list, s: dict, T: dict, kpis: list, CW: float):
@@ -632,11 +640,12 @@ def _top_insights(story, s, T, insights, CW, domain: str = "general"):
         return
 
     grouped = group_insights(bp, list(insights))
-    _sec(story, s, T, "{} — Findings".format(bp.label),
-         "Each finding: Problem → Cause → Evidence → Action → Impact")
+    sec_head = _sec_flowables(
+        s, T, "{} — Findings".format(bp.label),
+        "Each finding: Problem → Cause → Evidence → Action → Impact")
 
     num = 0
-    for section, items in grouped:
+    for gi, (section, items) in enumerate(grouped):
         # The heading travels with its first finding. Left to flow, a
         # section title lands at the foot of a page with its content
         # overleaf, which is the kind of thing a reader registers as
@@ -646,7 +655,12 @@ def _top_insights(story, s, T, insights, CW, domain: str = "general"):
                 Paragraph(section.purpose, s["sm"])]
         first: list = []
         _insight_card(first, s, T, items[0], CW, num=num + 1)
-        story.append(KeepTogether(head + first))
+        # Fold the big "… — Findings" section banner into the first group's
+        # keep-together block. Emitted on its own it printed alone at the top
+        # of the page while the first card, too tall for the remaining space,
+        # jumped overleaf — leaving a near-empty page.
+        block = (sec_head + head + first) if gi == 0 else (head + first)
+        story.append(KeepTogether(block))
         num += 1
 
         for ins in items[1:6]:
@@ -1261,9 +1275,59 @@ def _chart_page(story, s, T, img_bytes, title, narrative, num, CW):
 #  RECOMMENDATIONS
 # ══════════════════════════════════════════════════════════
 
-def _recommendations(story, s, T, actions, CW):
+def _derive_recommendations(actions, insights) -> list:
+    """Build a prioritised action plan the way an analyst would: lead with
+    what each finding calls for, tagged by the finding's severity, then add
+    any standing recommendations. Returns a list of (priority, headline,
+    text) — deduped, ordered CRITICAL → SHORT TERM → LONG TERM.
+
+    Deriving from the findings does two things at once: it stops the page
+    being three generic lines with half of it blank, and it ties every
+    recommendation back to a specific finding rather than boilerplate."""
+    order = {"CRITICAL": 0, "SHORT TERM": 1, "LONG TERM": 2}
+    sev_to_pri = {
+        "critical": "CRITICAL", "high": "CRITICAL",
+        "warning": "SHORT TERM",
+        "info": "LONG TERM", "positive": "LONG TERM", "": "LONG TERM",
+    }
+    recs, seen = [], set()
+
+    def _add(priority, headline, text):
+        key = (text or headline).strip().lower()[:80]
+        if not key or key in seen:
+            return
+        seen.add(key)
+        recs.append((priority, headline, text))
+
+    # 1. From the findings — specific and traceable.
+    for ins in (insights or []):
+        action = str(getattr(ins, "action", "") or "").strip()
+        if not action:
+            continue
+        priority = sev_to_pri.get(str(getattr(ins, "severity", "")).lower(),
+                                   "SHORT TERM")
+        headline = str(getattr(ins, "title", "") or "").strip()
+        _add(priority, headline, action)
+
+    # 2. Any standing/story-level actions, after the finding-derived ones.
+    for action in (actions or []):
+        a = str(action)
+        priority = "LONG TERM"
+        for p in ("CRITICAL", "SHORT TERM", "LONG TERM"):
+            if p in a.upper():
+                priority = p
+                break
+        text = (a.replace("[CRITICAL] ", "").replace("[SHORT TERM] ", "")
+                 .replace("[LONG TERM] ", "").strip())
+        _add(priority, "", text)
+
+    recs.sort(key=lambda r: order.get(r[0], 3))
+    return recs
+
+
+def _recommendations(story, s, T, actions, CW, insights=None):
     _sec(story, s, T, "Recommendations & Action Plan",
-         "Prioritised by urgency — act on CRITICAL items first")
+         "Grouped by priority — the finding each one comes from is named")
 
     pri_map = {
         "CRITICAL":   (T["negative"],  T["critical_bg"]),
@@ -1271,37 +1335,36 @@ def _recommendations(story, s, T, actions, CW):
         "LONG TERM":  (T["info"],      T["info_bg"]),
     }
 
-    for action in actions[:9]:
-        action_str = str(action)
-        priority   = "LONG TERM"
-        for p in ("CRITICAL", "SHORT TERM"):
-            if p in action_str.upper():
-                priority = p
-                break
+    recs = _derive_recommendations(actions, insights)
+    if not recs:
+        recs = [("LONG TERM", "", "No prioritised actions were generated: the "
+                 "analysis did not surface a finding strong enough to recommend "
+                 "acting on. Collect more data or revisit the questions asked.")]
 
+    n = 0
+    for priority, headline, text in recs[:12]:
         col, bg = pri_map.get(priority, (T["accent"], T["bg_light"]))
-        text    = (action_str
-                   .replace("[CRITICAL] ", "")
-                   .replace("[SHORT TERM] ", "")
-                   .replace("[LONG TERM] ", "")
-                   .strip())
-
+        if headline:
+            body = Paragraph("<b>{}</b><br/>{}".format(headline, text), s["body"])
+        else:
+            body = Paragraph(text, s["body"])
         card = Table([[
             Paragraph(priority, ParagraphStyle(
                 "pri", fontName="Helvetica-Bold", fontSize=7,
                 textColor=HexColor(col), alignment=TA_CENTER)),
-            Paragraph(text, s["body"]),
-        ]], colWidths=[CW*0.14, CW*0.86])
+            body,
+        ]], colWidths=[CW*0.16, CW*0.84])
         card.setStyle(TableStyle([
             ("BACKGROUND",    (0,0), (-1,-1), HexColor(bg)),
             ("LINEBEFORE",    (0,0), (0,-1),  3, HexColor(col)),
             ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-            ("TOPPADDING",    (0,0), (-1,-1), 5),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+            ("TOPPADDING",    (0,0), (-1,-1), 6),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 6),
             ("LEFTPADDING",   (0,0), (-1,-1), 6),
             ("RIGHTPADDING",  (0,0), (-1,-1), 6),
         ]))
         story.append(KeepTogether([card, Spacer(1, 2*mm)]))
+        n += 1
 
     story.append(Spacer(1, 3*mm))
     story.append(Paragraph(
@@ -1618,7 +1681,7 @@ def build_pdf(
         _chart_page(story, s, T, img_bytes, title, narrative, i, CW)
         story.append(PageBreak())
 
-    _recommendations(story, s, T, recommendations, CW)
+    _recommendations(story, s, T, recommendations, CW, insights=top_insights)
     story.append(PageBreak())
 
     _appendix(story, s, T, config, CW, domain=domain)

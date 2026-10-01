@@ -309,12 +309,9 @@ def _build_narrative_summary(
                 f"(r={top['r']:+.2f}, {top['strength']})."
             )
 
-    n_actions = len(raw.get("actions", []))
-    if n_actions:
-        support.append(
-            f"{n_actions} recommendation{'s' if n_actions > 1 else ''} "
-            f"{'follows' if n_actions == 1 else 'follow'} below."
-        )
+    # Deliberately no "N recommendations follow below" line: the action plan
+    # is now derived from the findings, so a fixed count computed here would
+    # not match it — and a senior summary ends on the priority, not a tally.
 
     return headline + (" " + " ".join(support) if support else "")
 
