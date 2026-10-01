@@ -24,6 +24,7 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
+from app.services.stat_guards import fmt_p
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +245,7 @@ def run_conversion_test(
         direction = "outperforms" if rate_b > rate_a else "underperforms vs"
         verdict = (
             f"Statistically significant at {confidence_level:.0%} confidence "
-            f"(p={p_value:.4f}). '{variant_b_name}' {direction} '{variant_a_name}' "
+            f"({fmt_p(p_value)}). '{variant_b_name}' {direction} '{variant_a_name}' "
             f"by {uplift_phrase}."
         )
         recommendation = (
@@ -253,7 +254,7 @@ def run_conversion_test(
         )
     else:
         verdict = (
-            f"NOT statistically significant (p={p_value:.4f}, threshold={alpha:.2f}). "
+            f"NOT statistically significant ({fmt_p(p_value)}, threshold={alpha:.2f}). "
             f"Observed difference of {uplift_phrase} could be due to chance."
         )
         recommendation = (
@@ -388,7 +389,7 @@ def run_continuous_test(
         direction = "higher" if mean_b > mean_a else "lower"
         verdict = (
             f"Statistically significant at {confidence_level:.0%} confidence "
-            f"(p={p_value:.4f}). '{variant_b_name}' has {direction} "
+            f"({fmt_p(p_value)}). '{variant_b_name}' has {direction} "
             f"{metric_name.lower()} than '{variant_a_name}' "
             f"{diff_phrase}."
         )
@@ -398,7 +399,7 @@ def run_continuous_test(
         )
     else:
         verdict = (
-            f"NOT statistically significant (p={p_value:.4f}, threshold={alpha:.2f}). "
+            f"NOT statistically significant ({fmt_p(p_value)}, threshold={alpha:.2f}). "
             f"Observed difference {diff_phrase} could be due to chance."
         )
         recommendation = (

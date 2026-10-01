@@ -12,7 +12,7 @@ import warnings
 warnings.filterwarnings("ignore")
 from scipy import stats as scipy_stats
 
-from app.services.stat_guards import apply_fdr, chi2_association
+from app.services.stat_guards import apply_fdr, chi2_association, fmt_p
 from app.engines.domains.base import is_id_column
 
 logger = logging.getLogger(__name__)
@@ -230,10 +230,10 @@ def analyze_root_cause(
 
                 detail = (
                     "Low performers have {:.1f}% {} '{}' "
-                    "({:.2f} vs {:.2f}, p={:.4f})".format(
+                    "({:.2f} vs {:.2f}, {})".format(
                         diff_pct, direction if diff < 0 else
                         "lower" if direction == "higher" else "higher",
-                        col, low_mean, high_mean, p)
+                        col, low_mean, high_mean, fmt_p(p))
                 )
                 drivers.append({
                     "factor":    col,
@@ -287,9 +287,9 @@ def analyze_root_cause(
             detail = (
                 "In low performers, '{}' = '{}' in {:.0f}% of cases "
                 "vs {:.0f}% in high performers "
-                "(chi-square p={:.4f}, Cramér's V={:.2f} — {} association, "
+                "(chi-square {}, Cramér's V={:.2f} — {} association, "
                 "n={:,})".format(
-                    col, worst_cat, low_pct_cat, high_pct_cat, p,
+                    col, worst_cat, low_pct_cat, high_pct_cat, fmt_p(p),
                     assoc["cramers_v"], assoc["effect_label"], assoc["n"])
             )
             drivers.append({
@@ -443,11 +443,11 @@ def analyze_scenario(
         "If {} {} by {:.0f}% (from an average of {:.2f} to {:.2f}), the "
         "historical relationship in this dataset projects {} would move "
         "from {:.2f} to {:.2f} ({:+.1f}%). This relationship explains "
-        "{:.0f}% of the variance in {} (R\u00b2={:.2f}, p={:.4f}).".format(
+        "{:.0f}% of the variance in {} (R\u00b2={:.2f}, {}).".format(
             driver_col, direction, abs(change_pct), driver_mean,
             driver_mean + driver_delta, target_col, target_mean,
             projected_target, projected_change_pct,
-            r_squared * 100, target_col, r_squared, p_value)
+            r_squared * 100, target_col, r_squared, fmt_p(p_value))
     )
     if not reliable:
         interpretation += (
@@ -563,13 +563,13 @@ def analyze_cohort(
     interp = (
         "{} cohorts compared on '{}'. "
         "Best: '{}' (mean={:.2f}), Worst: '{}' (mean={:.2f}). "
-        "Gap: {:.1f}% ({} difference, {} p={:.4f}).".format(
+        "Gap: {:.1f}% ({} difference, {} {}).".format(
             len(valid), metric_col,
             best_cohort, cohorts[0]["mean"],
             worst_cohort, cohorts[-1]["mean"],
             gap_pct,
             "statistically significant" if is_sig else "NOT significant",
-            test_used, p_val)
+            test_used, fmt_p(p_val))
     )
 
     recs = []
@@ -828,7 +828,7 @@ def _generate_key_insights(
         brief += "{} significant cohort difference(s) identified. ".format(
             len(sig_cohorts))
     if report.root_causes:
-        brief += "Root cause analysis run on {} metric(s).".format(
+        brief += "Driver analysis run on {} metric(s).".format(
             len(report.root_causes))
 
     return insights, brief

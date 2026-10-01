@@ -26,6 +26,7 @@ import pandas as pd
 from scipy import stats as scipy_stats
 
 from app.engines.ab_test_engine import run_continuous_test, ABTestResult
+from app.services.stat_guards import fmt_p
 
 logger = logging.getLogger(__name__)
 
@@ -151,12 +152,12 @@ def _compare_numeric_column(col: str, s_a: pd.Series, s_b: pd.Series) -> ColumnC
         if ab_result.is_significant:
             cc.verdict = (
                 f"'{col}' {direction} significantly "
-                f"({change_phrase}, p={cc.p_value:.4f})."
+                f"({change_phrase}, {fmt_p(cc.p_value)})."
             )
         else:
             cc.verdict = (
                 f"'{col}' shows a {change_phrase}, but this is "
-                f"NOT statistically significant (p={cc.p_value:.4f}) — likely noise."
+                f"NOT statistically significant ({fmt_p(cc.p_value)}) — likely noise."
             )
     except ValueError as e:
         cc.verdict = f"Significance test skipped: {e}"
@@ -199,12 +200,12 @@ def _compare_categorical_column(col: str, s_a: pd.Series, s_b: pd.Series) -> Col
                 if cc.is_significant:
                     cc.verdict = (
                         f"'{col}' category distribution changed significantly "
-                        f"(p={cc.p_value:.4f}). Top category: "
+                        f"({fmt_p(cc.p_value)}). Top category: "
                         f"'{cc.top_category_a}' → '{cc.top_category_b}'."
                     )
                 else:
                     cc.verdict = (
-                        f"'{col}' category distribution is stable (p={cc.p_value:.4f})."
+                        f"'{col}' category distribution is stable ({fmt_p(cc.p_value)})."
                     )
     except Exception:
         logger.warning("Chi-square test failed for categorical column '%s'", col, exc_info=True)

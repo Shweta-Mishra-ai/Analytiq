@@ -544,17 +544,17 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         bdr_hex = HexColor(border_c)
         tag_c   = HexColor(border_c)
 
-        tag_p    = Paragraph(ins["tag"],
+        tag_p    = Paragraph(_clean_text(ins["tag"]),
             ParagraphStyle("it", fontName=_BB, fontSize=7.5,
                            textColor=tag_c, spaceAfter=2))
-        title_p  = Paragraph("<b>{}. {}</b>".format(i, ins["title"]),
+        title_p  = Paragraph("<b>{}. {}</b>".format(i, _clean_text(ins["title"])),
             ParagraphStyle("itl", fontName=_BB, fontSize=10.5,
                            textColor=dark, spaceAfter=3, leading=14))
-        body_p   = Paragraph(ins["body"].replace("**","").replace("*",""),
+        body_p   = Paragraph(_clean_text(ins["body"]),
             ParagraphStyle("ib", fontName=_BF, fontSize=9.5,
                            textColor=dark, leading=14.5, spaceAfter=4,
                            alignment=TA_JUSTIFY))
-        action_p = Paragraph(ins["action"],
+        action_p = Paragraph(_clean_text(ins["action"]),
             ParagraphStyle("ia", fontName=_BB, fontSize=9,
                            textColor=HexColor(border_c), leading=13))
 

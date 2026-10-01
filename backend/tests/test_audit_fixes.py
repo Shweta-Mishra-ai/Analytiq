@@ -325,3 +325,64 @@ def test_chart_narratives_read_human():
     assert _humanize(5301335.94) == "5.30M"
     assert _humanize(12727) == "12.7K"
     assert _humanize(0.42) == "0.42"
+
+
+# ── Report rendering: ampersand data, p-values, no IDs in describe ─────────
+def _render_report_text(df, domain_hint=None):
+    import io, pypdf
+    from app.engines.data_profiler import profile_dataset
+    from app.engines.story_engine import detect_domain, generate_story
+    from app.engines.pdf_builder import build_pdf
+    from app.engines.insights_builder import build_top_insights
+    prof = profile_dataset(df)
+    dom, _ = detect_domain(df)
+    story = generate_story(df)
+    tops = build_top_insights(df=df, domain=dom, story_obj=story)
+    from app.engines.stats_engine import analyze
+    from app.engines.bi_engine import run_bi
+    pdf = build_pdf(
+        df=df, config={"title": "t", "client_name": "c"}, profile=prof,
+        cleaning_summary=None, stats_report=analyze(df), bi_report=run_bi(df),
+        ml_report=None, chart_data=[],
+        executive_summary=story.executive_summary, findings=story.key_findings,
+        risks=story.business_risks, opportunities=story.opportunities,
+        recommendations=story.recommended_actions, top_insights=tops,
+        attrition=getattr(story, "attrition", None), domain=dom)
+    r = pypdf.PdfReader(io.BytesIO(pdf))
+    return "\n".join(p.extract_text() for p in r.pages)
+
+
+def test_report_escapes_ampersand_segments():
+    import pandas as pd, numpy as np
+    rng = np.random.default_rng(0)
+    n = 600
+    dept = rng.choice(["R&D", "Sales", "G&A"], n)
+    df = pd.DataFrame({
+        "employee_id": np.arange(n),
+        "department": dept,
+        "salary": rng.normal(60000, 12000, n).round(0),
+        "score": rng.integers(1, 5, n),
+    })
+    txt = _render_report_text(df)
+    # The orphan-ampersand artefact must never appear
+    assert "R&D;" not in txt and "G&A;" not in txt
+    assert "&amp;" not in txt  # should be rendered, not shown literally
+
+
+def test_report_has_no_zero_pvalue_and_no_id_in_describe():
+    import pandas as pd, numpy as np
+    rng = np.random.default_rng(2)
+    n = 500
+    x = rng.normal(0, 1, n)
+    df = pd.DataFrame({
+        "order_id": np.arange(100000, 100000 + n),
+        "region": rng.choice(["N", "S", "E", "W"], n),
+        "revenue": (x * 1000 + 5000).round(2),
+        "units": (x * 2 + rng.normal(0, 0.3, n) + 5).round().clip(1).astype(int),
+    })
+    txt = _render_report_text(df)
+    assert "p=0.0000" not in txt
+    # describe section must not list order_id as a measure
+    if "Descriptive Statistics" in txt:
+        seg = txt.split("Descriptive Statistics", 1)[1][:300]
+        assert "order_id" not in seg

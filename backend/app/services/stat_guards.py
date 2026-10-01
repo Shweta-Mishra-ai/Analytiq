@@ -21,6 +21,21 @@ EFFECT_FLOOR = 0.30   # |r| below this is noise for business narratives
 FDR_Q = 0.05          # accepted false-discovery rate
 
 
+def fmt_p(p: float) -> str:
+    """Format a p-value for display. A p-value is never exactly zero, so a
+    tiny one reads as 'p<0.001' instead of the misleading 'p=0.0000' that
+    rounding to four decimals produced."""
+    try:
+        p = float(p)
+    except (TypeError, ValueError):
+        return "p=n/a"
+    if p != p:  # NaN
+        return "p=n/a"
+    if p < 0.001:
+        return "p<0.001"
+    return "p={:.3f}".format(p)
+
+
 def bh_adjust(pvals: List[float]) -> List[float]:
     """Benjamini-Hochberg adjusted p-values (q-values)."""
     m = len(pvals)

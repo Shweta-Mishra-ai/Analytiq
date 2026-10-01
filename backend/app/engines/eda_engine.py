@@ -19,6 +19,7 @@ from scipy.stats import (
 )
 
 from app.services.dtypes import MONTH_END, text_columns
+from app.services.stat_guards import fmt_p
 
 logger = logging.getLogger(__name__)
 
@@ -437,9 +438,9 @@ def analyze_bivariate_numeric(
 
     interp = (
         "{} {} correlation between '{}' and '{}' "
-        "(r={:.3f}, p={:.4f}, effect={}).".format(
+        "(r={:.3f}, {}, effect={}).".format(
             effect_lbl, dirn, col_a, col_b,
-            round(r, 3), round(p, 4), effect_lbl)
+            round(r, 3), fmt_p(p), effect_lbl)
     )
     if sig and effect_lbl in ("Medium", "Large"):
         rec = "Significant relationship — consider including both in models or investigating causation."
@@ -529,11 +530,11 @@ def analyze_group_comparison(
     sig = p < 0.05
     interp = (
         "{} test: {} difference in '{}' across {} groups of '{}' "
-        "(F/H={:.3f}, p={:.4f}, eta²={:.3f} — {} effect).".format(
+        "(F/H={:.3f}, {}, eta²={:.3f} — {} effect).".format(
             test_name,
             "Significant" if sig else "No significant",
             numeric_col, n_groups, group_col,
-            round(float(stat), 3), round(float(p), 4),
+            round(float(stat), 3), fmt_p(p),
             round(eta_sq, 4), eta_lbl)
     )
 
@@ -667,11 +668,11 @@ def analyze_time_series(
             result.trend = "Downward trend"
 
         stat_note = (
-            "Stationary (ADF p={:.4f}) — mean and variance are stable over time.".format(
-                result.adf_p)
+            "Stationary (ADF {}) — mean and variance are stable over time.".format(
+                fmt_p(result.adf_p))
             if result.is_stationary
-            else "Non-stationary (ADF p={:.4f}) — trend or seasonality present. "
-                 "Differencing required before ARIMA modeling.".format(result.adf_p)
+            else "Non-stationary (ADF {}) — trend or seasonality present. "
+                 "Differencing required before ARIMA modeling.".format(fmt_p(result.adf_p))
         )
 
         result.interpretation = "{} | {}".format(result.trend, stat_note)
@@ -734,8 +735,8 @@ def _generate_key_findings(report: "EDAReport") -> List[str]:
         top = strong_corr[0]
         findings.append(
             "Strong significant correlation: '{}' and '{}' "
-            "(r={:.2f}, p={:.4f}). May indicate multicollinearity.".format(
-                top.col_a, top.col_b, top.statistic, top.p_value)
+            "(r={:.2f}, {}). May indicate multicollinearity.".format(
+                top.col_a, top.col_b, top.statistic, fmt_p(top.p_value))
         )
 
     # Group differences
@@ -744,9 +745,9 @@ def _generate_key_findings(report: "EDAReport") -> List[str]:
         top = sig_groups[0]
         findings.append(
             "Significant group difference: '{}' varies significantly "
-            "by '{}' ({}, p={:.4f}, effect={}).".format(
+            "by '{}' ({}, {}, effect={}).".format(
                 top.numeric_col, top.group_col,
-                top.test_used, top.p_value, top.effect_label)
+                top.test_used, fmt_p(top.p_value), top.effect_label)
         )
 
     # VIF issues

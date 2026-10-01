@@ -414,7 +414,7 @@ def _kpi_row(story: list, s: dict, T: dict, kpis: list, CW: float):
 
 def _narrative_box(story: list, s: dict, T: dict, text: str):
     if not text: return
-    t = Table([[Paragraph(text, s["body"])]], colWidths=["100%"])
+    t = Table([[Paragraph(_xml(text), s["body"])]], colWidths=["100%"])
     t.setStyle(TableStyle([
         ("BACKGROUND",    (0,0), (-1,-1), _c(T["bg_light"])),
         ("LINEBEFORE",    (0,0), (0,-1),  4, _c(T["accent"])),
@@ -427,17 +427,27 @@ def _narrative_box(story: list, s: dict, T: dict, text: str):
     story.append(Spacer(1, 2*mm))
 
 
+def _xml(text) -> str:
+    """Escape the three XML specials so a plain data value is rendered
+    literally by ReportLab's Paragraph parser. Without this a value like
+    'R&D' became 'R&D;' (the orphan '&' was treated as an entity start) and
+    '<something>' vanished entirely."""
+    return (str(text).replace("&", "&amp;")
+                     .replace("<", "&lt;")
+                     .replace(">", "&gt;"))
+
+
 def _gtable(story: list, T: dict, headers: list,
             rows_data: list, col_widths: list,
             severity_col: int = -1):
     """Generic styled table."""
-    hrow = [Paragraph(h, ParagraphStyle(
+    hrow = [Paragraph(_xml(h), ParagraphStyle(
                 "th", fontName="Helvetica-Bold", fontSize=8,
                 textColor=HexColor("#FFFFFF"), alignment=TA_CENTER))
             for h in headers]
     body = []
     for row in rows_data:
-        body.append([Paragraph(str(c), ParagraphStyle(
+        body.append([Paragraph(_xml(c), ParagraphStyle(
                 "td", fontName="Helvetica", fontSize=8,
                 textColor=_c(T["text"]), leading=12))
                      for c in row])
@@ -506,7 +516,7 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
     num_str = "{}. ".format(num) if num else ""
     hdr = Table([[
         Paragraph(_get(ins, "severity", "INFO").upper(), bs),
-        Paragraph("{}{}".format(num_str, _get(ins, "title", "")), ts),
+        Paragraph("{}{}".format(num_str, _xml(_get(ins, "title", ""))), ts),
     ]], colWidths=[20*mm, CW - 20*mm])
     hdr.setStyle(TableStyle([
         ("BACKGROUND", (0,0), (0,0), HexColor(col)),
@@ -522,7 +532,7 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
 
     lw, vw = 26*mm, CW - 26*mm
     rows = [
-        [Paragraph(k, rl), Paragraph(_get(ins, fk, ""), rv)]
+        [Paragraph(k, rl), Paragraph(_xml(_get(ins, fk, "")), rv)]
         for k, fk in [("PROBLEM", "problem"), ("CAUSE",  "cause"),
                       ("EVIDENCE","evidence"),("ACTION", "action"),
                       ("IMPACT",  "impact")]
@@ -530,7 +540,7 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
     ]
     if not rows:
         rows = [[Paragraph("DETAIL", rl),
-                 Paragraph(str(ins)[:200], rv)]]
+                 Paragraph(_xml(str(ins)[:200]), rv)]]
 
     body = Table(rows, colWidths=[lw, vw])
     body.setStyle(TableStyle([
@@ -584,12 +594,12 @@ def _exec_summary(story, s, T, summary, findings, risks, opps, CW):
     if findings:
         story.append(Paragraph("Key Findings", s["h3"]))
         for f in findings[:5]:
-            story.append(Paragraph("+ " + str(f), s["bl"]))
+            story.append(Paragraph("+ " + _xml(f), s["bl"]))
         story.append(Spacer(1, 2*mm))
     if risks:
         story.append(Paragraph("Business Risks", s["h3"]))
         for r in risks[:4]:
-            story.append(Paragraph("! " + str(r),
+            story.append(Paragraph("! " + _xml(r),
                 ParagraphStyle("risk_p", fontName="Helvetica", fontSize=9,
                                textColor=_c(T["negative"]), leading=13,
                                leftIndent=10, firstLineIndent=-10,
@@ -598,7 +608,7 @@ def _exec_summary(story, s, T, summary, findings, risks, opps, CW):
     if opps:
         story.append(Paragraph("Opportunities", s["h3"]))
         for o in opps[:3]:
-            story.append(Paragraph("* " + str(o),
+            story.append(Paragraph("* " + _xml(o),
                 ParagraphStyle("opp_p", fontName="Helvetica", fontSize=9,
                                textColor=_c(T["positive"]), leading=13,
                                leftIndent=10, firstLineIndent=-10,
@@ -1104,13 +1114,25 @@ def _dataset_overview(story, s, T, df, profile, CW):
              ["DateTime",    len(dt_cols),  ", ".join(dt_cols[:4]) or "None"]],
             [CW*0.20, CW*0.12, CW*0.68])
 
-    if num_cols:
+    # Identifiers are not analytic variables — the mean/std of an order_id is
+    # meaningless, so describe() runs on real measures only.
+    from app.engines.pdf_primitives import is_id_col
+    from app.ai.report_narrator import _humanize
+    measure_cols = [c for c in num_cols if not is_id_col(c, df[c])]
+    if measure_cols:
         story.append(Paragraph("Descriptive Statistics", s["h3"]))
-        show  = num_cols[:5]
-        desc  = df[show].describe().round(3)
-        hrow  = ["Stat"] + [c[:10] for c in show]
+        show  = measure_cols[:6]
+        desc  = df[show].describe()
+        # Headers as wrapping paragraphs (centred, small) so a long column
+        # name like "discount_pct" is shown in full instead of being sliced
+        # to "discount_p".
+        hdr_st = ParagraphStyle("desc_h", fontName="Helvetica-Bold", fontSize=7.5,
+                                textColor=HexColor("#FFFFFF"),
+                                alignment=TA_CENTER, leading=9)
+        hrow  = [Paragraph("Stat", hdr_st)] + [
+            Paragraph(str(c).replace("_", " "), hdr_st) for c in show]
         rows  = [hrow] + [
-            [stat] + [str(desc.loc[stat, c]) for c in show]
+            [stat] + [_humanize(desc.loc[stat, c]) for c in show]
             for stat in ["mean","std","min","25%","50%","75%","max"]
             if stat in desc.index
         ]
@@ -1133,7 +1155,7 @@ def _dataset_overview(story, s, T, df, profile, CW):
         story.append(Spacer(1, 2*mm))
 
         # Skew warning
-        for col in num_cols[:6]:
+        for col in measure_cols[:6]:
             try:
                 sk = float(df[col].skew())
                 if abs(sk) > 1.0:
@@ -1242,7 +1264,7 @@ def _bi_section(story, s, T, bi_report, CW):
     if sig_c:
         story.append(Paragraph("Significant Cohort Differences", s["h3"]))
         for c in sig_c[:3]:
-            story.append(Paragraph("• " + c.interpretation, s["bl"]))
+            story.append(Paragraph("• " + _xml(c.interpretation), s["bl"]))
 
     # Key insights
     ki = getattr(bi_report, "key_insights", [])
@@ -1250,7 +1272,7 @@ def _bi_section(story, s, T, bi_report, CW):
         story.append(Spacer(1, 2*mm))
         story.append(Paragraph("Key Business Insights", s["h3"]))
         for ins in ki[:5]:
-            story.append(Paragraph("• " + str(ins), s["bl"]))
+            story.append(Paragraph("• " + _xml(ins), s["bl"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -1345,9 +1367,10 @@ def _recommendations(story, s, T, actions, CW, insights=None):
     for priority, headline, text in recs[:12]:
         col, bg = pri_map.get(priority, (T["accent"], T["bg_light"]))
         if headline:
-            body = Paragraph("<b>{}</b><br/>{}".format(headline, text), s["body"])
+            body = Paragraph("<b>{}</b><br/>{}".format(
+                _xml(headline), _xml(text)), s["body"])
         else:
-            body = Paragraph(text, s["body"])
+            body = Paragraph(_xml(text), s["body"])
         card = Table([[
             Paragraph(priority, ParagraphStyle(
                 "pri", fontName="Helvetica-Bold", fontSize=7,
