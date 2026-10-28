@@ -197,6 +197,61 @@ def test_drivers_endpoint_422_when_no_binary_target(client):
     assert r.status_code == 422
 
 
+def _upload(client, df, name="d.csv"):
+    r = client.post("/api/datasets/upload", files={
+        "file": (name, io.BytesIO(df.to_csv(index=False).encode()), "text/csv")})
+    assert r.status_code == 200, r.text
+    return r.json()["meta"]["dataset_id"]
+
+
+def _orders(n=300, seed=3):
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    price = rng.gamma(2.0, 40.0, n).round(2)
+    # Expensive orders come back more often — a driver the model should find.
+    returned = np.where(rng.random(n) < 0.08 + 0.5 * (price > 120), "Returned", "Kept")
+    return pd.DataFrame({
+        "order_id": np.arange(10_000, 10_000 + n),
+        "price": price,
+        "channel": rng.choice(["web", "store"], n),
+        "status": returned,
+    })
+
+
+def test_an_outcome_not_named_like_churn_is_offered_and_modelled(client):
+    # The page used to say there was nothing to predict, with a developer's
+    # "Pass ?target=" message, for an obvious Returned / Kept column.
+    ds = _upload(client, _orders())
+    fields = client.get(f"/api/analytics/{ds}/drivers/fields").json()
+    assert fields["candidates"][0] == "status"         # event-valued first
+    assert "channel" in fields["candidates"]          # still selectable
+    assert "order_id" not in fields["candidates"]
+    body = client.get(f"/api/analytics/{ds}/drivers").json()
+    assert body["target"] == "status"
+    assert body["event_label"] == "Returned"
+    assert body["top_drivers"][0][0] == "price"
+
+
+def test_two_neutral_values_model_the_rarer_one_and_say_so():
+    import pandas as pd
+    from app.engines.predictive import _to_binary
+    y, label = _to_binary(pd.Series(["Active"] * 70 + ["Lapsed"] * 30))
+    assert label == "Lapsed" and int(y.sum()) == 30
+    y, label = _to_binary(pd.Series(["No"] * 20 + ["Yes"] * 80))
+    assert label == "Yes" and int(y.sum()) == 80        # event word wins over rarity
+
+
+def test_the_no_outcome_message_is_written_for_a_user(client):
+    import pandas as pd
+    ds = _upload(client, pd.DataFrame({"a": range(50), "b": range(50, 100)}))
+    r = client.get(f"/api/analytics/{ds}/drivers")
+    assert r.status_code == 422
+    assert "?target" not in r.json()["detail"]
+    assert client.get(f"/api/analytics/{ds}/drivers/fields").json() == {
+        "candidates": [], "default": None}
+
+
 # ── dataset comparison ───────────────────────────────────────────────────
 
 def test_compare_endpoint(client, hr_csv_bytes):
@@ -223,3 +278,29 @@ def test_compare_endpoint_404_for_unknown_other_dataset(client, uploaded_dataset
     r = client.post(f"/api/analytics/{uploaded_dataset_id}/compare", json={
         "other_dataset_id": "does-not-exist"})
     assert r.status_code == 404
+
+
+def test_an_unpredictable_outcome_is_not_given_drivers_or_a_risk_group(client):
+    # Importances always sum to 100%, so a coin-toss outcome still produced
+    # a confident ranking and a red "highest-risk profile".
+    # Fixed seeds: any single noise draw can clear the floor by luck
+    # (about 2% of the time), so the test does not sample afresh.
+    import numpy as np
+    import pandas as pd
+    for seed in (1, 2, 3):
+        rng = np.random.default_rng(seed)
+        n = 600
+        df = pd.DataFrame({"price": rng.gamma(2, 40, n), "qty": rng.integers(1, 6, n),
+                           "region": rng.choice(list("NSEW"), n),
+                           "returned": rng.choice(["Yes", "No"], n, p=[0.1, 0.9])})
+        body = client.get(f"/api/analytics/{_upload(client, df)}/drivers").json()
+        assert body["signal"] == "none", body["auc"]
+        assert "better than chance" in body["verdict"]
+        assert body["high_risk_profile"] == ""
+
+
+def test_a_real_driver_is_reported_with_its_strength(client):
+    body = client.get(f"/api/analytics/{_upload(client, _orders(600))}/drivers").json()
+    assert body["signal"] in ("useful", "weak")
+    assert body["auc_p_value"] < 0.05
+    assert body["high_risk_profile"]

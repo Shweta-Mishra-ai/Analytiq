@@ -24,7 +24,8 @@ interface IndustryEntry {
 
 interface DriverResult {
   target: string
-  auc: number
+  /** null when cross-validation could not run. */
+  auc: number | null
   accuracy: number
   n_rows: number
   n_features: number
@@ -34,6 +35,10 @@ interface DriverResult {
   base_rate: number
   high_risk_n: number
   model_name: string
+  event_label?: string
+  /** Whether the model beats chance: useful | weak | none | unknown. */
+  signal?: string
+  verdict?: string
 }
 
 interface ScenarioResult {
@@ -63,6 +68,8 @@ export default function DeepAnalysisPage() {
   const [domain, setDomain] = useState('')
   const [drivers, setDrivers] = useState<DriverResult | null>(null)
   const [driversMsg, setDriversMsg] = useState('')
+  const [outcomes, setOutcomes] = useState<string[]>([])
+  const [outcome, setOutcome] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -97,11 +104,22 @@ export default function DeepAnalysisPage() {
       })
       .catch(() => setIndustry([]))
 
-    apiGet<DriverResult>(`/api/analytics/${ds}/drivers`)
-      .then(setDrivers)
-      .catch((e) =>
-        setDriversMsg(e instanceof Error ? e.message : String(e)),
-      )
+    // The outcome is the user's choice among the two-value columns; the
+    // drivers request follows the selection (effect below).
+    setOutcomes([])
+    setOutcome('')
+    apiGet<{ candidates: string[]; default: string | null }>(
+      `/api/analytics/${ds}/drivers/fields`,
+    )
+      .then((r) => {
+        setOutcomes(r.candidates)
+        if (r.default) setOutcome(r.default)
+        else
+          setDriversMsg(
+            'This dataset has no column with exactly two outcomes (such as churned / stayed, returned / kept, yes / no), so there is no outcome to predict.',
+          )
+      })
+      .catch((e) => setDriversMsg(e instanceof Error ? e.message : String(e)))
 
     apiGet<{ numeric_columns: string[] }>(`/api/analytics/${ds}/scenario/fields`)
       .then((r) => {
@@ -111,6 +129,17 @@ export default function DeepAnalysisPage() {
       })
       .catch(() => setNumericCols([]))
   }, [ds])
+
+  useEffect(() => {
+    if (!ds || !outcome) return
+    setDrivers(null)
+    setDriversMsg('')
+    apiGet<DriverResult>(
+      `/api/analytics/${ds}/drivers?target=${encodeURIComponent(outcome)}`,
+    )
+      .then(setDrivers)
+      .catch((e) => setDriversMsg(e instanceof Error ? e.message : String(e)))
+  }, [ds, outcome])
 
   if (!dataset) return <NeedData />
 
@@ -314,6 +343,21 @@ export default function DeepAnalysisPage() {
               : 'What predicts your outcome'
           }
         >
+          {outcomes.length > 1 && (
+            <div className="mb-4 flex flex-wrap items-end gap-3">
+              <Select
+                label="Outcome"
+                value={outcome}
+                onChange={setOutcome}
+                options={outcomes}
+              />
+            </div>
+          )}
+          {drivers?.event_label && (
+            <p className="mb-3 text-xs text-mute">
+              Modelling the chance that {drivers.target} = “{drivers.event_label}”.
+            </p>
+          )}
           {!drivers && driversMsg && (
             <p className="text-sm text-mute">{driversMsg}</p>
           )}
@@ -325,8 +369,8 @@ export default function DeepAnalysisPage() {
                 <MiniStat label="Model" value={drivers.model_name} />
                 <MiniStat
                   label="AUC"
-                  value={drivers.auc.toFixed(3)}
-                  tone={drivers.auc >= 0.7 ? 'teal' : 'amber'}
+                  value={drivers.auc == null ? '—' : drivers.auc.toFixed(3)}
+                  tone={drivers.signal === 'useful' ? 'teal' : drivers.signal === 'none' ? 'rose' : 'amber'}
                 />
                 {/* base_rate / high_risk_rate arrive already expressed as
                     percentages (predictive.py multiplies by 100), so they
@@ -335,14 +379,29 @@ export default function DeepAnalysisPage() {
                   label="Base rate"
                   value={`${drivers.base_rate.toFixed(1)}%`}
                 />
-                <MiniStat
-                  label="High-risk rate"
-                  value={`${drivers.high_risk_rate.toFixed(1)}%`}
-                  tone="rose"
-                />
+                {drivers.high_risk_profile && (
+                  <MiniStat
+                    label="High-risk rate"
+                    value={`${drivers.high_risk_rate.toFixed(1)}%`}
+                    tone="rose"
+                  />
+                )}
               </div>
 
-              <div className="space-y-1.5">
+              {drivers.verdict && (
+                <p
+                  className={`mb-4 rounded-lg border px-4 py-3 text-sm ${
+                    drivers.signal === 'none'
+                      ? 'border-amber/40 bg-amber/5 text-ink'
+                      : 'border-edge bg-panel2 text-mute'
+                  }`}
+                >
+                  {drivers.signal === 'none' && '⚠ '}
+                  {drivers.verdict}
+                </p>
+              )}
+
+              <div className={`space-y-1.5 ${drivers.signal === 'none' ? 'opacity-50' : ''}`}>
                 {drivers.top_drivers.map(([feature, importance]) => (
                   <div key={feature} className="flex items-center gap-3 text-xs">
                     <span className="w-44 truncate font-semibold text-ink">

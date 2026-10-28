@@ -261,3 +261,79 @@ def test_chunking_keeps_source_references():
 
 def test_chunking_drops_empty_passages():
     assert chunk_passages([{"text": "   ", "source": "a", "locator": "b"}]) == []
+
+
+def test_a_hash_collision_alone_does_not_make_a_passage_relevant(tmp_path, monkeypatch):
+    # "churn rate" shares no word with this handbook, but one of its words
+    # lands in the same hash bucket as one of the question's, which scored
+    # above the local relevance floor.
+    from app.config import config
+    from app.rag import service
+    from app.rag.vector_store import KnowledgeBase
+    monkeypatch.setattr(config, "gemini_api_key", "")
+    kb = KnowledgeBase("c", "c", str(tmp_path / "c.pkl"))
+    kb.owner = "local"
+    service.ingest_file(kb, "handbook.txt", (
+        b"Onboarding handbook. New starters complete induction training in "
+        b"their first week. The probation period lasts six months."))
+    service.ingest_file(kb, "policy.txt", (
+        b"Expense claims must be submitted within 30 days of purchase."))
+    assert kb.search("What is our customer churn rate?") == []
+    assert kb.search("How many days to submit an expense claim?")[0]["source"] == "policy.txt"
+
+
+def test_without_a_model_the_answer_quotes_the_matching_passages(tmp_path, monkeypatch):
+    # The search found the right passage; a bare "no LLM" error threw it away.
+    from app.rag import service
+    monkeypatch.setattr(config, "gemini_api_key", "")
+    monkeypatch.setattr(config, "groq_api_key", "")
+    monkeypatch.setattr(service, "_local_generate", lambda *a, **kw: None)
+    kb = _kb(tmp_path, HR_DOCS)
+    out = service.answer_question(kb, "When must expense claims be submitted?")
+    assert out["extractive"] is True and out["grounded"] is True
+    assert "within 30 days" in out["answer"]
+    assert "not a written answer" in out["answer"]
+    # Every quote carries a citation that points at a returned source.
+    refs = {int(r) for r in __import__("re").findall(r"\[(\d+)\]", out["answer"])}
+    assert refs and refs <= {s["ref"] for s in out["sources"]}
+    # The unrelated policies are not quoted.
+    assert "probation" not in out["answer"].lower()
+
+
+def test_without_a_model_an_uncovered_question_still_says_so(tmp_path, monkeypatch):
+    from app.rag import service
+    monkeypatch.setattr(service, "_local_generate", lambda *a, **kw: None)
+    monkeypatch.setattr(config, "gemini_api_key", "")
+    monkeypatch.setattr(config, "groq_api_key", "")
+    out = service.answer_question(_kb(tmp_path, HR_DOCS), "warehouse throughput in Q3")
+    assert out["grounded"] is False and out["sources"] == []
+
+
+def test_privacy_mode_without_a_local_model_quotes_and_sends_nothing(tmp_path, monkeypatch):
+    from app.rag import service
+    monkeypatch.setattr(config, "llm_privacy_mode", True)
+    monkeypatch.setattr(config, "gemini_api_key", "would-leak")
+    monkeypatch.setattr(service, "_local_generate", lambda *a, **kw: None)
+
+    def leak(*a, **kw):
+        raise AssertionError("a cloud provider was called in privacy mode")
+    monkeypatch.setattr(service, "_gemini_generate", leak)
+    monkeypatch.setattr(service, "_groq_generate", leak)
+    kb = _kb(tmp_path, HR_DOCS)
+    kb.owner = "local"
+    out = service.answer_question(kb, "How many days of annual leave do staff get?")
+    assert out["extractive"] and "25 days" in out["answer"]
+    assert "LLM_PRIVACY_MODE" in out["answer"]
+
+
+def test_without_a_model_sentences_sharing_one_word_are_not_quoted(tmp_path, monkeypatch):
+    from app.rag import service
+    monkeypatch.setattr(service, "_local_generate", lambda *a, **kw: None)
+    monkeypatch.setattr(config, "gemini_api_key", "")
+    monkeypatch.setattr(config, "groq_api_key", "")
+    kb = _kb(tmp_path, ["Expense policy. Expense claims must be submitted within 30 days "
+                        "of purchase. Claims above 500 GBP need manager approval. "
+                        "Employees receive 25 days of annual leave."], source="policy.txt")
+    out = service.answer_question(kb, "How many days do I have to submit an expense claim?")
+    assert "within 30 days" in out["answer"]
+    assert "annual leave" not in out["answer"]

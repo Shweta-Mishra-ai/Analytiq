@@ -491,6 +491,11 @@ def _parse_dates(s: pd.Series) -> pd.Series:
     failed, and the whole column stayed text. Both orders are tried and the
     one that parses more values wins; on a tie the default stands.
     """
-    month_first = pd.to_datetime(s, errors="coerce")
-    day_first = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    import warnings
+    with warnings.catch_warnings():
+        # Trying both orders on purpose: pandas warns that ISO dates ignore
+        # dayfirst, and that it fell back to per-value parsing.
+        warnings.simplefilter("ignore", UserWarning)
+        month_first = pd.to_datetime(s, errors="coerce")
+        day_first = pd.to_datetime(s, errors="coerce", dayfirst=True)
     return day_first if day_first.notna().sum() > month_first.notna().sum() else month_first

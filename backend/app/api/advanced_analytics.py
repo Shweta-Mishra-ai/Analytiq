@@ -349,6 +349,15 @@ def industry_benchmarks(ds_id: str, owner: str = Depends(current_owner)):
 #  Predictive drivers (what predicts churn / attrition)
 # ══════════════════════════════════════════════════════════
 
+@router.get("/{ds_id}/drivers/fields")
+def drivers_fields(ds_id: str, owner: str = Depends(current_owner)):
+    """Two-outcome columns the page can model, and the one to start with."""
+    df = _df_or_404(owner, ds_id)
+    from app.engines.predictive import binary_target_candidates
+    candidates = binary_target_candidates(df)
+    return {"candidates": candidates, "default": candidates[0] if candidates else None}
+
+
 @router.get("/{ds_id}/drivers")
 def drivers(ds_id: str, target: Optional[str] = None,
             owner: str = Depends(current_owner)):
@@ -356,14 +365,18 @@ def drivers(ds_id: str, target: Optional[str] = None,
     churn, default), with model quality and the highest-risk profile.
     Auto-detects a suitable target column when `target` is omitted."""
     df = _df_or_404(owner, ds_id)
-    from app.engines.predictive import compute_drivers, find_binary_target
+    from app.engines.predictive import binary_target_candidates, compute_drivers
 
-    target_col = target or find_binary_target(df)
+    # Candidates list churn-style names first, so this is the column the
+    # name-based detection would have picked, when it qualifies.
+    candidates = [] if target else binary_target_candidates(df)
+    target_col = target or (candidates[0] if candidates else None)
     if not target_col:
         raise HTTPException(
             422,
-            "No binary outcome column detected. Pass ?target=<column> "
-            "naming a two-value column such as churn/attrition/left.")
+            "This dataset has no column with exactly two outcomes (such as "
+            "churned / stayed, returned / kept, yes / no), so there is no "
+            "outcome to predict.")
     if target_col not in df.columns:
         raise HTTPException(422, f"Column '{target_col}' not in dataset")
 

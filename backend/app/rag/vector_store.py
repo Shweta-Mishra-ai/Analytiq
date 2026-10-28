@@ -228,6 +228,14 @@ class KnowledgeBase:
             (np.linalg.norm(mat, axis=1) * np.linalg.norm(qv)) + 1e-9)
         idx = np.argsort(-sims)[:k]
         hits = [{**self.chunks[i], "score": float(sims[i])} for i in idx]
+        if self.embedder != "gemini":
+            # The hashing embedder puts words in 384 buckets, so unrelated
+            # words collide; one collision against a short passage scores
+            # ~0.14, above the floor — "what is our churn rate" was answered
+            # from an onboarding handbook sharing no word with it. A local
+            # hit must share an actual word with the question.
+            q_words = set(_tokens(query))
+            hits = [h for h in hits if q_words & set(_tokens(h["text"]))]
         return _filter_by_relevance(hits, self.embedder)
 
 
