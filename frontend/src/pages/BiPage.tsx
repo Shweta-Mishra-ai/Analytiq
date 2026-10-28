@@ -7,7 +7,19 @@ interface RootCause {
   target_col: string
   n_low_performers: number
   low_pct: number
-  drivers: { factor: string; impact: string; direction: string; detail: string }[]
+  group_label?: string
+  drivers: {
+    factor: string
+    impact: number
+    direction: string
+    detail: string
+    dtype?: 'numeric' | 'categorical'
+    diff_pct?: number
+    low_mean?: number
+    high_mean?: number
+    low_pct?: number
+    high_pct?: number
+  }[]
   top_driver: string
   interpretation: string
   recommendations: string[]
@@ -50,6 +62,17 @@ interface BiReport {
   segments: Segment[]
   key_insights: string[]
   executive_brief: string
+}
+
+// The size of the difference, in the units the detail line uses. This
+// showed the raw 0-1 ranking score ("0.5634"), coloured by a direction value
+// the API never sends.
+function driverChip(d: RootCause['drivers'][number]): string {
+  if (d.dtype === 'categorical' && d.low_pct != null && d.high_pct != null)
+    return `${Math.round(d.low_pct)}% / ${Math.round(d.high_pct)}%`
+  if (d.diff_pct != null && d.low_mean != null && d.high_mean != null)
+    return `${d.low_mean > d.high_mean ? '+' : '−'}${Math.round(d.diff_pct)}%`
+  return `${Math.round(d.impact * 100)}%`
 }
 
 export default function BiPage() {
@@ -99,16 +122,13 @@ export default function BiPage() {
           )}
 
           {report.root_causes.map((rc, i) => (
-            <Panel key={i} title={`Root cause — low ${rc.target_col}`}>
-              <p className="mb-3 text-xs text-mute">
-                {rc.n_low_performers.toLocaleString()} low performers ({rc.low_pct.toFixed(1)}%).{' '}
-                {rc.interpretation}
-              </p>
+            <Panel key={i} title={`What sets apart ${rc.group_label ?? `low ${rc.target_col}`}`}>
+              <p className="mb-3 text-xs text-mute">{rc.interpretation}</p>
               <div className="space-y-1.5">
                 {rc.drivers.map((d, j) => (
                   <div key={j} className="flex items-start gap-3 rounded-lg bg-panel2 px-3 py-2 text-xs">
-                    <span className={`mt-0.5 font-bold ${d.direction === 'higher' ? 'text-rose' : 'text-teal'}`}>
-                      {d.impact}
+                    <span className="mt-0.5 w-16 shrink-0 text-right font-bold text-accent">
+                      {driverChip(d)}
                     </span>
                     <div>
                       <div className="font-semibold text-ink">{d.factor}</div>

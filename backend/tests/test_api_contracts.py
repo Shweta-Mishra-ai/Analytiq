@@ -169,3 +169,37 @@ def test_means_over_time_keep_every_period(client):
     r = client.post(f"/api/charts/{ds}/build",
                     json={"type": "line", "x": "order_date", "y": "revenue", "agg": "mean"})
     assert "excluded" not in str(r.json()["figure"]["layout"]["xaxis"].get("title", ""))
+
+
+# ── pie charts are shares of the whole ────────────────────
+
+def test_pie_keeps_the_largest_slice_and_groups_the_rest():
+    from app.engines.chart_engine import make_pie
+    df = pd.DataFrame({"cat": [f"c{i:02d}" for i in range(15)], "v": [1] * 14 + [1000]})
+    pie = make_pie(df, "cat", "v").data[0]
+    labels, values = list(pie.labels), [float(v) for v in pie.values]
+    assert labels[0] == "c14"
+    assert labels[-1].startswith("Other")
+    assert sum(values) == df["v"].sum()          # nothing dropped from the whole
+
+
+def test_dashboard_pie_uses_every_group_and_refuses_means(client):
+    df = pd.DataFrame({"cat": [f"c{i:02d}" for i in range(30)] * 2, "v": range(60)})
+    ds = _upload(client, df)
+    r = client.post(f"/api/charts/{ds}/build",
+                    json={"type": "pie", "x": "cat", "y": "v", "agg": "sum"})
+    assert r.status_code == 200, r.text
+    vals = r.json()["figure"]["data"][0]["values"]
+    if isinstance(vals, list):
+        assert sum(vals) == df["v"].sum()
+    assert client.post(f"/api/charts/{ds}/build", json={
+        "type": "pie", "x": "cat", "y": "v", "agg": "mean"}).status_code == 422
+
+
+def test_chat_tools_reject_unknown_aggregations_and_match_literally():
+    from app.ai.tool_dispatcher import dispatch
+    df = pd.DataFrame({"g": ["a", "b"], "v": [1, 2], "note": ["x (1)", "y"]})
+    assert not dispatch(df, "aggregate", {"group_col": "g", "value_col": "v",
+                                          "agg_func": "__class__"}).success
+    r = dispatch(df, "filter", {"column": "note", "operator": "contains", "value": "("})
+    assert r.success and len(r.dataframe) == 1

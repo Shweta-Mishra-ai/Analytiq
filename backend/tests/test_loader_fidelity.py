@@ -88,3 +88,51 @@ def test_an_uploaded_file_with_duplicate_names_survives_analysis(client):
 def test_legacy_xls_reader_is_installed():
     # The upload page accepts .xls; without xlrd every such upload failed.
     import xlrd  # noqa: F401
+
+
+# ── dates by content, names by word, codes as written ─────
+
+@pytest.mark.parametrize("header,rows", [
+    ("day", ["2024-01-31", "2024-02-01", "2024-03-05", "2024-04-09"]),
+    ("logged", ["2024-01-31T10:00:00Z", "2024-02-01T11:30:00Z", "2024-02-03T09:00:00Z"]),
+    ("period", ['"Jan 5, 2024"', '"Feb 6, 2024"', '"Mar 7, 2024"']),
+    ("paid_date", ["31/01/2024", "05/02/2024", "13/03/2024"]),     # 'id' inside 'paid'
+])
+def test_date_columns_are_recognised_whatever_they_are_called(header, rows):
+    body = f"{header},v\n" + "\n".join(f"{r},{i}" for i, r in enumerate(rows))
+    col = _load("d.csv", body.encode()).df[header]
+    assert pd.api.types.is_datetime64_any_dtype(col), col.tolist()
+
+
+@pytest.mark.parametrize("header,rows", [
+    ("version", ["1.2.3", "2.0.1", "3.1.4"]),
+    ("note", ["2024-01-01", "hello", "world", "foo"]),
+    ("year", ["2021", "2022", "2023"]),
+])
+def test_values_that_are_not_dates_stay_as_they_are(header, rows):
+    body = f"{header},v\n" + "\n".join(f"{r},{i}" for i, r in enumerate(rows))
+    col = _load("d.csv", body.encode()).df[header]
+    assert not pd.api.types.is_datetime64_any_dtype(col)
+
+
+@pytest.mark.parametrize("header,rows", [
+    ("zip", ["02134", "10001", "00501"]),
+    ("account_no", ["000123", "000456", "000789"]),
+])
+def test_zero_padded_codes_keep_their_zeros(header, rows):
+    body = f"{header},v\n" + "\n".join(f"{r},{i}" for i, r in enumerate(rows))
+    r = _load("z.csv", body.encode())
+    assert r.df[header].tolist() == rows
+    assert any("leading zeros" in w for w in r.warnings)
+
+
+def test_ordinary_integers_are_still_numbers():
+    df = _load("n.csv", b"qty,delta\n0,-5\n10,0\n5,3\n").df
+    assert pd.api.types.is_integer_dtype(df["qty"]) and pd.api.types.is_integer_dtype(df["delta"])
+
+
+def test_a_mostly_numeric_column_named_with_id_inside_a_word_is_converted():
+    # "amount_paid" used to be skipped because "paid" contains "id".
+    body = "amount_paid,v\n" + "\n".join(f"{x},{i}" for i, x in enumerate(["10.5"] * 9 + ["Pending"]))
+    col = _load("p.csv", body.encode()).df["amount_paid"]
+    assert col.iloc[0] == 10.5 and col.iloc[-1] == "Pending"

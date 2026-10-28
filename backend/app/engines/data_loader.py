@@ -7,6 +7,7 @@ Supports: CSV, Excel (multi-sheet), JSON up to 200MB.
 NO Streamlit imports. Always returns LoadResult.
 """
 import logging
+import re
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
@@ -158,6 +159,7 @@ def _load_csv(f, warnings: list) -> Optional[pd.DataFrame]:
                 logger.debug("_load_csv: suppressed exception", exc_info=True)
                 continue
             if df.shape[1] >= 2:  # at least 2 columns = real CSV
+                df = _restore_leading_zeros(df, raw, enc, sep, warnings)
                 if enc != "utf-8":
                     warnings.append(
                         "File is not UTF-8; read as {} — check that accented "
@@ -182,6 +184,42 @@ def _load_csv(f, warnings: list) -> Optional[pd.DataFrame]:
                 "skipped — those rows are not in the dataset.".format(skipped))
         return df
     return None
+
+
+def _restore_leading_zeros(df: pd.DataFrame, raw: bytes, enc: str, sep: str,
+                           warnings: list) -> pd.DataFrame:
+    """Keep codes such as 02134 or 000123 as written.
+
+    The parser reads them as integers, so postcode 02134 became 2134 and
+    account 000123 became 123 — a different value, and one that no longer
+    joins to the system it came from. Integer columns are read again as
+    text, and any column with a zero-padded value keeps its text form.
+    """
+    import io
+    import warnings as _warnings
+    int_cols = [c for c in df.columns if pd.api.types.is_integer_dtype(df[c])]
+    if not int_cols:
+        return df
+    try:
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore", pd.errors.ParserWarning)
+            as_text = pd.read_csv(io.BytesIO(raw), encoding=enc, sep=sep, dtype=str,
+                                  usecols=int_cols, on_bad_lines="warn",
+                                  keep_default_na=False)
+    except Exception:
+        logger.debug("_restore_leading_zeros: re-read failed", exc_info=True)
+        return df
+    if len(as_text) != len(df):
+        return df
+    kept = []
+    for c in int_cols:
+        if as_text[c].str.match(r"^\s*[+-]?0\d").any():
+            df[c] = as_text[c].str.strip().values
+            kept.append(str(c))
+    if kept:
+        warnings.append("Kept leading zeros in {} — read as codes, not numbers.".format(
+            ", ".join("'{}'".format(c) for c in kept)))
+    return df
 
 
 # ══════════════════════════════════════════════════════════
@@ -352,6 +390,47 @@ def _sanitize(df: pd.DataFrame, warnings: list) -> pd.DataFrame:
     return df
 
 
+def _name_words(col) -> set:
+    """The words of a column name: "paidDate" and "paid_date" -> {paid, date}.
+
+    Keyword checks used to be substring tests, so "id" matched paid_date,
+    valid_until and holiday, and those columns were never converted at all.
+    """
+    import re
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(col))
+    return {w for w in re.split(r"[^a-z0-9]+", spaced.lower()) if w}
+
+
+_SKIP_WORDS = {"id", "ids", "uuid", "guid", "name", "code", "sku", "url", "link",
+               "image", "description", "address", "email", "phone", "zip",
+               "postcode", "postal"}
+_DATE_WORDS = {"date", "time", "created", "updated", "timestamp", "datetime",
+               "day", "month", "period", "dob", "at", "on", "when", "dt"}
+
+# Shapes that are dates and nothing else. A column is recognised as dates
+# by content when nearly all its values have one of these shapes, whatever
+# the column is called — "day" or "period" holding 2024-01-31 used to stay
+# text. Bare numbers ("20240131", "2024") and codes are deliberately not
+# here: they are too often something else.
+_DATE_SHAPES = re.compile(
+    r"^\s*(?:"
+    r"\d{4}-\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?"
+    r"|\d{4}/\d{1,2}/\d{1,2}"
+    r"|\d{1,2}[/.-]\d{1,2}[/.-]\d{4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?"
+    r"|\d{1,2}[ -](?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*[ -,]+\d{4}"
+    r"|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.? \d{1,2},? \d{4}"
+    r")\s*$", re.IGNORECASE)
+
+
+def _looks_like_dates(s: pd.Series) -> bool:
+    values = s.dropna().astype(str)
+    values = values[values.str.strip() != ""]
+    if len(values) < 3:
+        return False
+    sample = values.sample(min(len(values), 2000), random_state=0)
+    return sample.str.match(_DATE_SHAPES).mean() >= 0.95
+
+
 def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
     """
     Carefully improve dtypes.
@@ -362,33 +441,39 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
     word "Pending" in it, not numbers and a hole where "Pending" was.
     NEVER converts columns that look like IDs or product names.
     """
-    skip_keywords = ["id", "name", "code", "sku", "url", "link",
-                     "image", "description", "address", "email", "phone"]
-
     for col in text_columns(df):
-        col_lower = col.lower()
+        words = _name_words(col)
 
         # Skip ID-like columns
-        if any(kw in col_lower for kw in skip_keywords):
+        if words & _SKIP_WORDS:
             continue
+
+        # Zero-padded numbers are codes (see _restore_leading_zeros); turning
+        # them into numbers changes them. Only all-digit values count — a
+        # date like 01/02/2024 also starts with a zero.
+        zero_padded = df[col].astype(str).str.match(r"^\s*[+-]?0\d+\s*$").any()
 
         # Try numeric
         try:
             converted = pd.to_numeric(df[col], errors="coerce")
             success_rate = converted.notna().sum() / max(len(df), 1)
-            if success_rate > 0.80:
+            if success_rate > 0.80 and not zero_padded:
                 df[col] = converted.where(converted.notna(), df[col])
                 continue
         except Exception:
             logger.debug("_smart_dtype_inference: suppressed exception", exc_info=True)
 
-        # Try datetime (only for date-named columns)
-        date_keywords = ["date", "time", "created", "updated", "timestamp"]
-        if any(kw in col_lower for kw in date_keywords):
+        # Try datetime: a date-like name, or values that are unmistakably dates.
+        named = bool(words & _DATE_WORDS)
+        if named or _looks_like_dates(df[col]):
             try:
                 converted = _parse_dates(df[col])
-                success_rate = converted.notna().sum() / max(len(df), 1)
-                if success_rate > 0.70:
+                filled = df[col].notna().sum()
+                # By name, 70% of all rows; by content, 95% of the filled ones —
+                # the shape test already vouched for the rest.
+                ok = (converted.notna().sum() / max(len(df), 1) > 0.70 if named
+                      else converted.notna().sum() >= 0.95 * max(filled, 1))
+                if ok:
                     df[col] = converted.where(converted.notna(), df[col])
             except Exception:
                 logger.debug("_smart_dtype_inference: suppressed exception", exc_info=True)

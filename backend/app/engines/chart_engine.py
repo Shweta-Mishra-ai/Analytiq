@@ -124,8 +124,20 @@ def make_histogram(df, col, nbins=40, title=""):
         color_discrete_sequence=PALETTE))
 
 
-def make_pie(df, names_col, values_col, title=""):
-    agg = df.groupby(names_col)[values_col].sum().reset_index().head(10)
+def make_pie(df, names_col, values_col, title="", max_slices=10):
+    """Shares of the whole: the largest slices, then one "Other".
+
+    This took `.head(10)` of the groups in alphabetical order, so with more
+    than ten categories the biggest could be missing — a category holding
+    98.6% of the total was left out and ten others shown at 10% each.
+    """
+    totals = df.groupby(names_col)[values_col].sum().sort_values(ascending=False, kind="stable")
+    if len(totals) > max_slices:
+        top = totals.iloc[:max_slices - 1]
+        other = totals.iloc[max_slices - 1:].sum()
+        totals = pd.concat([top, pd.Series({"Other ({} more)".format(
+            len(totals) - (max_slices - 1)): other})])
+    agg = totals.rename_axis(names_col).reset_index(name=values_col)
     return _style(px.pie(
         agg, names=names_col, values=values_col,
         title=title or f"{values_col} by {names_col}",

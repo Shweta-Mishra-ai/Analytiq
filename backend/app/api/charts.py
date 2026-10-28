@@ -122,7 +122,13 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
         elif t in ("bar", "line", "area", "pie"):
             if not req.x or not req.y:
                 raise HTTPException(422, "x and y are required")
-            grouped = _aggregate(df, req)
+            if t == "pie" and req.agg not in ("sum", "count"):
+                raise HTTPException(
+                    422, f"A pie shows shares of a total, and a {req.agg} is not a "
+                         f"share of anything — use sum or count, or a bar chart")
+            # A pie needs every group: its slices are shares of the whole, so
+            # trimming to the top N first would misstate every percentage.
+            grouped = _aggregate(df, req, limit=(t != "pie"))
             if t == "bar":
                 fig = chart_engine.make_bar(grouped, req.x, req.y, req.title)
             elif t == "pie":
@@ -183,7 +189,7 @@ def _drop_partial_periods(out: pd.DataFrame, x: str, rule: str, agg: str,
     return trimmed
 
 
-def _aggregate(df: pd.DataFrame, req: ChartRequest) -> pd.DataFrame:
+def _aggregate(df: pd.DataFrame, req: ChartRequest, limit: bool = True) -> pd.DataFrame:
     x, y, agg = req.x, req.y, req.agg
     if x not in df.columns or y not in df.columns:
         raise KeyError(x if x not in df.columns else y)
@@ -215,4 +221,5 @@ def _aggregate(df: pd.DataFrame, req: ChartRequest) -> pd.DataFrame:
         out = df.groupby(x, dropna=True)[y].count().reset_index()
     else:
         out = df.groupby(x, dropna=True)[y].agg(agg).reset_index()
-    return out.sort_values(y, ascending=False).head(req.top_n)
+    out = out.sort_values(y, ascending=False)
+    return out.head(req.top_n) if limit else out

@@ -161,3 +161,77 @@ def test_reported_drivers_carry_effect_size_and_n():
     for d in cat_drivers:
         assert "cramers_v" in d and "n" in d
         assert "Cramér's V" in d["detail"] or "Cram" in d["detail"]
+
+
+def test_root_cause_states_the_direction_the_numbers_show():
+    # "56.3% lower absences (17.30 vs 7.56)" — the numbers said higher.
+    from app.engines.bi_engine import analyze_root_cause
+    rng = np.random.default_rng(0)
+    n = 400
+    absences = rng.integers(0, 20, n)
+    score = 100 - 3 * absences + rng.normal(0, 3, n)
+    df = pd.DataFrame({"emp_id": range(n), "score": score, "absences": absences})
+    drivers = {d["factor"]: d for d in analyze_root_cause(df, "score").drivers}
+    d = drivers["absences"]
+    assert d["low_mean"] > d["high_mean"]
+    assert "higher 'absences' than the rest" in d["detail"]
+    assert "emp_id" not in drivers
+
+
+# ── Business Intel page: measures, directions, real shares ─
+
+def test_bi_never_analyses_an_identifier(hr_df):
+    from app.engines.bi_engine import run_bi
+    r = run_bi(hr_df)
+    used = ([b.column for b in r.benchmarks] + [x.target_col for x in r.root_causes]
+            + [c.metric_col for c in r.cohorts] + [p.value_col for p in r.pareto])
+    assert "employee_id" not in used
+    assert not any("employee_id" in i for i in r.key_insights)
+
+
+def test_bi_reads_lower_is_better_metrics_the_right_way_round():
+    from app.engines.bi_engine import analyze_root_cause, analyze_segment_health
+    rng = np.random.default_rng(1)
+    n = 600
+    reg = rng.choice(list("ABCDEFG"), n)
+    df = pd.DataFrame({"region": reg,
+                       "complaints": rng.poisson(np.where(reg == "G", 6, 1)),
+                       "cost": rng.gamma(2, 50, n)})
+    rc = analyze_root_cause(df, "complaints")
+    assert "highest 'complaints'" in rc.group_label        # the worst are the high ones
+    health = {s.segment_name: s for s in analyze_segment_health(df, "region", ["complaints"])}
+    assert min(health.values(), key=lambda s: s.health_score).segment_name == "G"
+
+
+def test_bi_does_not_judge_metrics_with_no_known_direction():
+    from app.engines.bi_engine import analyze_root_cause, analyze_segment_health
+    rng = np.random.default_rng(2)
+    df = pd.DataFrame({"team": rng.choice(list("abc"), 300), "salary": rng.normal(5e4, 9e3, 300),
+                       "age": rng.integers(20, 60, 300)})
+    assert "performers" not in analyze_root_cause(df, "salary").group_label
+    assert analyze_segment_health(df, "team", ["salary", "age"]) == []
+
+
+def test_pareto_only_for_additive_non_negative_totals_with_enough_groups():
+    from app.engines.bi_engine import run_bi
+    rng = np.random.default_rng(3)
+    n = 500
+    reg = rng.choice(list("ABCDEFG"), n)
+    df = pd.DataFrame({"region": reg, "revenue": rng.gamma(2, 100, n),
+                       "satisfaction_score": rng.uniform(1, 5, n),
+                       "profit": rng.normal(0, 50, n)})
+    cols = {p.value_col: p for p in run_bi(df).pareto}
+    assert "satisfaction_score" not in cols and "profit" not in cols
+    p = cols["revenue"]
+    assert f"top {p.top_20_pct_groups} of 7" in p.interpretation
+    four = df[df["region"].isin(list("ABCD"))]
+    assert run_bi(four).pareto == []
+
+
+def test_cohort_absence_of_significance_is_not_called_absence_of_effect():
+    from app.engines.bi_engine import analyze_cohort
+    rng = np.random.default_rng(4)
+    df = pd.DataFrame({"g": rng.choice(list("ab"), 60), "v": rng.normal(0, 1, 60)})
+    c = analyze_cohort(df, "g", "v")
+    if not c.is_significant:
+        assert "not the same as showing there is none" in " ".join(c.recommendations)

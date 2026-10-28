@@ -61,10 +61,17 @@ def dispatch(df: pd.DataFrame, tool: str, params: dict, explanation: str = "") -
 
 # ── DATA TOOLS ────────────────────────────────────────────
 
+_AGG_FUNCS = {"sum", "mean", "count", "max", "min", "median"}
+
+
 def _aggregate(df, p):
     grp = p["group_col"]
     val = p["value_col"]
     agg = p.get("agg_func", "sum")
+    # The model chooses this string and pandas looks it up by name, so it
+    # is held to the functions the prompt offers.
+    if agg not in _AGG_FUNCS:
+        return ToolResult(success=False, error=f"Unsupported aggregation '{agg}'")
 
     res  = df.groupby(grp)[val].agg(agg).reset_index()
     res  = res.sort_values(val, ascending=False)
@@ -84,7 +91,8 @@ def _filter(df, p):
     elif op == "==":     mask = df[col].astype(str) == str(val)
     elif op == "!=":     mask = df[col].astype(str) != str(val)
     elif op == "contains":
-        mask = df[col].astype(str).str.contains(str(val), case=False, na=False)
+        mask = df[col].astype(str).str.contains(str(val), case=False, na=False,
+                                                regex=False)
     else:
         return ToolResult(success=False, error=f"Unknown operator: {op}")
 
