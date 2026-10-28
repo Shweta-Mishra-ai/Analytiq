@@ -137,3 +137,35 @@ def test_charts_group_on_a_column_mixing_numbers_and_text(client):
     r = client.post(f"/api/charts/{ds}/build",
                     json={"type": "bar", "x": "revenue", "y": "units", "agg": "sum"})
     assert r.status_code == 200, r.text
+
+
+# ── dashboard honesty ─────────────────────────────────────
+
+def test_kpi_strip_does_not_sum_identifiers(client):
+    df = pd.DataFrame({"customer_id": range(1, 61), "revenue": [10.0] * 60})
+    ds = _upload(client, df)
+    labels = [k["label"] for k in client.post(f"/api/charts/{ds}/kpis", json={"filters": []}).json()["kpis"]]
+    assert "Σ revenue" in labels and "Σ customer_id" not in labels
+
+
+def test_a_partial_final_month_is_not_drawn_as_a_collapse(client):
+    # Steady daily revenue to 10 March: the March sum is a third of a month.
+    dates = pd.date_range("2023-01-01", "2025-03-10", freq="D")
+    ds = _upload(client, pd.DataFrame({"order_date": dates, "revenue": 100.0}))
+    r = client.post(f"/api/charts/{ds}/build",
+                    json={"type": "line", "x": "order_date", "y": "revenue", "agg": "sum"})
+    assert r.status_code == 200, r.text
+    fig = r.json()["figure"]
+    ys = fig["data"][0]["y"]
+    ys = ys if isinstance(ys, list) else None
+    if ys is not None:      # plotly may binary-encode; check via the label otherwise
+        assert min(ys) > 0.8 * max(ys)
+    assert "partial month excluded" in fig["layout"]["xaxis"]["title"]["text"]
+
+
+def test_means_over_time_keep_every_period(client):
+    dates = pd.date_range("2023-01-01", "2025-03-10", freq="D")
+    ds = _upload(client, pd.DataFrame({"order_date": dates, "revenue": 100.0}))
+    r = client.post(f"/api/charts/{ds}/build",
+                    json={"type": "line", "x": "order_date", "y": "revenue", "agg": "mean"})
+    assert "excluded" not in str(r.json()["figure"]["layout"]["xaxis"].get("title", ""))

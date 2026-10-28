@@ -72,7 +72,11 @@ def fields(ds_id: str, owner: str = Depends(current_owner)):
 @router.post("/{ds_id}/kpis")
 def kpis(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
     df = _df(owner, ds_id, body.filters)
-    num_cols = df.select_dtypes(include="number").columns.tolist()
+    # Measures only: summing an identifier ("Σ customer_id 181.5K") is a
+    # number with no meaning, and it took one of the four KPI slots.
+    from app.engines.domains.base import is_id_column
+    num_cols = [c for c in df.select_dtypes(include="number").columns
+                if not pd.api.types.is_bool_dtype(df[c]) and not is_id_column(c, df[c])]
     cards = [
         {"label": "Rows", "value": len(df), "format": "int"},
         {"label": "Columns", "value": df.shape[1], "format": "int"},
@@ -127,6 +131,10 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
                 fig = chart_engine.make_line(grouped, req.x, req.y, req.title)
                 if t == "area":
                     fig.update_traces(fill="tozeroy")
+                omitted = grouped.attrs.get("omitted") or []
+                if omitted:
+                    fig.update_xaxes(title_text="{} ({} partial {} excluded)".format(
+                        req.x, " and ".join(omitted), grouped.attrs["period"]))
         elif t == "table":
             grouped = _aggregate(df, req) if (req.x and req.y) else df.head(req.top_n)
             from app.services.serialize import df_records
@@ -141,6 +149,38 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
         raise HTTPException(500, f"Chart build failed: {e}")
 
     return {"figure": _fig_json(fig)}
+
+
+def _drop_partial_periods(out: pd.DataFrame, x: str, rule: str, agg: str,
+                          first: pd.Timestamp, last: pd.Timestamp) -> pd.DataFrame:
+    """Remove a first or last week/month the data only partly covers.
+
+    A sum or count over half a month is about half a month's worth, so a
+    file ending on the 10th drew a final point that looked like revenue
+    collapsing. Means and medians are not biased that way and are left
+    alone, as are daily buckets. What was removed is recorded in
+    `out.attrs["omitted"]` for the caller to state on the chart.
+    """
+    if agg not in ("sum", "count") or rule not in ("W", "ME") or len(out) < 3:
+        return out
+    labels = pd.to_datetime(out[x])
+    if rule == "W":
+        starts = labels - pd.Timedelta(days=6)
+    else:
+        starts = labels - pd.offsets.MonthBegin(1)
+    keep = pd.Series(True, index=out.index)
+    omitted = []
+    first_d, last_d = first.normalize(), last.normalize()
+    if first_d > starts.iloc[0].normalize():
+        keep.iloc[0] = False
+        omitted.append("first")
+    if last_d < labels.iloc[-1].normalize():
+        keep.iloc[-1] = False
+        omitted.append("last")
+    trimmed = out[keep].reset_index(drop=True)
+    trimmed.attrs["omitted"] = omitted
+    trimmed.attrs["period"] = "week" if rule == "W" else "month"
+    return trimmed
 
 
 def _aggregate(df: pd.DataFrame, req: ChartRequest) -> pd.DataFrame:
@@ -170,7 +210,7 @@ def _aggregate(df: pd.DataFrame, req: ChartRequest) -> pd.DataFrame:
         rule = "D" if span_days <= 92 else ("W" if span_days <= 730 else "ME")
         agg_fn = "count" if agg == "count" else agg
         out = getattr(tmp[y].resample(rule), agg_fn)().reset_index()
-        return out
+        return _drop_partial_periods(out, x, rule, agg, tmp.index.min(), tmp.index.max())
     if agg == "count":
         out = df.groupby(x, dropna=True)[y].count().reset_index()
     else:

@@ -92,6 +92,10 @@ class MLReport:
     # Datetime features are trained as days since this origin; a what-if
     # input date has to be converted the same way.
     datetime_origins:   Dict = field(default_factory=dict)
+    # One entry per feature describing what a what-if input may be: its
+    # kind (category / date / number), the allowed values or range, and a
+    # typical value from the training data to start from.
+    feature_inputs:     List[Dict] = field(default_factory=list)
     warnings:           List[str] = field(default_factory=list)
     insights:           List[str] = field(default_factory=list)
 
@@ -144,8 +148,13 @@ def suggest_targets(df: pd.DataFrame) -> List[Dict]:
         if pd.api.types.is_datetime64_any_dtype(s):
             continue
 
-        # Skip ID-like columns
-        if s.nunique() / max(len(s), 1) > 0.95 and len(s) > 50:
+        # Skip identifiers. "Nearly every value distinct" is not the test:
+        # a continuous measure — salary, revenue, price — is all-distinct
+        # too, and that rule hid exactly the columns most worth predicting.
+        if is_id_column(col, s):
+            continue
+        # Free text with a different value on most rows is not a class label.
+        if is_text_dtype(s) and s.nunique() / max(len(s), 1) > 0.5:
             continue
 
         task, reason = detect_task(s)
@@ -537,6 +546,36 @@ def get_feature_importance(
     return importances[:20], shap_values
 
 
+def describe_feature_inputs(X: pd.DataFrame, label_encoders: Dict,
+                            datetime_origins: Dict) -> List[Dict]:
+    """What each feature accepts as a what-if input, in the user's terms.
+
+    X is the encoded training matrix, so categories and dates are decoded
+    back to what the user would type.
+    """
+    out = []
+    for col in X.columns:
+        s = X[col].dropna()
+        if col in label_encoders:
+            classes = [str(c) for c in label_encoders[col].classes_]
+            mode = int(s.mode().iloc[0]) if len(s) else 0
+            out.append({"name": col, "kind": "category", "options": classes,
+                        "default": classes[mode] if mode < len(classes) else classes[0]})
+        elif col in datetime_origins:
+            origin = pd.Timestamp(datetime_origins[col])
+            day = lambda d: (origin + pd.Timedelta(days=float(d))).date().isoformat()
+            out.append({"name": col, "kind": "date",
+                        "min": day(s.min()) if len(s) else None,
+                        "max": day(s.max()) if len(s) else None,
+                        "default": day(s.median()) if len(s) else None})
+        else:
+            out.append({"name": col, "kind": "number",
+                        "min": float(s.min()) if len(s) else None,
+                        "max": float(s.max()) if len(s) else None,
+                        "default": float(s.median()) if len(s) else None})
+    return out
+
+
 # ══════════════════════════════════════════════════════════
 #  WHAT-IF PREDICTION
 # ══════════════════════════════════════════════════════════
@@ -860,6 +899,7 @@ def run_ml_pipeline(
         label_encoders=label_encoders,
         target_encoder=target_encoder,
         datetime_origins=datetime_origins,
+        feature_inputs=describe_feature_inputs(X, label_encoders, datetime_origins),
         warnings=[task_reason] + leakage_warnings,
     )
 

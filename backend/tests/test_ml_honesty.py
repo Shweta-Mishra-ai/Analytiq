@@ -90,3 +90,25 @@ def test_dates_are_not_offered_or_accepted_as_targets(client):
     assert t.status_code == 200, t.text
     assert "hire_date" not in [x["column"] for x in t.json()["targets"]]
     assert client.post(f"/api/ml/{ds}/train", json={"target": "hire_date"}).status_code == 422
+
+
+def test_the_report_describes_each_feature_for_a_what_if_form(attrition_report):
+    spec = {f["name"]: f for f in attrition_report.feature_inputs}
+    assert set(spec) == set(attrition_report.feature_cols)
+    assert spec["department"]["kind"] == "category"
+    assert set(spec["department"]["options"]) >= {"Sales", "Engineering", "HR", "Marketing"}
+    assert spec["hire_date"]["kind"] == "date" and spec["hire_date"]["default"][:2] == "20"
+    assert spec["salary"]["kind"] == "number" and spec["salary"]["min"] <= spec["salary"]["default"] <= spec["salary"]["max"]
+    # The defaults are themselves a valid what-if input.
+    out = predict_what_if(attrition_report, {k: v["default"] for k, v in spec.items()})
+    assert "error" not in out, out
+
+
+def test_continuous_measures_are_offered_as_targets_and_ids_are_not():
+    import sys, os
+    sys.path.insert(0, os.path.dirname(__file__))
+    from conftest import _make_hr_df
+    from app.engines.ml_engine import suggest_targets
+    offered = [t["column"] for t in suggest_targets(_make_hr_df())]
+    assert "salary" in offered            # every value distinct, still a measure
+    assert "employee_id" not in offered
