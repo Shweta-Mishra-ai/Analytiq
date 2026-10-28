@@ -279,3 +279,30 @@ def test_the_health_contents_page_matches_the_section_heading(small_df):
     heading = "Financial Performance Review — Findings"
     assert text.count(heading) >= 2, \
         "the heading appears in only one of the contents page and the body"
+
+
+def test_reports_embed_a_font_with_the_rupee_sign(client, uploaded_dataset_id):
+    # The bundled font was never committed, so every report fell back to
+    # Helvetica, which draws "₹" as a black box.
+    import io
+    from fontTools.ttLib import TTFont
+    from pypdf import PdfReader
+    from app.engines import pdf_fonts
+    assert pdf_fonts.FONT_REG == "Report"
+    cmap = TTFont(f"{pdf_fonts.FONT_DIR}/Carlito-Regular.ttf").getBestCmap()
+    assert ord("₹") in cmap
+    for kind in ("pdf", "health-pdf"):
+        pdf = client.post(f"/api/reports/{uploaded_dataset_id}/{kind}", json={}).content
+        fonts, helvetica_text = set(), []
+
+        def visitor(text, cm, tm, fontdict, size):
+            if fontdict and "Helvetica" in str(fontdict.get("/BaseFont")) and text.strip():
+                helvetica_text.append(text)
+
+        for page in PdfReader(io.BytesIO(pdf)).pages:
+            res = page.get("/Resources") or {}
+            for f in (res.get("/Font") or {}).values():
+                fonts.add(str(f.get_object().get("/BaseFont")))
+            page.extract_text(visitor_text=visitor)
+        assert any("Carlito" in f for f in fonts), (kind, fonts)
+        assert not helvetica_text, (kind, helvetica_text[:5])

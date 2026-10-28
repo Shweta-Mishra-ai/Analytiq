@@ -88,9 +88,25 @@ def export_csv(ds_id: str, owner: str = Depends(current_owner)):
         "Content-Disposition": "attachment; filename=analytiq_cleaned_data.csv"})
 
 
+def _excel_safe_times(df):
+    """Excel cannot store a timezone, and xlsxwriter refuses the whole
+    export when a column has one. Write the wall-clock time and name the
+    zone in the header, so nothing about the value is lost."""
+    import pandas as pd
+    out, renames = df, {}
+    for col in df.columns:
+        s = df[col]
+        if pd.api.types.is_datetime64_any_dtype(s) and getattr(s.dt, "tz", None) is not None:
+            if out is df:
+                out = df.copy()
+            out[col] = s.dt.tz_localize(None)
+            renames[col] = f"{col} ({s.dt.tz})"
+    return out.rename(columns=renames) if renames else out
+
+
 @router.get("/{ds_id}/excel")
 def export_excel(ds_id: str, owner: str = Depends(current_owner)):
-    df = _df_or_404(owner, ds_id)
+    df = _excel_safe_times(_df_or_404(owner, ds_id))
     buf = io.BytesIO()
     import pandas as pd
     # Strings are written as text. xlsxwriter's default turns any value

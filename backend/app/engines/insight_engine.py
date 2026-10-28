@@ -11,8 +11,10 @@ from app.services.dtypes import text_columns
 
 def generate_insights(df: pd.DataFrame) -> List[Dict]:
     insights  = []
-    num_cols  = df.select_dtypes(include="number").columns.tolist()
-    cat_cols  = text_columns(df)
+    from app.engines.domains.base import is_id_column
+    num_cols  = [c for c in df.select_dtypes(include="number").columns
+                 if not pd.api.types.is_bool_dtype(df[c]) and not is_id_column(c, df[c])]
+    cat_cols  = [c for c in text_columns(df) if not is_id_column(c, df[c])]
     date_cols = df.select_dtypes(include="datetime").columns.tolist()
 
     # ── 1. Dataset size ───────────────────────────────────

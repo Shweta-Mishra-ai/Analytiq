@@ -296,17 +296,18 @@ def report_pdf(markdown: str, title: str) -> bytes:
     from reportlab.lib.units import mm
     from reportlab.lib.colors import HexColor
     from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer)
+    from app.engines.pdf_fonts import FONT_BOLD, FONT_REG
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm,
                             rightMargin=18 * mm, topMargin=18 * mm,
                             bottomMargin=18 * mm, title=title)
     NAVY, INK = HexColor("#1a2744"), HexColor("#2b2f36")
-    h1 = ParagraphStyle("h1", fontName="Helvetica-Bold", fontSize=20,
+    h1 = ParagraphStyle("h1", fontName=FONT_BOLD, fontSize=20,
                         textColor=NAVY, spaceAfter=8)
-    h2 = ParagraphStyle("h2", fontName="Helvetica-Bold", fontSize=14,
+    h2 = ParagraphStyle("h2", fontName=FONT_BOLD, fontSize=14,
                         textColor=NAVY, spaceBefore=10, spaceAfter=5)
-    body = ParagraphStyle("body", fontName="Helvetica", fontSize=10,
+    body = ParagraphStyle("body", fontName=FONT_REG, fontSize=10,
                           textColor=INK, leading=15, spaceAfter=4)
 
     def esc(s: str) -> str:

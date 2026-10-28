@@ -166,8 +166,11 @@ def test_stats_engine_analyzes_all_numeric_columns(hr_df):
     stats = analyze(hr_df)
     numeric_cols = {c for c in hr_df.columns
                     if str(hr_df[c].dtype).startswith(("int", "float"))}
-    missed = numeric_cols - set(stats.column_stats)
+    # Identifiers are excluded deliberately and listed as such — that is
+    # not a silent skip.
+    missed = numeric_cols - set(stats.column_stats) - set(stats.identifier_cols)
     assert not missed, f"stats engine silently skipped numeric columns: {missed}"
+    assert "employee_id" in stats.identifier_cols
 
 
 @pytest.mark.parametrize("engine_import,fn_name", [

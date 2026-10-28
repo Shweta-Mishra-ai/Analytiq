@@ -43,6 +43,7 @@ from reportlab.pdfgen import canvas as CV
 from app.engines.report_blueprints import blueprint_for
 from app.services.dtypes import is_text_dtype, text_columns
 
+from app.engines.pdf_fonts import FONT_BOLD, FONT_ITALIC, FONT_REG
 logger = logging.getLogger(__name__)
 
 W, H = A4
@@ -162,35 +163,35 @@ def _styles(T: dict) -> dict:
         return ParagraphStyle(name, **kw)
 
     return {
-        "h1":    ps("h1",   fontName="Helvetica-Bold", fontSize=17,
+        "h1":    ps("h1",   fontName=FONT_BOLD, fontSize=17,
                     textColor=_c(T["accent"]),     spaceAfter=4),
-        "h2":    ps("h2",   fontName="Helvetica-Bold", fontSize=13,
+        "h2":    ps("h2",   fontName=FONT_BOLD, fontSize=13,
                     textColor=_c(T["text"]),       spaceBefore=8, spaceAfter=3),
-        "h3":    ps("h3",   fontName="Helvetica-Bold", fontSize=10,
+        "h3":    ps("h3",   fontName=FONT_BOLD, fontSize=10,
                     textColor=_c(T["accent"]),     spaceBefore=6, spaceAfter=3),
-        "body":  ps("body", fontName="Helvetica",      fontSize=9,
+        "body":  ps("body", fontName=FONT_REG,      fontSize=9,
                     textColor=_c(T["text"]),       leading=14,  spaceAfter=3,
                     alignment=TA_JUSTIFY),
-        "sm":    ps("sm",   fontName="Helvetica",      fontSize=7.5,
+        "sm":    ps("sm",   fontName=FONT_REG,      fontSize=7.5,
                     textColor=_c(T["text_muted"]), leading=11,  spaceAfter=2),
-        "bl":    ps("bl",   fontName="Helvetica",      fontSize=9,
+        "bl":    ps("bl",   fontName=FONT_REG,      fontSize=9,
                     textColor=_c(T["text"]),       leading=13,  spaceAfter=3,
                     leftIndent=10, firstLineIndent=-10),
-        "toc":   ps("toc",  fontName="Helvetica",      fontSize=10,
+        "toc":   ps("toc",  fontName=FONT_REG,      fontSize=10,
                     textColor=_c(T["text"]),       leading=16,  spaceAfter=3),
-        "wh":    ps("wh",   fontName="Helvetica",      fontSize=9,
+        "wh":    ps("wh",   fontName=FONT_REG,      fontSize=9,
                     textColor=HexColor("#FFFFFF"),  leading=13),
-        "wbh":   ps("wbh",  fontName="Helvetica-Bold", fontSize=10,
+        "wbh":   ps("wbh",  fontName=FONT_BOLD, fontSize=10,
                     textColor=HexColor("#FFFFFF")),
-        "note":  ps("note", fontName="Helvetica-Oblique", fontSize=7.5,
+        "note":  ps("note", fontName=FONT_ITALIC, fontSize=7.5,
                     textColor=_c(T["text_muted"]), spaceAfter=3),
-        "warn":  ps("warn", fontName="Helvetica",      fontSize=8.5,
+        "warn":  ps("warn", fontName=FONT_REG,      fontSize=8.5,
                     textColor=_c(T["text"]),       leading=13,
                     backColor=_c(T["warning_bg"])),
         # Insight card row styles
-        "rl":    ps("rl",   fontName="Helvetica-Bold", fontSize=8,
+        "rl":    ps("rl",   fontName=FONT_BOLD, fontSize=8,
                     textColor=HexColor("#FFFFFF"),  alignment=TA_CENTER),
-        "rv":    ps("rv",   fontName="Helvetica",      fontSize=8.5,
+        "rv":    ps("rv",   fontName=FONT_REG,      fontSize=8.5,
                     textColor=_c(T["text"]),       leading=12.5),
     }
 
@@ -230,13 +231,13 @@ class _ReportCanvas(CV.Canvas):
         self.setFillColor(_c(T["accent"]))
         self.rect(0, H - 25.5*mm, W, 1.5*mm, fill=1, stroke=0)
         self.setFillColor(HexColor("#FFFFFF"))
-        self.setFont("Helvetica-Bold", 10)
+        self.setFont(FONT_BOLD, 10)
         self.drawString(18*mm, H - 14*mm, "Analytiq")
-        self.setFont("Helvetica", 7.5)
+        self.setFont(FONT_REG, 7.5)
         self.setFillColor(HexColor(T["accent2"]))
         self.drawString(18*mm, H - 20*mm, self.report_title)
         self.setFillColor(HexColor("#FFFFFF"))
-        self.setFont("Helvetica", 7)
+        self.setFont(FONT_REG, 7)
         self.drawRightString(W - 18*mm, H - 14*mm, self.report_date)
         self.drawRightString(W - 18*mm, H - 20*mm,
                              "CONFIDENTIAL — " + self.client_name)
@@ -246,7 +247,7 @@ class _ReportCanvas(CV.Canvas):
         self.setFillColor(_c(T["accent"]))
         self.rect(0, 12*mm, W, 1.2*mm, fill=1, stroke=0)
         self.setFillColor(HexColor("#FFFFFF"))
-        self.setFont("Helvetica", 6.5)
+        self.setFont(FONT_REG, 6.5)
         # The footer previously named a fixed set of HR benchmark bodies
         # (SHRM · Gallup · Mercer · Deloitte) on EVERY page of EVERY report,
         # so a finance or e-commerce deliverable cited HR attrition sources
@@ -292,10 +293,10 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
 
     # Brand
     cv.setFillColor(HexColor("#FFFFFF"))
-    cv.setFont("Helvetica-Bold", 15)
+    cv.setFont(FONT_BOLD, 15)
     cv.drawString(20*mm, H - 32*mm, "Analytiq")
     cv.setFillColor(HexColor(T["accent2"]))
-    cv.setFont("Helvetica", 9.5)
+    cv.setFont(FONT_REG, 9.5)
     cv.drawString(20*mm, H - 40*mm, "Advanced Analytics Platform")
     cv.setFillColor(_c(T["cover_accent"]))
     cv.rect(20*mm, H - 44*mm, 55*mm, 1.2*mm, fill=1, stroke=0)
@@ -318,7 +319,7 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     cv.setFillColor(_c(T["domain_badge"]))
     cv.roundRect(20*mm, H - 60*mm, 85*mm, 11*mm, 3, fill=1, stroke=0)
     cv.setFillColor(HexColor("#FFFFFF"))
-    cv.setFont("Helvetica-Bold", 8)
+    cv.setFont(FONT_BOLD, 8)
     cv.drawString(25*mm, H - 56*mm, "◆  " + domain_lbl)
 
     # Title (word wrap at ~28 chars)
@@ -335,12 +336,12 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     cv.setFillColor(HexColor("#FFFFFF"))
     y_title = H / 2 + 36*mm
     for ln in lines:
-        cv.setFont("Helvetica-Bold", 30 if len(ln) <= 20 else 24)
+        cv.setFont(FONT_BOLD, 30 if len(ln) <= 20 else 24)
         cv.drawString(20*mm, y_title, ln)
         y_title -= 11*mm
 
     cv.setFillColor(HexColor(T["accent2"]))
-    cv.setFont("Helvetica", 10)
+    cv.setFont(FONT_REG, 10)
     cv.drawString(20*mm, H / 2 + 12*mm,
                   config.get("subtitle", "Powered by Analytiq"))
     cv.setFillColor(_c(T["cover_accent"]))
@@ -354,15 +355,15 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
         cv.setFillColor(HexColor("#1A3A5C"))
         cv.roundRect(x + 1.5, H / 2 - 14*mm, bw - 3, 18*mm, 3, fill=1, stroke=0)
         cv.setFillColor(HexColor(kpi.get("color", T["accent2"])))
-        cv.setFont("Helvetica-Bold", 16)
+        cv.setFont(FONT_BOLD, 16)
         cv.drawCentredString(x + bw / 2, H / 2 - 2*mm,
                              str(kpi.get("value", ""))[:9])
         cv.setFillColor(HexColor("#FFFFFF"))
-        cv.setFont("Helvetica-Bold", 7)
+        cv.setFont(FONT_BOLD, 7)
         cv.drawCentredString(x + bw / 2, H / 2 - 8*mm,
                              str(kpi.get("label", ""))[:18])
         cv.setFillColor(HexColor(T["accent2"]))
-        cv.setFont("Helvetica", 6.5)
+        cv.setFont(FONT_REG, 6.5)
         cv.drawCentredString(x + bw / 2, H / 2 - 13*mm,
                              str(kpi.get("sub", ""))[:20])
 
@@ -378,9 +379,9 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     for i, (k, v) in enumerate(meta):
         x = 20*mm + i * mw
         cv.setFillColor(HexColor(T["accent2"]))
-        cv.setFont("Helvetica", 6.5); cv.drawString(x, 21*mm, k)
+        cv.setFont(FONT_REG, 6.5); cv.drawString(x, 21*mm, k)
         cv.setFillColor(HexColor("#FFFFFF"))
-        cv.setFont("Helvetica-Bold", 8); cv.drawString(x, 13*mm, v[:22])
+        cv.setFont(FONT_BOLD, 8); cv.drawString(x, 13*mm, v[:22])
 
     # The cover previously carried "Powered by Groq Llama 3.3 70B". Naming
     # the model on the front page of a client deliverable invites the
@@ -388,7 +389,7 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     # whether the analysis is sound. Confidentiality marking belongs here
     # instead.
     cv.setFillColor(HexColor(T["accent2"]))
-    cv.setFont("Helvetica", 6.5)
+    cv.setFont(FONT_REG, 6.5)
     cv.drawRightString(W - 21*mm, 5*mm, "Confidential")
     cv.save()
     buf.seek(0)
@@ -413,18 +414,18 @@ def _kpi_row(story: list, s: dict, T: dict, kpis: list, CW: float):
     cw   = CW / cols
     vals = [Paragraph(
                 "<b>{}</b>".format(k.get("value", "")),
-                ParagraphStyle("kv", fontName="Helvetica-Bold", fontSize=18,
+                ParagraphStyle("kv", fontName=FONT_BOLD, fontSize=18,
                                textColor=HexColor(k.get("color", T["accent"])),
                                alignment=TA_CENTER))
             for k in kpis[:cols]]
     lbls = [Paragraph(
                 k.get("label", ""),
-                ParagraphStyle("kl", fontName="Helvetica-Bold", fontSize=7.5,
+                ParagraphStyle("kl", fontName=FONT_BOLD, fontSize=7.5,
                                textColor=_c(T["text"]), alignment=TA_CENTER))
             for k in kpis[:cols]]
     subs = [Paragraph(
                 k.get("sub", ""),
-                ParagraphStyle("ks", fontName="Helvetica", fontSize=7,
+                ParagraphStyle("ks", fontName=FONT_REG, fontSize=7,
                                textColor=_c(T["text_muted"]), alignment=TA_CENTER))
             for k in kpis[:cols]]
     t = Table([vals, lbls, subs], colWidths=[cw]*cols)
@@ -461,13 +462,13 @@ def _gtable(story: list, T: dict, headers: list,
             severity_col: int = -1):
     """Generic styled table."""
     hrow = [Paragraph(h, ParagraphStyle(
-                "th", fontName="Helvetica-Bold", fontSize=8,
+                "th", fontName=FONT_BOLD, fontSize=8,
                 textColor=HexColor("#FFFFFF"), alignment=TA_CENTER))
             for h in headers]
     body = []
     for row in rows_data:
         body.append([Paragraph(str(c), ParagraphStyle(
-                "td", fontName="Helvetica", fontSize=8,
+                "td", fontName=FONT_REG, fontSize=8,
                 textColor=_c(T["text"]), leading=12))
                      for c in row])
     tbl = Table([hrow] + body, colWidths=col_widths)
@@ -496,7 +497,7 @@ def _gtable(story: list, T: dict, headers: list,
                     sty += [
                         ("BACKGROUND", (severity_col, i), (severity_col, i), HexColor(col)),
                         ("TEXTCOLOR",  (severity_col, i), (severity_col, i), HexColor("#FFFFFF")),
-                        ("FONTNAME",   (severity_col, i), (severity_col, i), "Helvetica-Bold"),
+                        ("FONTNAME",   (severity_col, i), (severity_col, i), FONT_BOLD),
                         ("FONTSIZE",   (severity_col, i), (severity_col, i), 7),
                     ]
                     break
@@ -523,13 +524,13 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
     col = sev_c.get(sev, T["accent"])
     bg  = sev_bg.get(sev, T["bg_card"])
 
-    bs = ParagraphStyle("bi_badge", fontName="Helvetica-Bold", fontSize=7.5,
+    bs = ParagraphStyle("bi_badge", fontName=FONT_BOLD, fontSize=7.5,
                         textColor=HexColor("#FFFFFF"), alignment=TA_CENTER)
-    ts = ParagraphStyle("bi_title", fontName="Helvetica-Bold", fontSize=9.5,
+    ts = ParagraphStyle("bi_title", fontName=FONT_BOLD, fontSize=9.5,
                         textColor=_c(T["text"]))
-    rl = ParagraphStyle("bi_lbl",   fontName="Helvetica-Bold", fontSize=8,
+    rl = ParagraphStyle("bi_lbl",   fontName=FONT_BOLD, fontSize=8,
                         textColor=HexColor("#FFFFFF"), alignment=TA_CENTER)
-    rv = ParagraphStyle("bi_val",   fontName="Helvetica",      fontSize=8.5,
+    rv = ParagraphStyle("bi_val",   fontName=FONT_REG,      fontSize=8.5,
                         textColor=_c(T["text"]),  leading=12.5)
 
     num_str = "{}. ".format(num) if num else ""
@@ -588,7 +589,7 @@ def _toc(story, s, T, entries, CW):
     for num, title in entries:
         row = Table([[
             Paragraph(str(num), ParagraphStyle(
-                "tn", fontName="Helvetica-Bold", fontSize=10,
+                "tn", fontName=FONT_BOLD, fontSize=10,
                 textColor=_c(T["accent"]), alignment=TA_CENTER)),
             Paragraph(title, s["toc"]),
         ]], colWidths=[9*mm, CW - 9*mm])
@@ -619,7 +620,7 @@ def _exec_summary(story, s, T, summary, findings, risks, opps, CW):
         story.append(Paragraph("Business Risks", s["h3"]))
         for r in risks[:4]:
             story.append(Paragraph("! " + str(r),
-                ParagraphStyle("risk_p", fontName="Helvetica", fontSize=9,
+                ParagraphStyle("risk_p", fontName=FONT_REG, fontSize=9,
                                textColor=_c(T["negative"]), leading=13,
                                leftIndent=10, firstLineIndent=-10,
                                spaceAfter=3)))
@@ -628,7 +629,7 @@ def _exec_summary(story, s, T, summary, findings, risks, opps, CW):
         story.append(Paragraph("Opportunities", s["h3"]))
         for o in opps[:3]:
             story.append(Paragraph("* " + str(o),
-                ParagraphStyle("opp_p", fontName="Helvetica", fontSize=9,
+                ParagraphStyle("opp_p", fontName=FONT_REG, fontSize=9,
                                textColor=_c(T["positive"]), leading=13,
                                leftIndent=10, firstLineIndent=-10,
                                spaceAfter=3)))
@@ -1116,15 +1117,20 @@ def _dataset_overview(story, s, T, df, profile, CW):
     _sec(story, s, T, "Dataset Overview & Descriptive Statistics",
          "Column breakdown and statistical summary")
 
-    num_cols = df.select_dtypes(include="number").columns.tolist()
-    cat_cols = text_columns(df)
+    # Identifiers get their own row and stay out of the statistics: the mean
+    # of employee_id is not a figure anyone should read.
+    from app.engines.domains.base import is_id_column
+    id_cols  = [c for c in df.columns if is_id_column(c, df[c])]
+    num_cols = [c for c in df.select_dtypes(include="number").columns if c not in id_cols]
+    cat_cols = [c for c in text_columns(df) if c not in id_cols]
     dt_cols  = df.select_dtypes(include="datetime").columns.tolist()
 
-    _gtable(story, T,
-            ["Type", "Count", "Columns (sample)"],
-            [["Numeric",     len(num_cols), ", ".join(num_cols[:6])],
-             ["Categorical", len(cat_cols), ", ".join(cat_cols[:6])],
-             ["DateTime",    len(dt_cols),  ", ".join(dt_cols[:4]) or "None"]],
+    rows = [["Numeric",     len(num_cols), ", ".join(num_cols[:6]) or "None"],
+            ["Categorical", len(cat_cols), ", ".join(cat_cols[:6]) or "None"],
+            ["DateTime",    len(dt_cols),  ", ".join(dt_cols[:4]) or "None"]]
+    if id_cols:
+        rows.append(["Identifier", len(id_cols), ", ".join(id_cols[:6])])
+    _gtable(story, T, ["Type", "Count", "Columns (sample)"], rows,
             [CW*0.20, CW*0.12, CW*0.68])
 
     if num_cols:
@@ -1140,8 +1146,8 @@ def _dataset_overview(story, s, T, df, profile, CW):
         cw_s = CW / (len(show) + 1)
         tbl  = Table(rows, colWidths=[cw_s] * (len(show)+1), repeatRows=1)
         tbl.setStyle(TableStyle([
-            ("FONTNAME",     (0,0), (-1,0),  "Helvetica-Bold"),
-            ("FONTNAME",     (0,1), (-1,-1), "Helvetica"),
+            ("FONTNAME",     (0,0), (-1,0),  FONT_BOLD),
+            ("FONTNAME",     (0,1), (-1,-1), FONT_REG),
             ("FONTSIZE",     (0,0), (-1,-1), 8),
             ("TEXTCOLOR",    (0,0), (-1,0),  HexColor("#FFFFFF")),
             ("BACKGROUND",   (0,0), (-1,0),  _c(T["header_bg"])),
@@ -1320,7 +1326,7 @@ def _recommendations(story, s, T, actions, CW):
 
         card = Table([[
             Paragraph(priority, ParagraphStyle(
-                "pri", fontName="Helvetica-Bold", fontSize=7,
+                "pri", fontName=FONT_BOLD, fontSize=7,
                 textColor=HexColor(col), alignment=TA_CENTER)),
             Paragraph(text, s["body"]),
         ]], colWidths=[CW*0.14, CW*0.86])

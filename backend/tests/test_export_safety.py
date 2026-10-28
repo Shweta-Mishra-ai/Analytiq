@@ -40,3 +40,19 @@ def test_csv_export_neutralises_formula_cells_but_not_numbers(client, risky_data
 def test_numeric_columns_are_exported_unchanged(client, risky_dataset):
     text = client.get(f"/api/reports/{risky_dataset}/csv").content.decode("utf-8-sig")
     assert pd.read_csv(io.StringIO(text))["v"].tolist() == list(range(6))
+
+
+def test_excel_export_handles_timezone_aware_timestamps(client):
+    df = pd.DataFrame({"logged": pd.date_range("2024-01-01", periods=5, freq="h", tz="UTC"),
+                       "v": range(5)})
+    r = client.post("/api/datasets/upload", files={
+        "file": ("tz.csv", io.BytesIO(df.to_csv(index=False).encode()), "text/csv")})
+    ds = r.json()["meta"]["dataset_id"]
+    try:
+        x = client.get(f"/api/reports/{ds}/excel")
+        assert x.status_code == 200
+        ws = openpyxl.load_workbook(io.BytesIO(x.content))["Data"]
+        assert ws.cell(1, 1).value == "logged (UTC)"
+        assert str(ws.cell(2, 1).value).startswith("2024-01-01 00:00")
+    finally:
+        client.delete(f"/api/datasets/{ds}")

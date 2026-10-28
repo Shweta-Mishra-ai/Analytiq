@@ -18,7 +18,7 @@ from scipy.stats import (
     levene, bartlett
 )
 
-from app.services.dtypes import MONTH_END, text_columns
+from app.services.dtypes import is_categorical_like, MONTH_END, text_columns
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +206,9 @@ def analyze_univariate(series: pd.Series) -> UnivariateResult:
         return result
 
     # ── Categorical ───────────────────────────────────────
-    if series.dtype == object or str(series.dtype) == "str":
+    # Any text, category or boolean column — the old dtype test missed
+    # pandas' "string" and "category" dtypes and booleans.
+    if is_categorical_like(series):
         vc = clean.value_counts()
         result.top_value   = str(vc.index[0])[:40] if len(vc) > 0 else None
         result.top_pct     = round(vc.iloc[0] / n * 100, 2) if len(vc) > 0 else None
@@ -269,7 +271,10 @@ def analyze_univariate(series: pd.Series) -> UnivariateResult:
         result.skew_label = "Heavily {}".format(
             "right-skewed" if skew > 0 else "left-skewed")
 
-    if kurt > 3:
+    # pandas returns EXCESS kurtosis (normal = 0). The cut-off here was 3 —
+    # the raw-kurtosis value — so an excess of 2.5, clearly heavy-tailed,
+    # was called "normal-like" while the Statistics page called it heavy.
+    if kurt > 1:
         result.kurtosis_label = "Leptokurtic — heavy tails, extreme values likely"
     elif kurt < -1:
         result.kurtosis_label = "Platykurtic — light tails, few extremes"
@@ -357,7 +362,7 @@ def analyze_univariate(series: pd.Series) -> UnivariateResult:
         central = "Mean ({:.2f}) and median ({:.2f}) differ by {:.0f}% — use median for reporting.".format(
             result.mean, result.median, rel_diff * 100)
     else:
-        central = "Mean ({:.2f}) and median ({:.2f}) are close — distribution is symmetric.".format(
+        central = "Mean ({:.2f}) and median ({:.2f}) are close.".format(
             result.mean, result.median)
 
     outlier_note = ""
@@ -432,33 +437,37 @@ def analyze_bivariate_numeric(
                       "Small" if effect_s < 0.3 else
                       "Medium" if effect_s < 0.5 else "Large")
 
-    sig  = p < 0.05
-    dirn = "positive" if r > 0 else "negative"
-
-    interp = (
-        "{} {} correlation between '{}' and '{}' "
-        "(r={:.3f}, p={:.4f}, effect={}).".format(
-            effect_lbl, dirn, col_a, col_b,
-            round(r, 3), round(p, 4), effect_lbl)
-    )
-    if sig and effect_lbl in ("Medium", "Large"):
-        rec = "Significant relationship — consider including both in models or investigating causation."
-    elif sig:
-        rec = "Statistically significant but small effect — may not be practically important."
-    else:
-        rec = "No significant relationship detected at p=0.05."
-
-    return BivariateResult(
+    res = BivariateResult(
         col_a=col_a, col_b=col_b,
         test_name=test_name,
         statistic=round(float(r), 4),
         p_value=round(float(p), 6),
-        is_significant=sig,
+        is_significant=p < 0.05,
         effect_size=round(float(effect_s), 4),
         effect_label=effect_lbl,
-        interpretation=interp,
-        recommendation=rec,
     )
+    _describe_correlation(res)
+    return res
+
+
+def _describe_correlation(res: BivariateResult, adjusted: bool = False) -> None:
+    """Write the text from the result's final p and significance — it is
+    rewritten after the multiple-comparison correction, which used to flip
+    is_significant while the text still described the raw p."""
+    dirn = "positive" if res.statistic > 0 else "negative"
+    p_name = "adjusted p" if adjusted else "p"
+    res.interpretation = (
+        "{} {} correlation between '{}' and '{}' "
+        "(r={:.3f}, {}={:.4f}, effect={}).".format(
+            res.effect_label, dirn, res.col_a, res.col_b,
+            res.statistic, p_name, res.p_value, res.effect_label))
+    if res.is_significant and res.effect_label in ("Medium", "Large"):
+        res.recommendation = ("Significant relationship — worth including both in models; "
+                              "a correlation alone does not say which way any effect runs.")
+    elif res.is_significant:
+        res.recommendation = "Statistically significant but small effect — may not be practically important."
+    else:
+        res.recommendation = "No significant relationship detected after correcting for the number of pairs tested."
 
 
 def analyze_group_comparison(
@@ -527,37 +536,7 @@ def analyze_group_comparison(
         }
 
     sig = p < 0.05
-    interp = (
-        "{} test: {} difference in '{}' across {} groups of '{}' "
-        "(F/H={:.3f}, p={:.4f}, eta²={:.3f} — {} effect).".format(
-            test_name,
-            "Significant" if sig else "No significant",
-            numeric_col, n_groups, group_col,
-            round(float(stat), 3), round(float(p), 4),
-            round(eta_sq, 4), eta_lbl)
-    )
-
-    # Post-hoc hint
-    post_hoc = []
-    if sig and n_groups > 2:
-        post_hoc.append(
-            "Significant difference detected — run post-hoc pairwise comparisons "
-            "(Tukey HSD or Dunn test) to identify which groups differ."
-        )
-    elif sig and n_groups == 2:
-        grp_names = list(group_stats.keys())
-        m1 = group_stats[grp_names[0]]["mean"]
-        m2 = group_stats[grp_names[1]]["mean"]
-        higher = grp_names[0] if m1 > m2 else grp_names[1]
-        lower  = grp_names[1] if m1 > m2 else grp_names[0]
-        post_hoc.append(
-            "'{}' has significantly higher '{}' than '{}' "
-            "({:.2f} vs {:.2f}).".format(
-                higher, numeric_col, lower,
-                max(m1, m2), min(m1, m2))
-        )
-
-    return GroupComparisonResult(
+    res = GroupComparisonResult(
         numeric_col=numeric_col, group_col=group_col,
         n_groups=n_groups, test_used=test_name,
         statistic=round(float(stat), 4),
@@ -566,9 +545,36 @@ def analyze_group_comparison(
         effect_size=round(float(eta_sq), 4),
         effect_label=eta_lbl,
         group_stats=group_stats,
-        interpretation=interp,
-        post_hoc=post_hoc,
     )
+    _describe_group_comparison(res)
+    return res
+
+
+def _describe_group_comparison(res: GroupComparisonResult, adjusted: bool = False) -> None:
+    sig = res.is_significant
+    p_name = "adjusted p" if adjusted else "p"
+    res.interpretation = (
+        "{} test: {} difference in '{}' across {} groups of '{}' "
+        "(F/H={:.3f}, {}={:.4f}, eta²={:.3f} — {} effect).".format(
+            res.test_used, "Significant" if sig else "No significant",
+            res.numeric_col, res.n_groups, res.group_col,
+            res.statistic, p_name, res.p_value, res.effect_size or 0,
+            res.effect_label))
+    res.post_hoc = []
+    if sig and res.n_groups > 2:
+        res.post_hoc.append(
+            "Significant difference detected — run post-hoc pairwise comparisons "
+            "(Tukey HSD or Dunn test) to identify which groups differ.")
+    elif sig and res.n_groups == 2:
+        # Kruskal-Wallis compares typical values, so the direction comes
+        # from the medians; the means can disagree when extremes differ.
+        key = "median" if "Kruskal" in res.test_used else "mean"
+        (g1, s1), (g2, s2) = list(res.group_stats.items())[:2]
+        hi, lo = ((g1, g2) if s1[key] > s2[key] else (g2, g1))
+        res.post_hoc.append(
+            "'{}' has significantly higher {} '{}' than '{}' ({:.2f} vs {:.2f}).".format(
+                hi, "typical" if key == "median" else "average", res.numeric_col, lo,
+                max(s1[key], s2[key]), min(s1[key], s2[key])))
 
 
 # ══════════════════════════════════════════════════════════
@@ -670,8 +676,8 @@ def analyze_time_series(
             "Stationary (ADF p={:.4f}) — mean and variance are stable over time.".format(
                 result.adf_p)
             if result.is_stationary
-            else "Non-stationary (ADF p={:.4f}) — trend or seasonality present. "
-                 "Differencing required before ARIMA modeling.".format(result.adf_p)
+            else "Non-stationary (ADF p={:.4f}) — the test cannot rule out a drifting "
+                 "level; difference the series before ARIMA modelling.".format(result.adf_p)
         )
 
         result.interpretation = "{} | {}".format(result.trend, stat_note)
@@ -690,9 +696,10 @@ def _generate_key_findings(report: "EDAReport") -> List[str]:
     findings = []
 
     # Non-normal columns
+    measures = set(report.numeric_cols)
     non_normal = [
         col for col, r in report.univariate.items()
-        if r.is_normal is False and r.mean is not None
+        if r.is_normal is False and r.mean is not None and col in measures
     ]
     if non_normal:
         findings.append(
@@ -704,7 +711,7 @@ def _generate_key_findings(report: "EDAReport") -> List[str]:
     # High outlier columns
     outlier_cols = [
         (col, r.outlier_pct) for col, r in report.univariate.items()
-        if r.outlier_pct and r.outlier_pct > 5
+        if r.outlier_pct and r.outlier_pct > 5 and col in measures
     ]
     if outlier_cols:
         worst = max(outlier_cols, key=lambda x: x[1])
@@ -716,7 +723,7 @@ def _generate_key_findings(report: "EDAReport") -> List[str]:
     # Skewed columns
     skewed = [
         col for col, r in report.univariate.items()
-        if r.skewness and abs(r.skewness) > 2
+        if r.skewness and abs(r.skewness) > 2 and col in measures
     ]
     if skewed:
         findings.append(
@@ -774,8 +781,12 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
     if len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
 
-    num_cols  = df.select_dtypes(include="number").columns.tolist()
-    cat_cols  = text_columns(df)
+    # Measures only: identifiers and booleans are not quantities, and an ID
+    # sorted by date reads as a "trend".
+    from app.engines.domains.base import is_id_column
+    num_cols  = [c for c in df.select_dtypes(include="number").columns
+                 if not pd.api.types.is_bool_dtype(df[c]) and not is_id_column(c, df[c])]
+    cat_cols  = [c for c in text_columns(df) if not is_id_column(c, df[c])]
     dt_cols   = df.select_dtypes(include="datetime").columns.tolist()
 
     report = EDAReport(
@@ -819,7 +830,8 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
         qvals = bh_adjust([c.p_value for c in report.correlations])
         for c, q in zip(report.correlations, qvals):
             c.is_significant = bool(q < FDR_Q)
-            c.p_value = float(q)   # store adjusted p (q-value)
+            c.p_value = round(float(q), 6)   # store adjusted p (q-value)
+            _describe_correlation(c, adjusted=True)
 
     report.correlations.sort(
         key=lambda x: abs(x.statistic), reverse=True
@@ -838,10 +850,19 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
                 logger.debug("run_eda: suppressed exception", exc_info=True)
                 continue
 
+    # The same correction for the group comparisons, which are also a family.
+    tested = [g for g in report.group_comparisons if g.test_used != "N/A"]
+    if tested:
+        from app.services.stat_guards import FDR_Q, bh_adjust
+        for g, q in zip(tested, bh_adjust([g.p_value for g in tested])):
+            g.is_significant = bool(q < FDR_Q)
+            g.p_value = round(float(q), 6)
+            _describe_group_comparison(g, adjusted=True)
+
     # 4. Multicollinearity
     if len(num_cols) >= 2:
         try:
-            report.multicollinearity = analyze_vif(df)
+            report.multicollinearity = analyze_vif(df[num_cols])
         except Exception:
             logger.debug("run_eda: suppressed exception", exc_info=True)
 

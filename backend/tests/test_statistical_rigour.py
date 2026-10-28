@@ -235,3 +235,75 @@ def test_cohort_absence_of_significance_is_not_called_absence_of_effect():
     c = analyze_cohort(df, "g", "v")
     if not c.is_significant:
         assert "not the same as showing there is none" in " ".join(c.recommendations)
+
+
+# ── period comparison ─────────────────────────────────────
+
+def _period(n, shift, seed, cats, noise=25):
+    r = np.random.default_rng(seed)
+    d = {"employee_id": range(seed * 1000, seed * 1000 + n),
+         "revenue": r.normal(100 + shift, 10, n), "channel": r.choice(cats, n)}
+    for i in range(noise):
+        d[f"noise{i}"] = r.normal(0, 1, n)
+    return pd.DataFrame(d)
+
+
+def test_comparison_corrects_for_testing_many_columns():
+    from app.engines.comparison_engine import run_comparison
+    # 40 pure-noise columns: about two would pass p<0.05 uncorrected.
+    false_hits = 0
+    for seed in range(5):
+        r = run_comparison(_period(300, 0, 10 + seed, ["a", "b"], noise=40),
+                           _period(300, 0, 50 + seed, ["a", "b"], noise=40))
+        false_hits += sum(1 for c in r.column_comparisons
+                          if c.is_significant and c.column.startswith("noise"))
+        assert all(c.q_value is not None for c in r.column_comparisons if c.p_value is not None)
+    assert false_hits <= 1
+
+
+def test_comparison_skips_identifiers_and_sees_new_categories():
+    from app.engines.comparison_engine import run_comparison
+    r = run_comparison(_period(400, 0, 1, ["web", "store"]),
+                       _period(400, 8, 2, ["web", "store", "app"]))
+    cols = {c.column: c for c in r.column_comparisons}
+    assert "employee_id" not in cols
+    assert cols["channel"].is_significant and "'app'" in cols["channel"].verdict
+    assert r.most_changed[0].column == "revenue"          # by effect size, not % of ~0
+
+
+# ── Deep EDA ──────────────────────────────────────────────
+
+def test_eda_ignores_identifiers(hr_df):
+    from app.engines.eda_engine import run_eda
+    r = run_eda(hr_df)
+    assert "employee_id" not in r.numeric_cols
+    assert all("employee_id" not in (c.col_a, c.col_b) for c in r.correlations)
+    assert all(t.column != "employee_id" for t in r.time_series)
+
+
+def test_eda_text_agrees_with_the_corrected_significance():
+    from app.engines.eda_engine import run_eda
+    rng = np.random.default_rng(5)
+    df = pd.DataFrame({f"x{i}": rng.normal(size=120) for i in range(8)})
+    df["g"] = rng.choice(list("abc"), 120)
+    r = run_eda(df)
+    for c in r.correlations:
+        assert ("adjusted p=" in c.interpretation)
+        assert c.is_significant == c.recommendation.startswith(("Significant", "Statistically"))
+    for g in r.group_comparisons:
+        assert ("No significant" not in g.interpretation) == g.is_significant
+
+
+def test_eda_heavy_tails_are_called_heavy():
+    # Excess kurtosis ~3 (t with 5 df): the old cut-off of 3 called it normal-like.
+    from app.engines.eda_engine import analyze_univariate
+    s = pd.Series(np.random.default_rng(6).standard_t(5, 5000), name="v")
+    u = analyze_univariate(s)
+    assert u.kurtosis > 1 and u.kurtosis_label.startswith("Leptokurtic")
+
+
+def test_eda_treats_booleans_and_categories_as_categories():
+    from app.engines.eda_engine import analyze_univariate
+    for s in (pd.Series([True, False] * 20, name="b"),
+              pd.Series(pd.Categorical(["x", "y", "z"] * 10), name="c")):
+        assert analyze_univariate(s).top_value is not None

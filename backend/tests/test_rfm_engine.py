@@ -72,3 +72,34 @@ def test_run_rfm_derives_monetary_from_price_times_quantity():
 def test_run_rfm_rejects_non_dataframe():
     with pytest.raises(TypeError):
         run_rfm([1, 2, 3])  # type: ignore[arg-type]
+
+
+def _once_heavy_transactions(seed=0, spend=None):
+    rng = np.random.default_rng(seed)
+    rows = []
+    for c in range(200):
+        k = 1 if c < 140 else int(rng.integers(2, 8))      # 70% buy exactly once
+        for _ in range(k):
+            rows.append({"customer_id": c,
+                         "order_date": pd.Timestamp("2024-01-01")
+                         + pd.Timedelta(days=int(rng.integers(0, 365))),
+                         "amount": spend if spend is not None else float(rng.gamma(2, 40))})
+    return pd.DataFrame(rows)
+
+
+def test_customers_with_equal_values_get_equal_scores():
+    # Ties used to be broken by row order: identical one-time buyers were
+    # spread over F scores 1-4 and some were labelled Champions.
+    from app.engines.rfm_engine import RFMColumns, run_rfm
+    t = run_rfm(_once_heavy_transactions(),
+                RFMColumns("customer_id", "order_date", "amount")).customer_table
+    once = t[t.Frequency == 1]
+    assert set(once.F) == {1}
+    assert not once.Segment.isin(["Champions", "Loyal Customers", "Cannot Lose Them"]).any()
+
+
+def test_identical_spend_is_flagged_rather_than_ranked():
+    from app.engines.rfm_engine import RFMColumns, run_rfm
+    r = run_rfm(_once_heavy_transactions(spend=50.0),
+                RFMColumns("customer_id", "order_date", "amount"))
+    assert r.customer_table[r.customer_table.Frequency == 1].M.nunique() == 1

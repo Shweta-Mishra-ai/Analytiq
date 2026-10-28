@@ -26,6 +26,7 @@ import pandas as pd
 from scipy import stats as scipy_stats
 
 from app.engines.ab_test_engine import run_continuous_test, ABTestResult
+from app.services.stat_guards import bh_adjust, chi2_association
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +55,16 @@ class ColumnComparison:
     std_b:          Optional[float] = None
     pct_change_mean:   Optional[float] = None
     pct_change_median: Optional[float] = None
+    # Shift in pooled standard deviations (Cohen's d). Ranks "most changed":
+    # a % change explodes when the baseline mean is near zero.
+    effect_size:       Optional[float] = None
     missing_pct_a:  float = 0.0
     missing_pct_b:  float = 0.0
     is_significant: Optional[bool] = None
     p_value:        Optional[float] = None
+    # Benjamini-Hochberg adjusted p across every column compared;
+    # is_significant is judged on this, not on the raw p.
+    q_value:        Optional[float] = None
     test_used:      Optional[str] = None
     verdict:        str = ""
     # Categorical-specific
@@ -127,6 +134,10 @@ def _compare_numeric_column(col: str, s_a: pd.Series, s_b: pd.Series) -> ColumnC
 
     if cc.mean_a != 0:
         cc.pct_change_mean = round((cc.mean_b - cc.mean_a) / abs(cc.mean_a) * 100, 2)
+    pooled = np.sqrt(((len(a) - 1) * cc.std_a ** 2 + (len(b) - 1) * cc.std_b ** 2)
+                     / max(len(a) + len(b) - 2, 1))
+    if pooled > 0:
+        cc.effect_size = round(float((cc.mean_b - cc.mean_a) / pooled), 3)
     if cc.median_a != 0:
         cc.pct_change_median = round((cc.median_b - cc.median_a) / abs(cc.median_a) * 100, 2)
 
@@ -142,22 +153,7 @@ def _compare_numeric_column(col: str, s_a: pd.Series, s_b: pd.Series) -> ColumnC
         cc.is_significant = ab_result.is_significant
         cc.p_value = ab_result.p_value
         cc.test_used = ab_result.test_used
-        direction = "increased" if cc.mean_b > cc.mean_a else "decreased"
-        change_phrase = (
-            f"{cc.pct_change_mean:+.1f}% mean change" if cc.pct_change_mean is not None
-            else f"absolute mean change of {cc.mean_b - cc.mean_a:+.2f} "
-                 f"(relative % undefined — baseline mean was 0)"
-        )
-        if ab_result.is_significant:
-            cc.verdict = (
-                f"'{col}' {direction} significantly "
-                f"({change_phrase}, p={cc.p_value:.4f})."
-            )
-        else:
-            cc.verdict = (
-                f"'{col}' shows a {change_phrase}, but this is "
-                f"NOT statistically significant (p={cc.p_value:.4f}) — likely noise."
-            )
+        # Verdicts are written after correction, in _write_numeric_verdict.
     except ValueError as e:
         cc.verdict = f"Significance test skipped: {e}"
     except Exception:
@@ -165,6 +161,36 @@ def _compare_numeric_column(col: str, s_a: pd.Series, s_b: pd.Series) -> ColumnC
         cc.verdict = "Significance test failed — showing descriptive stats only."
 
     return cc
+
+
+def _write_numeric_verdict(cc: ColumnComparison) -> None:
+    # Mann-Whitney compares typical values, so its direction comes from the
+    # medians; the means can point the other way when a few extremes move.
+    if cc.test_used and "Mann-Whitney" in cc.test_used:
+        direction = "increased" if cc.median_b > cc.median_a else "decreased"
+        subject = "typical value"
+    else:
+        direction = "increased" if cc.mean_b > cc.mean_a else "decreased"
+        subject = "mean"
+    change_phrase = (
+        f"{cc.pct_change_mean:+.1f}% mean change" if cc.pct_change_mean is not None
+        else f"absolute mean change of {cc.mean_b - cc.mean_a:+.2f} "
+             f"(relative % undefined — baseline mean was 0)"
+    )
+    if cc.is_significant:
+        cc.verdict = (
+            f"'{cc.column}' {subject} {direction} significantly "
+            f"({change_phrase}, p={cc.p_value:.4f}, adjusted q={cc.q_value:.4f})."
+        )
+    else:
+        cc.verdict = (
+            f"'{cc.column}' shows a {change_phrase}, which is not statistically "
+            f"significant once every compared column is accounted for "
+            f"(p={cc.p_value:.4f}, adjusted q={cc.q_value:.4f}) — this data "
+            f"cannot tell it apart from ordinary variation."
+        )
+
+
 
 
 def _compare_categorical_column(col: str, s_a: pd.Series, s_b: pd.Series) -> ColumnComparison:
@@ -184,28 +210,25 @@ def _compare_categorical_column(col: str, s_a: pd.Series, s_b: pd.Series) -> Col
     cc.top_category_b = str(b_counts.index[0])
     cc.category_shift_detected = cc.top_category_a != cc.top_category_b
 
-    # Chi-square test on shared categories (if both have enough categories/data)
+    # Chi-square over every category seen in either period. Testing only the
+    # shared ones ignored a category that appeared or vanished — often the
+    # biggest change there is. The assumption check (expected counts) runs
+    # before any p-value is reported.
     try:
-        shared_cats = set(a_counts.index) & set(b_counts.index)
-        if len(shared_cats) >= 2:
-            obs_a = s_a.dropna().value_counts().reindex(shared_cats, fill_value=0)
-            obs_b = s_b.dropna().value_counts().reindex(shared_cats, fill_value=0)
-            contingency = np.array([obs_a.values, obs_b.values])
-            if contingency.sum() > 0 and (contingency > 0).any():
-                chi2, p, dof, _ = scipy_stats.chi2_contingency(contingency)
-                cc.p_value = round(float(p), 6)
-                cc.is_significant = p < 0.05
+        cats = sorted(set(a_counts.index) | set(b_counts.index), key=str)
+        if len(cats) >= 2:
+            ct = pd.DataFrame({
+                "a": s_a.dropna().value_counts().reindex(cats, fill_value=0),
+                "b": s_b.dropna().value_counts().reindex(cats, fill_value=0),
+            })
+            assoc = chi2_association(ct)
+            if assoc is not None:
+                cc.p_value = round(assoc["p"], 6)
+                cc.is_significant = assoc["p"] < 0.05
                 cc.test_used = "Chi-Square Test of Independence"
-                if cc.is_significant:
-                    cc.verdict = (
-                        f"'{col}' category distribution changed significantly "
-                        f"(p={cc.p_value:.4f}). Top category: "
-                        f"'{cc.top_category_a}' → '{cc.top_category_b}'."
-                    )
-                else:
-                    cc.verdict = (
-                        f"'{col}' category distribution is stable (p={cc.p_value:.4f})."
-                    )
+                new_cats = sorted(set(b_counts.index) - set(a_counts.index), key=str)
+                gone = sorted(set(a_counts.index) - set(b_counts.index), key=str)
+                cc.verdict = _categorical_note(new_cats, gone)
     except Exception:
         logger.warning("Chi-square test failed for categorical column '%s'", col, exc_info=True)
 
@@ -216,6 +239,28 @@ def _compare_categorical_column(col: str, s_a: pd.Series, s_b: pd.Series) -> Col
             cc.verdict = f"Top category unchanged: '{cc.top_category_a}'."
 
     return cc
+
+
+def _categorical_note(new_cats: list, gone: list) -> str:
+    parts = []
+    if new_cats:
+        parts.append("new: " + ", ".join(f"'{c}'" for c in new_cats[:3]))
+    if gone:
+        parts.append("no longer present: " + ", ".join(f"'{c}'" for c in gone[:3]))
+    return ("; ".join(parts)) if parts else ""
+
+
+def _write_categorical_verdict(cc: ColumnComparison) -> None:
+    extra = (" Categories " + cc.verdict + ".") if cc.verdict else ""
+    if cc.is_significant:
+        cc.verdict = (
+            f"'{cc.column}' category mix changed significantly (p={cc.p_value:.4f}, "
+            f"adjusted q={cc.q_value:.4f}). Top category: "
+            f"'{cc.top_category_a}' → '{cc.top_category_b}'.{extra}")
+    else:
+        cc.verdict = (
+            f"No significant change detected in the '{cc.column}' category mix "
+            f"(p={cc.p_value:.4f}, adjusted q={cc.q_value:.4f}).{extra}")
 
 
 # ══════════════════════════════════════════════════════════
@@ -283,6 +328,17 @@ def run_comparison(
             "support to raise this limit."
         )
 
+    # Identifiers differ between any two extracts by construction; a
+    # "significant change in employee_id" is not a finding.
+    from app.engines.domains.base import is_id_column
+    ids = [c for c in columns_to_compare
+           if is_id_column(c, df_a[c]) or is_id_column(c, df_b[c])]
+    if ids:
+        warnings_list.append(
+            "Not compared (identifiers): " + ", ".join(ids[:5])
+            + (f" (+{len(ids) - 5} more)" if len(ids) > 5 else ""))
+    columns_to_compare = [c for c in columns_to_compare if c not in ids]
+
     comparisons: List[ColumnComparison] = []
     for col in columns_to_compare:
         try:
@@ -302,9 +358,22 @@ def run_comparison(
         except Exception:
             logger.warning("Column comparison failed for '%s'", col, exc_info=True)
 
+    # One family of tests: about one in twenty columns would come out
+    # "significant" at p<0.05 by chance alone, so significance is judged on
+    # the Benjamini-Hochberg adjusted value across every column tested.
+    tested = [c for c in comparisons if c.p_value is not None]
+    for c, q in zip(tested, bh_adjust([c.p_value for c in tested])):
+        c.q_value = round(float(q), 6)
+        c.is_significant = q < 0.05
+    for c in tested:
+        if c.dtype == "numeric":
+            _write_numeric_verdict(c)
+        else:
+            _write_categorical_verdict(c)
+
     # Most-changed (by absolute % change in mean, numeric only)
-    numeric_changes = [c for c in comparisons if c.pct_change_mean is not None]
-    most_changed = sorted(numeric_changes, key=lambda c: abs(c.pct_change_mean), reverse=True)[:10]
+    numeric_changes = [c for c in comparisons if c.effect_size is not None]
+    most_changed = sorted(numeric_changes, key=lambda c: abs(c.effect_size), reverse=True)[:10]
 
     significant_changes = [c for c in comparisons if c.is_significant]
 
@@ -312,7 +381,7 @@ def run_comparison(
     n_sig = len(significant_changes)
     if n_sig > 0:
         top = max(significant_changes,
-                 key=lambda c: abs(c.pct_change_mean) if c.pct_change_mean is not None else 0)
+                 key=lambda c: abs(c.effect_size) if c.effect_size is not None else 0)
         headline = (
             f"{n_sig} of {len(comparisons)} compared column(s) show a statistically "
             f"significant change between {label_a} and {label_b}. "
@@ -323,8 +392,9 @@ def run_comparison(
     else:
         headline = (
             f"No statistically significant changes detected across {len(comparisons)} "
-            f"compared columns between {label_a} and {label_b}. Observed differences "
-            "are likely within normal variation."
+            f"compared columns between {label_a} and {label_b} once every column "
+            "tested is accounted for — the differences seen cannot be told apart "
+            "from ordinary variation in this data."
         )
 
     if abs(row_delta_pct) > 20:
