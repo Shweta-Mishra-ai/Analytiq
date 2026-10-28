@@ -6,6 +6,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Database, Lock, User } from 'lucide-react'
 import { apiGet, apiPost, getToken, setToken } from '../api/client'
+import { useApp } from '../store/app'
 
 type Status = 'checking' | 'open' | 'locked' | 'authed'
 
@@ -36,7 +37,11 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     probe()
-    const onExpired = () => setStatus('locked')
+    const onExpired = () => {
+      // Whoever signs in next may be a different client.
+      useApp.getState().setDataset(null)
+      setStatus('locked')
+    }
     window.addEventListener('analytiq-unauthorized', onExpired)
     return () => window.removeEventListener('analytiq-unauthorized', onExpired)
     // eslint-disable-next-line react-hooks/exhaustive-deps

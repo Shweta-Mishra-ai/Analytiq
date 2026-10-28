@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import {
   Upload,
@@ -19,7 +20,7 @@ import {
   Gauge,
 } from 'lucide-react'
 import { useApp } from '../store/app'
-import { getToken, setToken } from '../api/client'
+import { ApiError, apiGet, getToken, setToken } from '../api/client'
 
 // Grouped so the sidebar stays readable as the analysis surface grows —
 // a flat list of 15 links makes it hard to find anything.
@@ -63,6 +64,20 @@ const navGroups = [
 
 export default function Layout() {
   const dataset = useApp((s) => s.dataset)
+  const setDataset = useApp((s) => s.setDataset)
+
+  // The selected dataset is persisted in localStorage, so it outlives the
+  // dataset itself (deleted, or expired by the retention sweep). Without
+  // this check every page then failed with "Dataset not found" and the
+  // sidebar kept naming a file that no longer exists.
+  const datasetId = dataset?.dataset_id
+  useEffect(() => {
+    if (!datasetId) return
+    apiGet(`/api/datasets/${datasetId}`).catch((e) => {
+      if (e instanceof ApiError && e.status === 404) setDataset(null)
+    })
+  }, [datasetId, setDataset])
+
   return (
     <div className="flex h-full">
       <aside className="flex w-60 shrink-0 flex-col border-r border-edge bg-panel">
@@ -142,6 +157,9 @@ export default function Layout() {
           <button
             onClick={() => {
               setToken('')
+              // The next person to sign in on this browser must not inherit
+              // this one's dataset selection (it names their file).
+              setDataset(null)
               window.location.reload()
             }}
             className="flex items-center gap-2 border-t border-edge px-4 py-3 text-[11px] text-faint transition-colors hover:bg-panel2 hover:text-ink"
