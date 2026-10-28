@@ -67,18 +67,33 @@ def issue_token(username: str, ttl_days: Optional[int] = None) -> str:
 
 
 def verify_token(token: str) -> Optional[str]:
-    """Returns the username if the token is valid and unexpired, else None."""
+    """Returns the username if the token is valid and unexpired, else None.
+
+    The token comes straight from a request header, so anything can be in
+    it — including non-ASCII bytes, which `str.encode("ascii")` and
+    `hmac.compare_digest` on str both raise on. An unhandled raise here is
+    a 500 from the auth middleware for an unauthenticated caller; every
+    malformed token must simply fail to verify.
+    """
     if not token or "." not in token:
         return None
     payload_b64, _, sig = token.partition(".")
-    expected = hmac.new(_get_secret(), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig, expected):
+    try:
+        payload_bytes = payload_b64.encode("ascii")
+        sig_bytes = sig.encode("ascii")
+    except UnicodeEncodeError:
+        return None
+    expected = hmac.new(_get_secret(), payload_bytes, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig_bytes, expected.encode("ascii")):
         return None
     try:
         payload = json.loads(_b64url_decode(payload_b64))
     except Exception:
         return None
-    if payload.get("exp", 0) < time.time():
+    if not isinstance(payload, dict):
+        return None
+    exp = payload.get("exp", 0)
+    if not isinstance(exp, (int, float)) or exp < time.time():
         return None
     username = payload.get("u")
     return username if isinstance(username, str) and username else None

@@ -101,6 +101,7 @@ class DatasetStore:
             with open(self._path(owner, ds_id, "meta.pkl"), "wb") as f:
                 pickle.dump(meta, f)
             self._touch_mem(owner, ds_id, raw=df_raw, active=df_raw.copy(), meta=meta)
+            self._bump_revision(owner, ds_id)
         return meta
 
     def list_meta(self, owner: str) -> list[DatasetMeta]:
@@ -168,6 +169,7 @@ class DatasetStore:
             self._save_df(owner, ds_id, "active.pkl", df)
             if mkey in self._mem:
                 self._mem[mkey]["active"] = df
+            self._bump_revision(owner, ds_id)
             meta = self.get_meta(owner, ds_id)
             if meta:
                 meta.rows, meta.cols = len(df), df.shape[1]
@@ -184,44 +186,95 @@ class DatasetStore:
         self.update_active(owner, ds_id, raw.copy())
         return raw
 
-    # ── analysis caches (hash-invalidated) ───────────────
-    def cache_get(self, owner: str, ds_id: str, key: str) -> Optional[Any]:
-        df = self.get_df(owner, ds_id)
-        if df is None:
+    # ── analysis caches (revision-invalidated) ───────────
+    #
+    # An entry is valid for exactly one revision of the active frame; every
+    # write to it (create, clean, reset) issues a new revision. This used to
+    # compare a hash of the shape, dtypes and first 100 rows, so any edit
+    # past row 100 that kept the shape — imputing a gap, capping an outlier —
+    # served the analysis of the previous data as if it were current.
+    # Hashing every row on every request would be correct but costs seconds
+    # on a large file; a revision token is exact and free.
+    #
+    # Keys routinely contain user column names ("ml_Revenue/Unit"), so the
+    # filename is a digest of the key, never the key itself: a "/" made the
+    # write fail silently, and distinct parameter sets could collide.
+
+    @staticmethod
+    def _cache_file(key: str) -> str:
+        return "cache_{}.pkl".format(hashlib.sha256(key.encode("utf-8")).hexdigest()[:32])
+
+    def _bump_revision(self, owner: str, ds_id: str) -> str:
+        rev = uuid.uuid4().hex
+        with open(self._path(owner, ds_id, "revision"), "w") as f:
+            f.write(rev)
+        mkey = self._mkey(owner, ds_id)
+        with self._lock:
+            self._caches.pop(mkey, None)
+            if mkey in self._mem:
+                self._mem[mkey]["revision"] = rev
+        return rev
+
+    def _revision(self, owner: str, ds_id: str) -> Optional[str]:
+        mkey = self._mkey(owner, ds_id)
+        with self._lock:
+            rev = self._mem.get(mkey, {}).get("revision")
+        if rev:
+            return rev
+        if self.get_meta(owner, ds_id) is None:
             return None
-        h = self._hash_df(df)
+        p = self._path(owner, ds_id, "revision")
+        try:
+            with open(p) as f:
+                rev = f.read().strip()
+        except FileNotFoundError:
+            rev = ""
+        if not rev:
+            # A dataset stored before revisions existed: start one, which
+            # invalidates its old hash-keyed caches once.
+            rev = self._bump_revision(owner, ds_id)
+        with self._lock:
+            if mkey in self._mem:
+                self._mem[mkey]["revision"] = rev
+        return rev
+
+    def cache_get(self, owner: str, ds_id: str, key: str) -> Optional[Any]:
+        rev = self._revision(owner, ds_id)
+        if rev is None:
+            return None
         mkey = self._mkey(owner, ds_id)
         with self._lock:
             entry = self._caches.get(mkey, {}).get(key)
-            if entry and entry[0] == h:
+            if entry and entry[0] == rev:
                 return entry[1]
-        # disk fallback
-        p = self._path(owner, ds_id, f"cache_{key}.pkl")
+        p = self._path(owner, ds_id, self._cache_file(key))
         if os.path.exists(p):
             try:
                 with open(p, "rb") as f:
-                    stored_hash, obj = pickle.load(f)
-                if stored_hash == h:
+                    stored = pickle.load(f)
+                if len(stored) == 3 and stored[0] == rev and stored[1] == key:
                     with self._lock:
-                        self._caches.setdefault(mkey, {})[key] = (h, obj)
-                    return obj
+                        self._caches.setdefault(mkey, {})[key] = (rev, stored[2])
+                    return stored[2]
             except Exception:
                 logger.debug("cache_get: suppressed exception", exc_info=True)
         return None
 
     def cache_set(self, owner: str, ds_id: str, key: str, obj: Any) -> None:
-        df = self.get_df(owner, ds_id)
-        if df is None:
+        rev = self._revision(owner, ds_id)
+        if rev is None:
             return
-        h = self._hash_df(df)
         mkey = self._mkey(owner, ds_id)
         with self._lock:
-            self._caches.setdefault(mkey, {})[key] = (h, obj)
+            self._caches.setdefault(mkey, {})[key] = (rev, obj)
         try:
-            with open(self._path(owner, ds_id, f"cache_{key}.pkl"), "wb") as f:
-                pickle.dump((h, obj), f)
+            with open(self._path(owner, ds_id, self._cache_file(key)), "wb") as f:
+                pickle.dump((rev, key, obj), f)
         except Exception:
-            pass  # cache persistence is best-effort
+            # Best-effort, but no longer silent: a failure here means every
+            # request recomputes, which is worth knowing about.
+            logger.warning("cache_set: could not persist %r for %s/%s",
+                           key, owner, ds_id, exc_info=True)
 
     # ── internals ────────────────────────────────────────
     def _save_df(self, owner: str, ds_id: str, name: str, df: pd.DataFrame) -> None:
@@ -257,12 +310,6 @@ class DatasetStore:
             if oldest == mkey:
                 break
             self._mem.pop(oldest)
-
-    @staticmethod
-    def _hash_df(df: pd.DataFrame) -> str:
-        sig = f"{df.shape}|{list(df.columns)}|{list(df.dtypes.astype(str))}"
-        sample = df.head(100).to_json(default_handler=str)
-        return hashlib.md5((sig + sample).encode()).hexdigest()
 
 
 store = DatasetStore()

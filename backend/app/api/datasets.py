@@ -45,6 +45,26 @@ class _UploadShim:
         return getattr(self._buf, item)
 
 
+async def read_capped(file: UploadFile, limit_mb: int) -> bytes:
+    """The upload's bytes, refusing with 413 as soon as it passes the limit.
+
+    `await file.read()` buffered the whole body before any size check, so
+    the limit protected nothing: a multi-gigabyte upload was held in memory
+    in full and only then rejected.
+    """
+    limit = limit_mb * 1024 * 1024
+    chunks, total = [], 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(413, f"File exceeds the {limit_mb} MB limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _process_upload(owner: str, filename: str, data: bytes, sheet: str) -> dict:
     """Heavy parsing/validation — runs in the threadpool, off the event loop."""
     ok, msg = validate_file_size(len(data))
@@ -75,7 +95,7 @@ def _process_upload(owner: str, filename: str, data: bytes, sheet: str) -> dict:
 async def upload_dataset(file: UploadFile = File(...), sheet: str = Query("0"),
                           owner: str = Depends(current_owner)):
     from starlette.concurrency import run_in_threadpool
-    data = await file.read()
+    data = await read_capped(file, config.max_file_mb)
     return await run_in_threadpool(
         _process_upload, owner, file.filename or "upload.csv", data, sheet)
 
@@ -108,9 +128,7 @@ async def extract_from_image(file: UploadFile = File(...),
                               owner: str = Depends(current_owner)):
     """Photo/screenshot of a table → real dataset (full pipeline works)."""
     from starlette.concurrency import run_in_threadpool
-    data = await file.read()
-    if len(data) > config.max_media_mb * 1024 * 1024:
-        raise HTTPException(413, f"Image exceeds {config.max_media_mb} MB")
+    data = await read_capped(file, config.max_media_mb)
     return await run_in_threadpool(
         _process_image_extract, owner, file.filename or "image.png", data)
 
@@ -153,9 +171,7 @@ async def extract_from_video(file: UploadFile = File(...),
     Slower than image extraction (Gemini File API processing + upload),
     so this route can take up to a few minutes for longer clips."""
     from starlette.concurrency import run_in_threadpool
-    data = await file.read()
-    if len(data) > config.max_media_mb * 1024 * 1024:
-        raise HTTPException(413, f"Video exceeds {config.max_media_mb} MB")
+    data = await read_capped(file, config.max_media_mb)
     return await run_in_threadpool(
         _process_video_extract, owner, file.filename or "video.mp4", data)
 

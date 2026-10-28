@@ -50,7 +50,7 @@ graph TD
     end
 
     subgraph AI_Services [AI & LLM Services]
-        RAG --> GeminiEmbed["Gemini embedding-004"]
+        RAG --> GeminiEmbed["Gemini embeddings"]
         ChatUI --> ToolDispatch["Safe Tool Dispatcher"]
         ToolDispatch --> Groq["Groq (Llama 3.3)"]
         PDF --> Narrator["AI Chart Narrator"]
@@ -92,7 +92,7 @@ graph TD
 Backend ──── FastAPI · pandas · scikit-learn · scipy · statsmodels · ReportLab
 Frontend ─── React 19 · TypeScript · Tailwind CSS 4 · Plotly.js · Zustand
 AI ───────── Groq (Llama 3.3) · Google Gemini (Vision, Embeddings)
-RAG ──────── Custom NumPy Vector Store · Gemini text-embedding-004
+RAG ──────── Custom NumPy Vector Store · Gemini embeddings (local fallback)
 Deployment ─ Docker · Render / Railway
 ```
 
@@ -149,6 +149,7 @@ The application remains fully functional locally without keys (AI modules degrad
 | `CLEANUP_INTERVAL_HOURS` | you choose | How often the expiry sweep runs in the background. Default `6`. A sweep also runs once at startup, and can be triggered manually via `POST /api/admin/cleanup`. |
 | `APP_SECRET` | you choose | Signs client login tokens. Optional — auto-generated and persisted to `DATA_DIR/.secret_key` if unset. Set explicitly if you run multiple backend instances behind a load balancer, so they all validate the same tokens. |
 | `TOKEN_TTL_DAYS` | you choose | How long a client's login session lasts before they must sign in again. Default `30`. |
+| `LLM_PRIVACY_MODE` | you choose | `1` forbids sending client data to any cloud model: narratives, AI chat and RAG answers use only the local model (`LOCAL_LLM_URL` / `LOCAL_LLM_MODEL`), and RAG indexes documents with the local embedder. Chat answers 503 if no local model is configured. |
 
 ### 🎬 Video-to-dataset extraction
 
@@ -165,6 +166,8 @@ curl -X POST https://your-deployment/api/admin/users \
   -H "Content-Type: application/json" \
   -d '{"username": "acme_corp", "password": "a-strong-password"}'
 ```
+
+Usernames are 1–64 characters of `a-z 0-9 . _ -` (case-insensitive; `admin` and `local` are reserved), because each one becomes a storage directory. Passwords need at least 8 characters. After 10 failed sign-ins on one username within 15 minutes, further attempts on it get `429` until the window passes.
 
 They then log in at `/api/auth/login` with that username/password (the app's login screen does this for them) and get a token scoped to only their own data. To offboard a client — this **permanently deletes every dataset and knowledge base they own**, not just their login:
 

@@ -204,7 +204,10 @@ def auto_clean(df: pd.DataFrame) -> tuple[pd.DataFrame, CleaningReport]:
 
     # ── 1. Strip whitespace from column names ──────────────
     old_cols = df.columns.tolist()
-    df.columns = df.columns.str.strip()
+    # Only string names have whitespace to strip; `.str` on an index holding
+    # any non-string name (an Excel header row of years, say) turns those
+    # names into NaN.
+    df.columns = [c.strip() if isinstance(c, str) else c for c in old_cols]
     renamed = [(o, n) for o, n in zip(old_cols, df.columns) if o != n]
     for old, new in renamed:
         report.add("column_name", "leading/trailing whitespace",
@@ -221,9 +224,13 @@ def auto_clean(df: pd.DataFrame) -> tuple[pd.DataFrame, CleaningReport]:
                        sql="ALTER TABLE {{table}} DROP COLUMN {};".format(_q(c)))
 
     # ── 3. Drop constant columns (1 unique non-null value) ─
+    # Only columns with no gaps are constant. One value plus blanks —
+    # complaint "Yes"/blank, discount_code "SPRING"/blank — is a flag whose
+    # blank half usually means "no", and dropping it deleted the signal.
     constant_cols = []
     for c in df.columns:
-        if df[c].nunique(dropna=True) <= 1 and len(df) > 1:
+        if (df[c].nunique(dropna=True) <= 1 and len(df) > 1
+                and not df[c].isna().any()):
             constant_cols.append(c)
     if constant_cols:
         df.drop(columns=constant_cols, inplace=True)
@@ -295,6 +302,37 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
     missing = s.isna().sum()
     if missing > 0:
         missing_pct = missing / max(len(df), 1) * 100
+
+        if pd.api.types.is_datetime64_any_dtype(s):
+            # A date is never imputed. Filling with the most common date
+            # invents events (ten hires on one day); filling with 'Unknown'
+            # turned the column into text, so it vanished from every
+            # time-based analysis. And a blank date frequently means "not
+            # yet" — a leaving date for someone still employed.
+            report.add(col,
+                       "{} missing dates ({:.1f}%)".format(missing, missing_pct),
+                       "left as missing — dates are not imputed; a blank date "
+                       "often means the event has not happened",
+                       "{} nulls".format(missing), "{} nulls".format(missing), 0,
+                       sql=("-- {c} is deliberately NOT imputed.\n"
+                            "SELECT COUNT(*) AS missing_dates FROM {{table}} "
+                            "WHERE {c} IS NULL;").format(c=_q(col)))
+            return
+
+        if s.nunique(dropna=True) == 1:
+            # The flag case from step 3: imputing the mode would make every
+            # row the one value and erase what the blanks were saying.
+            only = s.dropna().iloc[0]
+            report.add(col,
+                       "one value ('{}') plus {} blanks ({:.1f}%)".format(
+                           str(only)[:30], missing, missing_pct),
+                       "left as is — reads as a flag; the blanks likely mean "
+                       "'no' or 'none' and are not imputed",
+                       "{} nulls".format(missing), "{} nulls".format(missing), 0,
+                       sql=("-- {c} holds a single value or NULL: a flag, kept as is.\n"
+                            "SELECT {c} IS NULL AS is_blank, COUNT(*)\n"
+                            "FROM {{table}} GROUP BY 1;").format(c=_q(col)))
+            return
 
         if missing_pct > 60:
             # Too many missing — drop the column

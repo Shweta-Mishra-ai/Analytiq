@@ -10,7 +10,7 @@ from typing import List, Optional
 
 from app.config import config
 from app.rag.extractors import IMAGE_EXTS, VIDEO_EXTS, extract
-from app.rag.vector_store import KnowledgeBase
+from app.rag.vector_store import KnowledgeBase, kb_lock
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +90,12 @@ def ingest_file(kb: KnowledgeBase, filename: str, data: bytes) -> dict:
     if not passages:
         raise ValueError(f"No text could be extracted from {filename}")
     chunks = chunk_passages(passages)
-    check_ingest_limits(kb, len(chunks))
     kind = file_kind(filename)
-    kb.add_chunks(chunks, filename, kind)
+    # Extraction above is the slow part and runs unlocked; the check and the
+    # append must happen together or concurrent uploads race (see kb_lock).
+    with kb_lock(kb):
+        check_ingest_limits(kb, len(chunks))
+        kb.add_chunks(chunks, filename, kind)
     preview = passages[0]["text"][:600]
     return {"filename": filename, "kind": kind,
             "chunks_added": len(chunks), "preview": preview,

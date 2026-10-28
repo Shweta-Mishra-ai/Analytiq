@@ -37,15 +37,56 @@ class ChatRequest(BaseModel):
     history: List[ChatMessage] = Field(default_factory=list)
 
 
+def _complete(system: str, messages: list[dict]) -> str:
+    """The model's reply, from the provider this deployment allows.
+
+    The system prompt carries the dataset's schema and sample rows, so this
+    is client data leaving the machine. In privacy mode only the local model
+    may see it; before, the route called Groq unconditionally and privacy
+    mode did not apply to chat at all.
+    """
+    from app.ai import local_llm
+
+    def _local() -> str | None:
+        transcript = "\n".join(f"{m['role']}: {m['content']}" for m in messages[:-1])
+        user = ((f"Conversation so far:\n{transcript}\n\n" if transcript else "")
+                + f"Current request: {messages[-1]['content']}")
+        return local_llm.generate(system, user, max_tokens=config.llm_max_tokens)
+
+    if local_llm.privacy_mode():
+        text = _local()
+        if not text:
+            raise HTTPException(
+                503, "LLM_PRIVACY_MODE is on and no local model answered. Set "
+                     "LOCAL_LLM_URL and LOCAL_LLM_MODEL to use chat. No data "
+                     "was sent anywhere.")
+        return text
+
+    if config.groq_api_key:
+        try:
+            return get_client(config.groq_api_key).chat(messages, system)
+        except Exception as e:
+            # A provider outage, bad key or rate limit used to come back as
+            # "Couldn't understand", blaming the user's wording.
+            logger.error(f"Chat LLM call failed: {e}")
+            text = _local()
+            if text:
+                return text
+            raise HTTPException(503, f"The language model did not respond: {e}")
+
+    text = _local()
+    if text:
+        return text
+    raise HTTPException(
+        503, "No language model is configured for chat — set GROQ_API_KEY, "
+             "or LOCAL_LLM_URL and LOCAL_LLM_MODEL.")
+
+
 @router.post("/{ds_id}")
 def chat(ds_id: str, req: ChatRequest, owner: str = Depends(current_owner)):
     df = store.get_df(owner, ds_id)
     if df is None:
         raise HTTPException(404, "Dataset not found")
-    if not config.groq_api_key:
-        raise HTTPException(503, "GROQ_API_KEY is not configured on the server")
-
-    client = get_client(config.groq_api_key)
     system = build_chat_system_prompt(df)
 
     # Carry prior turns so follow-ups ("now split that by region") resolve
@@ -58,10 +99,7 @@ def chat(ds_id: str, req: ChatRequest, owner: str = Depends(current_owner)):
     ]
     messages = history_msgs + [{"role": "user", "content": req.message}]
 
-    raw = client.chat_safe(
-        messages=messages,
-        system=system,
-    )
+    raw = _complete(system, messages)
     parsed = parse_tool_call(raw)
     if not parsed:
         return {"text": "Couldn't understand. Try: 'Show sales by region as bar chart'",

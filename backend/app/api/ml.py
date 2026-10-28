@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/ml", tags=["ml"])
 
 class TrainRequest(BaseModel):
     target: str
-    max_rows: int = 50_000
+    max_rows: int = Field(50_000, ge=100, le=500_000)
 
 
 class WhatIfRequest(BaseModel):
@@ -71,9 +71,14 @@ def train(ds_id: str, req: TrainRequest, owner: str = Depends(current_owner)):
     df = _df_or_404(owner, ds_id)
     if req.target not in df.columns:
         raise HTTPException(422, f"Target '{req.target}' not in dataset")
+    import pandas as pd
+    if pd.api.types.is_datetime64_any_dtype(df[req.target]):
+        raise HTTPException(
+            422, f"'{req.target}' is a date — predict something measured "
+                 f"about the rows instead, such as a duration in days")
     from app.engines.ml_engine import run_ml_pipeline
     try:
-        report = run_ml_pipeline(df, req.target)
+        report = run_ml_pipeline(df, req.target, max_rows=req.max_rows)
     except Exception as e:
         raise HTTPException(500, f"Training failed: {e}")
     store.cache_set(owner, ds_id, f"ml_{req.target}", report)
@@ -94,14 +99,17 @@ def last_report(ds_id: str, target: Optional[str] = None,
 
 @router.post("/{ds_id}/what-if")
 def what_if(ds_id: str, req: WhatIfRequest, owner: str = Depends(current_owner)):
-    df = _df_or_404(owner, ds_id)
-    report = store.cache_get(owner, ds_id, f"ml_{req.target}") \
-        or store.cache_get(owner, ds_id, "ml_last")
+    _df_or_404(owner, ds_id)
+    # Only a model trained for this target. Falling back to the most recent
+    # model regardless of its target answered "what would attrition be?"
+    # with a prediction of salary, labelled as attrition.
+    report = store.cache_get(owner, ds_id, f"ml_{req.target}")
     if report is None:
-        raise HTTPException(404, "No trained model yet — call /train first")
+        raise HTTPException(
+            404, f"No model trained for '{req.target}' on the current data — "
+                 f"call /train with this target first")
     from app.engines.ml_engine import predict_what_if
-    try:
-        result = predict_what_if(report, req.inputs)
-    except Exception as e:
-        raise HTTPException(500, f"Prediction failed: {e}")
+    result = predict_what_if(report, req.inputs)
+    if "error" in result:
+        raise HTTPException(422, result["error"])
     return to_jsonable(result)

@@ -384,16 +384,38 @@ def run_continuous_test(
         f"when the baseline is zero or negative)"
     )
 
+    # Which way the difference runs has to come from the test that found it.
+    # Mann-Whitney compares ranks, not means: with a few large outliers in A
+    # it correctly finds B typically higher while A's mean is higher, and
+    # taking the direction from the means then reported "B is lower — keep
+    # A", the opposite of what the significant result says.
+    if use_nonparametric:
+        prob_b_higher = 1.0 - float(stat) / (len(a) * len(b))
+        b_is_higher = prob_b_higher > 0.5
+        if (mean_b > mean_a) != b_is_higher and mean_a != mean_b:
+            warnings_list.append(
+                f"The means point the other way from the typical values "
+                f"(mean {mean_a:,.2f} vs {mean_b:,.2f}; median {med_a:,.2f} vs "
+                f"{med_b:,.2f}) — a few extreme values are pulling the mean. "
+                f"The verdict follows the typical values, which is what the "
+                f"test compares.")
+        diff_phrase = (
+            f"(in {max(prob_b_higher, 1 - prob_b_higher):.0%} of A/B pairs; "
+            f"median {med_a:,.2f} vs {med_b:,.2f})")
+        direction_phrase = "tends to have higher" if b_is_higher else "tends to have lower"
+    else:
+        b_is_higher = mean_b > mean_a
+        direction_phrase = "has higher" if b_is_higher else "has lower"
+
     if is_sig:
-        direction = "higher" if mean_b > mean_a else "lower"
         verdict = (
             f"Statistically significant at {confidence_level:.0%} confidence "
-            f"(p={p_value:.4f}). '{variant_b_name}' has {direction} "
+            f"(p={p_value:.4f}). '{variant_b_name}' {direction_phrase} "
             f"{metric_name.lower()} than '{variant_a_name}' "
             f"{diff_phrase}."
         )
         recommendation = (
-            f"Ship '{variant_b_name}'." if mean_b > mean_a else
+            f"Ship '{variant_b_name}'." if b_is_higher else
             f"Keep '{variant_a_name}' — the tested variant performed worse."
         )
     else:

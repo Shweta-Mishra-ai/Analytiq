@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 
 import hmac
+import threading
+import time
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -82,9 +84,63 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class LoginThrottle:
+    """Refuses further attempts on a username after repeated failures.
+
+    Without it nothing slows online password guessing: every attempt is
+    answered as fast as PBKDF2 allows, indefinitely. Keyed on the username
+    rather than the client address because behind a proxy every caller
+    shares one address. In memory and per process — this deploys as a
+    single uvicorn worker — so a restart clears it, which is acceptable
+    for a throttle whose job is to make guessing slow, not impossible.
+    """
+
+    def __init__(self, max_failures: int = 10, window_sec: float = 900.0):
+        self.max_failures = max_failures
+        self.window_sec = window_sec
+        self._failures: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def _recent(self, key: str, now: float) -> list[float]:
+        recent = [t for t in self._failures.get(key, []) if now - t < self.window_sec]
+        if recent:
+            self._failures[key] = recent
+        else:
+            self._failures.pop(key, None)
+        return recent
+
+    def retry_after(self, username: str) -> int:
+        """Seconds until `username` may try again; 0 when it may now."""
+        key = username.strip().lower()
+        now = time.time()
+        with self._lock:
+            recent = self._recent(key, now)
+            if len(recent) < self.max_failures:
+                return 0
+            return max(1, int(self.window_sec - (now - recent[0])))
+
+    def record_failure(self, username: str) -> None:
+        key = username.strip().lower()
+        now = time.time()
+        with self._lock:
+            self._recent(key, now)
+            self._failures.setdefault(key, []).append(now)
+
+    def record_success(self, username: str) -> None:
+        with self._lock:
+            self._failures.pop(username.strip().lower(), None)
+
+
+login_throttle = LoginThrottle()
+
+
 def check_admin_key(candidate: str) -> bool:
+    # Compared as bytes: compare_digest on str raises TypeError for any
+    # non-ASCII character, and the candidate is an arbitrary header value.
     key = config.effective_admin_key
-    return bool(key) and hmac.compare_digest(candidate, key)
+    return bool(key) and hmac.compare_digest(
+        candidate.encode("utf-8", "surrogateescape"),
+        key.encode("utf-8", "surrogateescape"))
 
 
 def current_owner(request: Request) -> str:

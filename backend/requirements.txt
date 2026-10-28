@@ -11,6 +11,7 @@ Pillow>=10.0.0
 reportlab>=4.0.0
 xlsxwriter>=3.1.0
 openpyxl>=3.1.0
+xlrd>=2.0.1          # legacy .xls — the upload page accepts it
 groq>=0.4.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0

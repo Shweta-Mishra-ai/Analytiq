@@ -85,3 +85,16 @@ def test_required_sample_size_rejects_invalid_baseline():
         required_sample_size(baseline_rate=0)
     with pytest.raises(ValueError):
         required_sample_size(baseline_rate=1)
+
+
+def test_nonparametric_verdict_follows_the_typical_values_not_the_mean():
+    # A's mean is inflated by ten outliers; B is higher for the typical row.
+    # Mann-Whitney finds that — the verdict must not then say the opposite.
+    rng = np.random.default_rng(0)
+    a = pd.Series(np.r_[rng.normal(100, 5, 190), np.full(10, 3000.0)])
+    b = pd.Series(rng.normal(130, 5, 200))
+    r = run_continuous_test(a, b, "A", "B", "Order value")
+    assert "Mann-Whitney" in r.test_used and r.is_significant
+    assert "tends to have higher" in r.verdict
+    assert r.recommendation.startswith("Ship 'B'")
+    assert any("means point the other way" in w for w in r.warnings)

@@ -53,8 +53,9 @@ def sweep_expired(ttl_days: int | None = None) -> CleanupResult:
                 result.errors.append(f"dataset {meta.dataset_id}: {e}")
 
     try:
-        from app.rag.vector_store import RagStore
-        rag_store = RagStore()
+        # The shared instance — see delete_client_user in main.py for why
+        # a fresh RagStore() here would leave expired KBs being served.
+        from app.rag.vector_store import rag_store
         for kb in rag_store.list_all():
             if kb.get("created_at", 0) < cutoff:
                 try:
@@ -82,7 +83,9 @@ async def cleanup_loop(interval_hours: float | None = None) -> None:
         else config.cleanup_interval_hours
     while True:
         try:
-            sweep_expired()
+            # Off the event loop: the sweep walks and deletes directories,
+            # and on a large DATA_DIR that blocked every request meanwhile.
+            await asyncio.to_thread(sweep_expired)
         except Exception:
             logger.exception("Scheduled cleanup sweep failed")
         await asyncio.sleep(max(interval, 0.1) * 3600)

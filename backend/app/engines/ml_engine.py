@@ -24,6 +24,7 @@ from sklearn.metrics import (
     classification_report
 )
 
+from app.engines.domains.base import is_id_column
 from app.services.dtypes import is_text_dtype, text_columns
 try:
     from xgboost import XGBRegressor, XGBClassifier
@@ -88,6 +89,9 @@ class MLReport:
     preprocessor:       Any = field(default=None, repr=False)
     label_encoders:     Dict = field(default_factory=dict)
     target_encoder:     Any = field(default=None, repr=False)
+    # Datetime features are trained as days since this origin; a what-if
+    # input date has to be converted the same way.
+    datetime_origins:   Dict = field(default_factory=dict)
     warnings:           List[str] = field(default_factory=list)
     insights:           List[str] = field(default_factory=list)
 
@@ -109,8 +113,9 @@ def detect_task(series: pd.Series) -> Tuple[str, str]:
     if n_uniq == 2:
         return "classification", "Binary target (2 unique values)"
 
-    # Object/string → classification
-    if dtype == object or str(dtype) == "str":
+    # Text → classification. `dtype == object or str(dtype) == "str"` missed
+    # pandas' "string" dtype, which then fell through to regression on text.
+    if is_text_dtype(dtype):
         if n_uniq <= 20:
             return "classification", "Categorical target ({} classes)".format(n_uniq)
         else:
@@ -133,6 +138,10 @@ def suggest_targets(df: pd.DataFrame) -> List[Dict]:
     for col in df.columns:
         s = df[col].dropna()
         if len(s) < 10:
+            continue
+        # A date is not a target this pipeline can model (it would be
+        # "regression" on Timestamps, and abs() of a Timestamp raises).
+        if pd.api.types.is_datetime64_any_dtype(s):
             continue
 
         # Skip ID-like columns
@@ -198,6 +207,12 @@ def prepare_features(
             # High cardinality string → drop
             if is_text_dtype(df[col]) and df[col].nunique() / max(len(df), 1) > 0.5:
                 drop_cols.append(col)
+                continue
+            # Identifiers (employee_id, order_no, a 1..n row number) carry no
+            # information about the outcome, but a model will happily fit
+            # them — and on data sorted by date they leak time.
+            if is_id_column(col, df[col]):
+                drop_cols.append(col)
         df = df.drop(columns=drop_cols)
 
     # Encode categorical columns
@@ -209,8 +224,11 @@ def prepare_features(
         label_encoders[col] = le
 
     # Convert datetime to numeric (days since min)
+    datetime_origins = {}
     for col in df.select_dtypes(include="datetime").columns:
-        df[col] = (df[col] - df[col].min()).dt.days
+        origin = df[col].min()
+        datetime_origins[col] = origin
+        df[col] = (df[col] - origin).dt.days
 
     # Keep only numeric
     df = df.select_dtypes(include="number")
@@ -223,7 +241,8 @@ def prepare_features(
     df = df.loc[common_idx]
     y  = y.loc[common_idx]
 
-    return df, y, label_encoders
+    datetime_origins = {c: o for c, o in datetime_origins.items() if c in df.columns}
+    return df, y, label_encoders, datetime_origins
 
 
 # ══════════════════════════════════════════════════════════
@@ -309,18 +328,18 @@ def train_models(
     """
     # Encode classification target
     if task == "classification":
-        if y.dtype == object or str(y.dtype) == "str":
-            if target_encoder is None:
-                target_encoder = LabelEncoder()
-            y = pd.Series(
-                target_encoder.fit_transform(y.astype(str)),
-                index=y.index
-            )
-        else:
-            y = y.astype(int)
+        # Always label-encode. `y.astype(int)` on a numeric target truncated
+        # it: classes 0.2 and 0.7 both became 0, leaving one class, and the
+        # one model that still fit reported a meaningless 100% accuracy.
+        if target_encoder is None:
+            target_encoder = LabelEncoder()
+        values = y.astype(str) if is_text_dtype(y) else y
+        y = pd.Series(target_encoder.fit_transform(values), index=y.index)
 
-    # Train/test split — stratified for classification
-    stratify = y if task == "classification" and y.nunique() <= 20 else None
+    # Train/test split — stratified for classification, which needs at
+    # least two rows of every class or train_test_split raises.
+    stratify = (y if task == "classification" and y.nunique() <= 20
+                and y.value_counts().min() >= 2 else None)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=stratify
     )
@@ -391,9 +410,10 @@ def train_models(
                 model=None,
             ))
 
-    # Sort by cv_score
+    # Sort by cv_score. A model that failed to train is never "best": with
+    # every model failed, the -999 sentinel used to be crowned and reported.
     results.sort(key=lambda x: x.cv_score, reverse=True)
-    if results:
+    if results and results[0].model is not None:
         results[0].is_best = True
 
     return results, X_test, y_test, target_encoder
@@ -521,39 +541,87 @@ def get_feature_importance(
 #  WHAT-IF PREDICTION
 # ══════════════════════════════════════════════════════════
 
+def _encode_what_if_inputs(ml_report: MLReport,
+                           input_values: Dict[str, Any]) -> Tuple[pd.DataFrame, List[str]]:
+    """One feature row encoded exactly as the training data was.
+
+    The model was trained on label-encoded categories and on dates as days
+    since the earliest date, so raw inputs ("Sales", "2021-03-01") cannot
+    go to it as typed — they used to, and every categorical what-if failed
+    with "could not convert string to float". Features left out are passed
+    as missing, which the pipeline's imputer fills with the training median;
+    they are listed back so the caller knows the prediction assumed them.
+    """
+    encoders = ml_report.label_encoders or {}
+    origins = getattr(ml_report, "datetime_origins", None) or {}
+    row, assumed = {}, []
+    unknown = [k for k in input_values if k not in ml_report.feature_cols]
+    if unknown:
+        raise ValueError("Not features of this model: {}. Its features are: {}".format(
+            ", ".join(map(str, unknown)), ", ".join(ml_report.feature_cols)))
+    for col in ml_report.feature_cols:
+        if col not in input_values or input_values[col] in (None, ""):
+            row[col] = np.nan
+            assumed.append(col)
+            continue
+        v = input_values[col]
+        if col in encoders:
+            known = list(encoders[col].classes_)
+            if str(v) not in known:
+                raise ValueError("'{}' is not a value '{}' had in training. Known: {}".format(
+                    v, col, ", ".join(map(str, known[:20])) + (" …" if len(known) > 20 else "")))
+            row[col] = float(encoders[col].transform([str(v)])[0])
+        elif col in origins:
+            try:
+                when = pd.Timestamp(v)
+            except (ValueError, TypeError):
+                raise ValueError("'{}' needs a date, got {!r}".format(col, v))
+            origin = origins[col]
+            if getattr(origin, "tzinfo", None) is not None and when.tzinfo is None:
+                when = when.tz_localize(origin.tzinfo)
+            row[col] = float((when - origin).days)
+        else:
+            try:
+                row[col] = float(v)
+            except (ValueError, TypeError):
+                raise ValueError("'{}' needs a number, got {!r}".format(col, v))
+    return pd.DataFrame([row])[ml_report.feature_cols], assumed
+
+
 def predict_what_if(
     ml_report: MLReport,
-    input_values: Dict[str, float],
+    input_values: Dict[str, Any],
 ) -> Dict:
     """
     Make a single prediction from user-supplied input values.
-    Returns prediction + confidence info.
+    Returns prediction + confidence info, or {"error": ...}.
     """
     if ml_report.best_model is None or ml_report.best_model.model is None:
         return {"error": "No trained model available."}
 
     try:
-        # Build input row
-        X_input = pd.DataFrame([input_values])[ml_report.feature_cols]
-        pipe    = ml_report.best_model.model
-        pred    = pipe.predict(X_input)[0]
+        X_input, assumed = _encode_what_if_inputs(ml_report, input_values)
+    except ValueError as e:
+        return {"error": str(e)}
 
-        result = {"prediction": float(pred), "task": ml_report.task}
+    try:
+        pipe = ml_report.best_model.model
+        pred = pipe.predict(X_input)[0]
+        result: Dict[str, Any] = {"prediction": float(pred), "task": ml_report.task,
+                                  "target": ml_report.target_col}
+        if assumed:
+            result["assumed_at_training_median"] = assumed
 
         if ml_report.task == "classification":
-            # Decode label
-            if ml_report.target_encoder is not None:
-                try:
-                    pred_label = ml_report.target_encoder.inverse_transform([int(pred)])[0]
-                    result["prediction_label"] = str(pred_label)
-                except Exception:
-                    result["prediction_label"] = str(pred)
-
-            # Probability
+            enc = ml_report.target_encoder
+            decode = (lambda c: str(enc.inverse_transform([int(c)])[0])) if enc is not None \
+                else (lambda c: str(c))
+            result["prediction_label"] = decode(pred)
             try:
                 proba = pipe.predict_proba(X_input)[0]
+                # Keyed by the real class labels, not the encoder's integers.
                 result["probabilities"] = {
-                    str(c): round(float(p), 4)
+                    decode(c): round(float(p), 4)
                     for c, p in zip(pipe.classes_, proba)
                 }
                 result["confidence"] = round(float(max(proba)) * 100, 1)
@@ -603,19 +671,32 @@ def _generate_insights(report: MLReport) -> List[str]:
                 "Weak model: R2={:.2f} — '{}' is difficult to predict "
                 "from current features.".format(r2, report.target_col))
     else:
+        # Judged against always predicting the most common class — the
+        # accuracy any model gets for free. This said "Good classifier: 80%
+        # accuracy. Better than random by 65.7%" (dividing by the number of
+        # *features*) for a model on data that is 80.4% "No": it was worse
+        # than never predicting "Yes" at all.
         acc = best.test_score
-        if acc >= 0.90:
+        balance = report.class_balance or {}
+        majority_label, baseline = (max(balance.items(), key=lambda kv: kv[1])
+                                    if balance else ("", 0.0))
+        lift_pp = (acc - baseline) * 100
+        if acc <= baseline + 0.01:
             insights.append(
-                "Excellent classifier: {:.1f}% accuracy on held-out data.".format(acc*100))
-        elif acc >= 0.75:
+                "No better than always predicting the most common class: "
+                "{:.1f}% accuracy, against {:.1f}% from answering '{}' for "
+                "every row. Not usable for prediction as it stands.".format(
+                    acc * 100, baseline * 100, majority_label))
+        elif lift_pp < 5:
             insights.append(
-                "Good classifier: {:.1f}% accuracy. "
-                "Better than random by {:.1f}%.".format(
-                    acc*100, (acc - 1/max(report.n_features,1))*100))
+                "Weak classifier: {:.1f}% accuracy, only {:.1f} points above "
+                "the {:.1f}% from always answering '{}'.".format(
+                    acc * 100, lift_pp, baseline * 100, majority_label))
         else:
             insights.append(
-                "Weak classifier: {:.1f}% accuracy. "
-                "Class imbalance or insufficient features may be the cause.".format(acc*100))
+                "Classifier reaches {:.1f}% accuracy on held-out data, {:.1f} "
+                "points above the {:.1f}% from always answering '{}'.".format(
+                    acc * 100, lift_pp, baseline * 100, majority_label))
 
     # Overfitting
     if best.overfit_label == "Severe":
@@ -635,16 +716,21 @@ def _generate_insights(report: MLReport) -> List[str]:
             "Most important predictor: '{}' ({:.0f}% contribution). {}".format(
                 top.feature, top.importance*100, top.explanation))
 
-    # Model comparison
-    if len(report.models) >= 2:
-        best_cv  = report.models[0].cv_score
-        worst_cv = report.models[-1].cv_score
+    # Model comparison — among models that trained; a failed one carries a
+    # -999 sentinel score, not a result.
+    trained = [m for m in report.models if m.model is not None]
+    if len(trained) >= 2:
+        best_cv  = trained[0].cv_score
+        worst_cv = trained[-1].cv_score
         if best_cv - worst_cv > 0.1:
             insights.append(
-                "Significant model performance gap: best ({}) CV={:.2f} "
+                "Large model performance gap: best ({}) CV={:.2f} "
                 "vs worst ({}) CV={:.2f}. Model choice matters for this dataset.".format(
-                    report.models[0].name, best_cv,
-                    report.models[-1].name, worst_cv))
+                    trained[0].name, best_cv,
+                    trained[-1].name, worst_cv))
+    failed = [m.name for m in report.models if m.model is None]
+    if failed:
+        insights.append("Could not train: {}.".format(", ".join(failed)))
 
     # Class imbalance warning
     if report.class_balance:
@@ -689,7 +775,8 @@ def run_ml_pipeline(
         class_balance = {str(k): round(float(v), 4) for k, v in vc.items()}
 
     # Prepare features
-    X, y, label_encoders = prepare_features(df, target_col, selected_features)
+    X, y, label_encoders, datetime_origins = prepare_features(
+        df, target_col, selected_features)
 
     # ── Target-leakage guard ──────────────────────────────
     # A feature that is (nearly) a copy of the target produces a
@@ -734,6 +821,9 @@ def run_ml_pipeline(
     # Train models
     model_results, X_test, y_test, target_encoder = train_models(X, y, task)
     best = next((m for m in model_results if m.is_best), None)
+    if best is None:
+        leakage_warnings.append(
+            "No model could be trained on this target with these features.")
 
     # Feature importance
     feat_importance = []
@@ -769,6 +859,7 @@ def run_ml_pipeline(
         preprocessor=None,
         label_encoders=label_encoders,
         target_encoder=target_encoder,
+        datetime_origins=datetime_origins,
         warnings=[task_reason] + leakage_warnings,
     )
 
