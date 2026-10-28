@@ -454,7 +454,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             rows = []
             for item in items[:max_items]:
                 marker = Paragraph(
-                    '<font color="{}">■</font>'.format(bullet_hex),
+                    '<font color="{}">•</font>'.format(bullet_hex),
                     ParagraphStyle("bm", fontName=_BF, fontSize=7.5, leading=13))
                 text = Paragraph(_clean_text(item),
                                  ParagraphStyle("bt", fontName=_BF, fontSize=9.5,
@@ -681,19 +681,19 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         # Status
         miss_f = sc.isna().mean()*100
         if miss_f > 20:
-            status = "⚠ HIGH MISSING"
+            status = "HIGH MISSING"
             st_c   = HexColor("#DC2626")
         elif miss_f > 5:
-            status = "△ REVIEW"
+            status = "REVIEW"
             st_c   = HexColor("#D97706")
         elif sc.nunique() == 1:
-            status = "⚠ CONSTANT"
+            status = "CONSTANT"
             st_c   = HexColor("#DC2626")
         elif sc.nunique() == len(df):
-            status = "ℹ ID COL"
+            status = "ID COLUMN"
             st_c   = HexColor("#2563EB")
         else:
-            status = "✓ OK"
+            status = "OK"
             st_c   = HexColor("#059669")
 
         rows2.append([

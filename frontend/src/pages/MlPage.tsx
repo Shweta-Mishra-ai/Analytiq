@@ -63,6 +63,8 @@ interface MlReport {
   feature_importance: FeatureImp[]
   warnings: string[]
   insights: string[]
+  /** Set when the best model is no better than a trivial guess. */
+  no_signal?: string
   feature_inputs?: FeatureInput[]
 }
 
@@ -162,6 +164,9 @@ function WhatIfPanel({ ds, report }: { ds: string; report: MlReport }) {
       )}
       {result && (
         <div className="mt-4 rounded-lg border border-edge bg-panel2 p-4" data-testid="what-if-result">
+          {report.no_signal && (
+            <p className="mb-2 text-xs text-amber">⚠ {report.no_signal}</p>
+          )}
           {report.task === 'classification' ? (
             <>
               <div className="text-xs text-mute uppercase">Predicted {report.target_col}</div>
@@ -353,7 +358,12 @@ export default function MlPage() {
           </Panel>
 
           <Panel title="What drives the prediction">
-            <div className="space-y-1.5">
+            {report.no_signal && (
+              <p className="mb-3 rounded-lg border border-amber/40 bg-amber/5 px-4 py-3 text-sm text-ink">
+                ⚠ {report.no_signal}
+              </p>
+            )}
+            <div className={`space-y-1.5 ${report.no_signal ? 'opacity-50' : ''}`}>
               {report.feature_importance.slice(0, 12).map((f) => (
                 <div key={f.feature} className="flex items-center gap-3 text-xs">
                   <span className="w-40 truncate font-semibold text-ink">{f.feature}</span>

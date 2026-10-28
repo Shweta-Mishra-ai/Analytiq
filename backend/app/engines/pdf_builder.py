@@ -320,7 +320,7 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     cv.roundRect(20*mm, H - 60*mm, 85*mm, 11*mm, 3, fill=1, stroke=0)
     cv.setFillColor(HexColor("#FFFFFF"))
     cv.setFont(FONT_BOLD, 8)
-    cv.drawString(25*mm, H - 56*mm, "◆  " + domain_lbl)
+    cv.drawString(25*mm, H - 56*mm, domain_lbl)
 
     # Title (word wrap at ~28 chars)
     words, lines, line = title.split(), [], ""
@@ -1167,7 +1167,7 @@ def _dataset_overview(story, s, T, df, profile, CW):
                 sk = float(df[col].skew())
                 if abs(sk) > 1.0:
                     story.append(Paragraph(
-                        "★ {} is heavily skewed (skew={:.2f}) — "
+                        "• {} is heavily skewed (skew={:.2f}) — "
                         "use median not mean for reporting.".format(col, sk),
                         s["note"]))
             except Exception:
@@ -1185,7 +1185,7 @@ def _stats_section(story, s, T, stats_report, CW):
 
     # Correlation honest-warning box
     warn_t = Table([[Paragraph(
-        "<b>⚠ Analyst Note:</b> "
+        "<b>Analyst note:</b> "
         "Correlation r does NOT mean 'Variable A changes Variable B by r%.' "
         "That is a dangerous misread. r = -0.35 means the two variables share "
         "12.3% of their variance (r² = 0.123). Association only — "
@@ -1277,6 +1277,52 @@ def _bi_section(story, s, T, bi_report, CW):
             story.append(Paragraph("• " + str(ins), s["bl"]))
 
 
+def _ml_section(story, s, T, ml_report, CW):
+    """The model the user last trained on this dataset.
+
+    The Reports page has always offered "ML results (if trained)"; the
+    report was passed in and never written, so the box did nothing.
+    """
+    best = getattr(ml_report, "best_model", None)
+    if best is None:
+        return
+    target = ml_report.target_col
+    _sec(story, s, T, "Predictive Model",
+         "What the best model trained on '{}' can and cannot tell you".format(target))
+
+    if ml_report.task == "regression":
+        score = "R² {:.2f} on held-out rows".format(best.test_score)
+        if best.rmse is not None:
+            score += " · typical error ±{:,.2f}".format(best.rmse)
+    else:
+        score = "{:.1f}% accuracy on held-out rows".format(best.test_score * 100)
+    _narrative_box(story, s, T, _clean("{} predicting '{}' from {} column(s), {:,} rows: {}.".format(
+        best.name, target, ml_report.n_features, ml_report.n_rows_used, score)))
+
+    note = getattr(ml_report, "no_signal", "")
+    for line in ml_report.insights[:4]:
+        story.append(Paragraph("• " + _clean(str(line)), s["bl"]))
+
+    imps = ml_report.feature_importance[:6]
+    if imps and not note:
+        story.append(Spacer(1, 2*mm))
+        story.append(Paragraph("What the model relies on", s["h3"]))
+        _gtable(story, T, ["Column", "Share of the model", "Direction"],
+                [[_clean(f.feature), "{:.0f}%".format(f.importance * 100), f.direction]
+                 for f in imps],
+                [CW * x for x in (0.50, 0.25, 0.25)])
+        story.append(Paragraph(
+            "Reliance is an association the model found, not proof that "
+            "changing a column would change '{}'.".format(_clean(target)), s["bl"]))
+    elif note:
+        # No ranking: it would only order noise.
+        story.append(Spacer(1, 2*mm))
+        _narrative_box(story, s, T, _clean(note))
+
+    for w in [w for w in ml_report.warnings if w][:3]:
+        story.append(Paragraph("<b>Note:</b> " + _clean(str(w)), s["bl"]))
+
+
 # ══════════════════════════════════════════════════════════
 #  CHART PAGE
 # ══════════════════════════════════════════════════════════
@@ -1301,7 +1347,12 @@ def _chart_page(story, s, T, img_bytes, title, narrative, num, CW):
 
 def _recommendations(story, s, T, actions, CW):
     _sec(story, s, T, "Recommendations & Action Plan",
-         "Prioritised by urgency — act on CRITICAL items first")
+         "Follow-ups this data supports — confirm each before acting on it")
+    if not actions:
+        _narrative_box(story, s, T,
+                       "The data did not point to a specific action beyond the findings "
+                       "above. Columns such as targets, owners or categories allow more "
+                       "specific recommendations.")
 
     pri_map = {
         "CRITICAL":   (T["negative"],  T["critical_bg"]),
@@ -1311,14 +1362,16 @@ def _recommendations(story, s, T, actions, CW):
 
     for action in actions[:9]:
         action_str = str(action)
-        priority   = "LONG TERM"
-        for p in ("CRITICAL", "SHORT TERM"):
-            if p in action_str.upper():
+        # Only an explicit label sets urgency; matching the words anywhere
+        # in the text tagged "...a critical supplier..." as CRITICAL.
+        priority   = "NEXT STEP"
+        for p in ("CRITICAL", "SHORT TERM", "LONG TERM"):
+            if action_str.upper().startswith("[" + p + "]"):
                 priority = p
                 break
 
         col, bg = pri_map.get(priority, (T["accent"], T["bg_light"]))
-        text    = (action_str
+        text    = _clean(action_str
                    .replace("[CRITICAL] ", "")
                    .replace("[SHORT TERM] ", "")
                    .replace("[LONG TERM] ", "")
@@ -1603,6 +1656,8 @@ def build_pdf(
         _add_toc("Statistical Analysis")
     if bi_report:
         _add_toc("Business Intelligence")
+    if getattr(ml_report, "best_model", None) is not None:
+        _add_toc("Predictive Model")
     for i, (t, _, _) in enumerate(chart_data, 1):
         _add_toc("Chart {}: {}".format(i, t[:28]))
     _add_toc("Recommendations & Action Plan")
@@ -1644,6 +1699,10 @@ def build_pdf(
 
     if bi_report:
         _bi_section(story, s, T, bi_report, CW)
+        story.append(PageBreak())
+
+    if getattr(ml_report, "best_model", None) is not None:
+        _ml_section(story, s, T, ml_report, CW)
         story.append(PageBreak())
 
     for i, (title, img_bytes, narrative) in enumerate(chart_data, 1):

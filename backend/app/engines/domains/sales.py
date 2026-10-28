@@ -98,6 +98,7 @@ def _sales_cycle_insights(df: pd.DataFrame, insights: List, findings: List,
 def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     findings, risks, opps, actions = [], [], [], []
     insights = []
+    revenue_concentrated = False
 
     rev_col    = next((c for c in df.columns
                        if any(k in c.lower() for k in ["revenue","sales","amount","total"])
@@ -123,39 +124,52 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     if rev_col and rev_col in stats:
         st   = stats[rev_col]
         skew = st.get("skew",0)
-        cv   = st.get("cv",0)
         mean = st.get("mean",0)
         med  = st.get("median",0)
+
+        # Concentration is measured, not read off the skew: a skewed column
+        # can still have revenue spread over many transactions. This said
+        # "few large deals ... (Pareto effect)" at skew 1.3 for data whose
+        # top fifth of transactions held well under half the revenue.
+        pos = pd.to_numeric(df[rev_col], errors="coerce").dropna()
+        pos = pos[pos > 0].sort_values(ascending=False)
+        top_n = max(1, int(round(len(pos) * 0.2)))
+        top_share = float(pos.iloc[:top_n].sum() / pos.sum() * 100) if pos.sum() > 0 else 0.0
+        concentrated = top_share >= 60
+        revenue_concentrated = concentrated
 
         insights.append(build_insight(
             title="Revenue Overview: Mean {:.0f} | Median {:.0f} | Range {:.0f}-{:.0f}".format(
                 mean, med, st["min"], st["max"]),
-            problem="Revenue distribution analysis" + (" — high variability detected" if cv>0.5 else ""),
-            cause="Skewness={:.1f} indicates {}".format(
-                skew, "few large deals driving disproportionate revenue (Pareto effect)" if skew>1
-                else "revenue is relatively evenly distributed"),
-            evidence="Mean={:.0f}, Median={:.0f} ({:.0f}% difference). "
+            problem="Revenue distribution" + (
+                " — concentrated in the largest transactions" if concentrated else
+                " — skewed, but not concentrated" if skew > 1 else ""),
+            cause="The top 20% of transactions bring {:.0f}% of revenue{}.".format(
+                top_share,
+                " — a minority of large transactions carries most of it" if concentrated
+                else "; large transactions lift the mean above the median, but revenue "
+                     "is spread across many of them"),
+            evidence="Mean={:.0f}, Median={:.0f} ({:.0f}% difference). Skewness={:.1f}. "
                      "Top 25% of transactions above {:.0f}.".format(
-                mean, med, abs(mean-med)/max(med,1)*100, st["q3"]),
-            action="1. Identify top 20% revenue drivers — protect and replicate  "
-                   "2. Analyze bottom 20% — cut or transform low performers  "
-                   "3. Revenue concentration risk assessment",
-            impact=("High positive skew means a few large deals dominate revenue in "
-                    "this dataset — concentration risk worth quantifying on the Pareto "
-                    "page before relying on any single account." if skew > 1 else
-                    "Revenue is relatively evenly spread here — low single-account "
-                    "concentration risk."),
-            severity="info" if cv<0.5 else "warning",
+                mean, med, abs(mean-med)/max(med,1)*100, skew, st["q3"]),
+            action=("1. Find which customers or products the largest transactions belong to  "
+                    "2. Check how exposed revenue is if they stop  "
+                    "3. Report the median beside the mean" if concentrated else
+                    "Report the median ({:,.0f}) beside the mean — the mean is pulled up by "
+                    "large transactions.".format(med)),
+            impact=("Losing a handful of large transactions would move total revenue "
+                    "materially — quantify that exposure before planning on it."
+                    if concentrated else
+                    "No single-deal concentration risk: revenue is spread across many "
+                    "transactions."),
+            severity="warning" if concentrated else "info",
             category="revenue"
         ))
 
-        if skew > 1.5:
-            opps.append(
-                "Revenue is right-skewed — small number of high-value transactions. "
-                "Focus on replicating conditions for top transactions.")
+        if concentrated:
             findings.append(
-                "Revenue Pareto effect detected: median {:.0f} vs mean {:.0f} — "
-                "few large deals driving disproportionate revenue".format(med, mean))
+                "Revenue is concentrated: the top 20% of transactions bring {:.0f}% of "
+                "it (median {:.0f} vs mean {:.0f}).".format(top_share, med, mean))
 
     # ── Target/Quota Analysis ──────────────────────────────
     if target_col and rev_col and target_col in stats and rev_col in stats:
@@ -362,13 +376,31 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     # ── Outcome-level analysis: rep win rates, cycle by outcome ─
     run_sales_performance(df, insights, findings, risks, opps)
 
-    actions.extend([
-        "Weekly revenue vs target review — per rep and per region",
-        "Identify top 3 deals at risk in pipeline — intervention strategy",
-        "Replicate top performer playbook — what do they do differently?",
-        "Revenue concentration audit — reduce dependency on single customer/product",
-        "Quarterly pricing review — ensure margins are healthy per product category",
-    ])
+    # Only actions this data can support: these were a fixed list, so a
+    # transactions file with no pipeline, rep or target columns was told to
+    # "identify top 3 deals at risk in pipeline" — at the top, as CRITICAL.
+    per = [c for c in (rep_col, region_col) if c]
+    if target_col:
+        actions.append("Review revenue against '{}' every week{}".format(
+            target_col, " — per " + " and per ".join("'{}'".format(c) for c in per) if per else ""))
+    stage_col = next((c for c in df.columns
+                      if any(k in c.lower() for k in ("stage", "pipeline", "deal_status",
+                                                      "opportunity"))), None)
+    if stage_col:
+        actions.append("Identify the open deals in '{}' most at risk and agree an "
+                       "intervention for each".format(stage_col))
+    if any(getattr(i, "category", "") == "rep_performance" for i in insights):
+        actions.append("Replicate the top performers' approach — find out what they do "
+                       "differently before coaching others")
+    if revenue_concentrated:
+        actions.append("Revenue concentration audit — reduce dependency on the largest "
+                       "customers or products")
+    if profit_col and product_col:
+        actions.append("Quarterly pricing review — check '{}' per '{}'".format(
+            profit_col, product_col))
+    if not actions and (region_col or product_col):
+        actions.append("Track revenue per '{}' monthly and look into any group that moves "
+                       "out of its usual range".format(region_col or product_col))
 
     return {"findings":findings, "risks":risks, "opportunities":opps,
             "actions":actions, "insights":insights}

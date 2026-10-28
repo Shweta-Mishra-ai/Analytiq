@@ -416,9 +416,10 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
 
     risks_flat    = raw["risks"][:6]
     opps_flat     = raw["opportunities"][:4]
-    actions_flat  = ["[{}] {}".format(
-        "CRITICAL" if i<2 else "SHORT TERM" if i<4 else "LONG TERM", a)
-        for i, a in enumerate(raw["actions"][:8])]
+    # No urgency label: it was assigned by list position — the first two
+    # actions were "CRITICAL" whatever they were — and an action carries no
+    # severity of its own to derive one from.
+    actions_flat  = list(raw["actions"][:8])
 
     # Executive summary — a synthesised narrative that leads with the single
     # most important claim, not a count of how many issues were found. The

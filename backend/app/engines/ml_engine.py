@@ -98,6 +98,9 @@ class MLReport:
     feature_inputs:     List[Dict] = field(default_factory=list)
     warnings:           List[str] = field(default_factory=list)
     insights:           List[str] = field(default_factory=list)
+    # Set when the best model is no better than a trivial guess. Feature
+    # importances always sum to 100%, so they still rank — noise.
+    no_signal:          str = ""
 
 
 # ══════════════════════════════════════════════════════════
@@ -683,6 +686,30 @@ def predict_what_if(
 #  INSIGHTS GENERATOR
 # ══════════════════════════════════════════════════════════
 
+def _no_signal_note(report: MLReport) -> str:
+    """Explain, when it applies, that the model has nothing to teach."""
+    best = report.best_model
+    if best is None:
+        return ""
+    if report.task == "regression":
+        if best.test_score >= 0.05:
+            return ""
+        return ("This model predicts '{}' barely better than always guessing its "
+                "average (R²={:.2f} on held-out rows). Its feature ranking reflects "
+                "noise, not influence, and what-if predictions stay near the average "
+                "whatever you change.".format(report.target_col, best.test_score))
+    balance = report.class_balance or {}
+    if not balance:
+        return ""
+    label, baseline = max(balance.items(), key=lambda kv: kv[1])
+    if best.test_score > baseline + 0.01:
+        return ""
+    return ("This model is no better than answering '{}' for every row ({:.1f}% "
+            "accuracy against {:.1f}%). Its feature ranking reflects noise, not "
+            "influence, and what-if predictions should not be relied on.".format(
+                label, best.test_score * 100, baseline * 100))
+
+
 def _generate_insights(report: MLReport) -> List[str]:
     insights = []
     best = report.best_model
@@ -748,8 +775,8 @@ def _generate_insights(report: MLReport) -> List[str]:
             "Mild overfitting (gap={:.2f}). "
             "Consider regularization or more training data.".format(best.overfit_gap))
 
-    # Top feature
-    if report.feature_importance:
+    # Top feature — meaningless when the model has no predictive power.
+    if report.feature_importance and not report.no_signal:
         top = report.feature_importance[0]
         insights.append(
             "Most important predictor: '{}' ({:.0f}% contribution). {}".format(
@@ -911,5 +938,11 @@ def run_ml_pipeline(
             "information that would not be available before the outcome "
             "(target leakage).".format(best.test_score))
 
+    report.no_signal = _no_signal_note(report)
+    if report.no_signal:
+        for f in report.feature_importance:
+            f.explanation = ("{:.0f}% of what the model used — not evidence of an "
+                             "effect, since the model does not predict.".format(
+                                 f.importance * 100))
     report.insights = _generate_insights(report)
     return report
