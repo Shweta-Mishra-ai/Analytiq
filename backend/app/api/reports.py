@@ -48,9 +48,41 @@ def _df_or_404(owner: str, ds_id: str):
     return df
 
 
+_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _neutralise_formulas(df):
+    """A copy of `df` whose text cells cannot run as spreadsheet formulas.
+
+    The exported file is opened in Excel or Sheets, which evaluate any cell
+    beginning with = + - or @ — so an uploaded value like
+    =HYPERLINK("http://…") becomes a live link or command in the recipient's
+    spreadsheet. A leading apostrophe is the standard defence: the
+    spreadsheet shows the text as typed and runs nothing. Only text cells
+    are touched, and a value that is just a number ("-5") is left alone.
+    """
+    import pandas as pd
+    from app.services.dtypes import is_text_dtype
+
+    def fix(v):
+        if isinstance(v, str) and v.startswith(_FORMULA_LEADS):
+            try:
+                float(v)
+                return v
+            except ValueError:
+                return "'" + v
+        return v
+
+    out = df.copy()
+    for col in out.columns:
+        if is_text_dtype(out[col]) or pd.api.types.is_object_dtype(out[col]):
+            out[col] = out[col].map(fix)
+    return out
+
+
 @router.get("/{ds_id}/csv")
 def export_csv(ds_id: str, owner: str = Depends(current_owner)):
-    df = _df_or_404(owner, ds_id)
+    df = _neutralise_formulas(_df_or_404(owner, ds_id))
     buf = io.BytesIO(df.to_csv(index=False).encode("utf-8-sig"))
     return StreamingResponse(buf, media_type="text/csv", headers={
         "Content-Disposition": "attachment; filename=analytiq_cleaned_data.csv"})
@@ -61,7 +93,10 @@ def export_excel(ds_id: str, owner: str = Depends(current_owner)):
     df = _df_or_404(owner, ds_id)
     buf = io.BytesIO()
     import pandas as pd
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+    # Strings are written as text. xlsxwriter's default turns any value
+    # beginning with "=" into a live formula in the delivered workbook.
+    with pd.ExcelWriter(buf, engine="xlsxwriter", engine_kwargs={
+            "options": {"strings_to_formulas": False}}) as writer:
         df.to_excel(writer, sheet_name="Data", index=False)
         num = df.select_dtypes(include="number")
         if not num.empty:

@@ -110,7 +110,7 @@ def extract_table_from_image(filename: str, data: bytes) -> tuple[pd.DataFrame, 
 
     try:
         raw = gemini_client.generate_text(
-            [EXTRACT_PROMPT, img], json_mode=True, temperature=0.0,
+            [EXTRACT_PROMPT, img], json_mode=True,
             timeout_sec=60)
     except Exception as e:
         logger.warning(f"Gemini extraction call failed: {e}")

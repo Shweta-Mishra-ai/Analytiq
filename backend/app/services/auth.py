@@ -28,7 +28,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app.config import config
-from app.services.tokens import verify_token
+from app.services.tokens import verify_token_claims
 from app.services.user_store import user_store
 
 logger = logging.getLogger(__name__)
@@ -66,8 +66,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.state.is_admin = True
                 return await call_next(request)
             # also allow a regular admin-flagged user account
-            username = verify_token(token) if token else None
-            user = user_store.get(username) if username else None
+            user = _user_for_token(token)
             if user and user.is_admin:
                 request.state.username = user.username
                 request.state.is_admin = True
@@ -75,13 +74,31 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 {"detail": "Admin key required"}, status_code=401)
 
-        username = verify_token(token) if token else None
-        if not username or not user_store.exists(username):
+        user = _user_for_token(token)
+        if user is None:
             return JSONResponse(
                 {"detail": "Not authenticated"}, status_code=401)
-        request.state.username = username
+        request.state.username = user.username
         request.state.is_admin = False
         return await call_next(request)
+
+
+def _user_for_token(token: str):
+    """The account a bearer token speaks for, or None.
+
+    A token names a username, and usernames can be reused: offboard
+    "acme", onboard a new client as "acme", and every token the old client
+    still held used to open the new client's data for up to
+    TOKEN_TTL_DAYS. A token issued before the account was created is
+    therefore not that account's token.
+    """
+    claims = verify_token_claims(token) if token else None
+    if not claims:
+        return None
+    user = user_store.get(claims["u"])
+    if user is None or claims["iat"] < user.created_at:
+        return None
+    return user
 
 
 class LoginThrottle:

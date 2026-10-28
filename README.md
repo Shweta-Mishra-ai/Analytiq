@@ -105,7 +105,9 @@ Deployment ─ Docker · Render / Railway
 # Navigate to the backend directory
 cd backend
 
-# Install dependencies
+# Install dependencies — exact, tested versions (requirements.txt is a
+# lockfile compiled from requirements.in; edit the .in file and recompile:
+#   uv pip compile requirements.in --python-version 3.11 -o requirements.txt)
 pip install -r requirements.txt
 
 # Create environment configuration

@@ -189,7 +189,7 @@ class LLMClient:
         try:
             return gemini_client.generate_text(
                 [user], system=system, max_output_tokens=max_tokens,
-                temperature=0.2, timeout_sec=60)
+                timeout_sec=60)
         except Exception as e:
             logger.warning(f"Gemini call failed: {e}")
             return None

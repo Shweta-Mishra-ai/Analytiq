@@ -112,7 +112,7 @@ def _gemini_generate(system: str, user: str, max_tokens: int = 2048) -> Optional
         from app.ai import gemini_client
         return gemini_client.generate_text(
             [user], system=system, max_output_tokens=max_tokens,
-            temperature=0.2, timeout_sec=60).strip() or None
+            timeout_sec=60).strip() or None
     except Exception as e:
         logger.warning(f"Gemini generation failed: {e}")
         return None

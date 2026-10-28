@@ -202,3 +202,41 @@ def test_rfm_cache_distinguishes_price_and_quantity_columns(client, transactions
     b = client.get(base + "&price_col=price_b")
     assert a.status_code == 200 and b.status_code == 200, (a.text, b.text)
     assert a.json() != b.json()
+
+
+# ── token revocation by account re-creation ───────────────
+
+def test_a_recreated_account_does_not_honour_the_old_accounts_tokens(client, monkeypatch):
+    # Offboard "reuse_me", onboard a different client under the same name:
+    # the first client's still-unexpired token must not open the second's data.
+    import time
+    from app.config import config
+    from app.services.tokens import issue_token
+    from app.services.user_store import user_store
+    monkeypatch.setattr(config, "app_admin_key", "revoke-test-key")
+    user_store.create("reuse_me", "password123")
+    try:
+        old = issue_token("reuse_me")
+        assert client.get("/api/datasets", headers={"Authorization": f"Bearer {old}"}).status_code == 200
+        user_store.delete("reuse_me")
+        time.sleep(0.01)
+        user_store.create("reuse_me", "different-pass")
+        assert client.get("/api/datasets", headers={"Authorization": f"Bearer {old}"}).status_code == 401
+        new = client.post("/api/auth/login", json={"username": "reuse_me", "password": "different-pass"})
+        assert new.status_code == 200
+        assert client.get("/api/datasets",
+                          headers={"Authorization": f"Bearer {new.json()['token']}"}).status_code == 200
+    finally:
+        user_store.delete("reuse_me")
+
+
+def test_tokens_issued_before_iat_existed_still_verify(monkeypatch):
+    # Sessions issued by the previous version carry only u and exp.
+    import base64, hashlib, hmac, json, time
+    from app.services import tokens
+    payload = base64.urlsafe_b64encode(json.dumps(
+        {"u": "legacy", "exp": time.time() + 3600}).encode()).rstrip(b"=").decode()
+    sig = hmac.new(tokens._get_secret(), payload.encode(), hashlib.sha256).hexdigest()
+    claims = tokens.verify_token_claims(f"{payload}.{sig}")
+    assert claims and claims["u"] == "legacy"
+    assert claims["iat"] < time.time()
