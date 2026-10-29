@@ -41,7 +41,9 @@ et-xmlfile==2.0.0
 fastapi==0.162.0
     # via -r requirements.in
 fonttools==4.68.0
-    # via matplotlib
+    # via
+    #   -r requirements.in
+    #   matplotlib
 formulaic==1.2.2
     # via statsmodels
 google-auth==2.62.0
