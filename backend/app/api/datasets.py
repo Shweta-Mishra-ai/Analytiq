@@ -7,8 +7,11 @@ from __future__ import annotations
 import logging
 
 import io
+from typing import Dict
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+
+from pydantic import BaseModel
 
 from app.config import config
 from app.engines.data_cleaner import (auto_clean, get_cleaning_summary,
@@ -265,3 +268,74 @@ def reset(ds_id: str, owner: str = Depends(current_owner)):
     if df is None:
         raise HTTPException(404, "Dataset not found")
     return {"preview": df_records(df, 100), "meta": to_jsonable(store.get_meta(owner, ds_id))}
+
+
+# ── column roles ──────────────────────────────────────────
+
+class ColumnRole(BaseModel):
+    role: str
+    direction: int = 0
+
+
+class ColumnRolesRequest(BaseModel):
+    columns: Dict[str, ColumnRole]
+
+
+def _examples(s, n: int = 3) -> list:
+    vals = s.dropna().astype(str).str.strip()
+    return [v[:40] for v in vals[vals.ne("")].unique()[:n]]
+
+
+@router.get("/{ds_id}/columns")
+def get_columns(ds_id: str, owner: str = Depends(current_owner)):
+    """What each column is taken to be, and whether the user confirmed it."""
+    from app.services import column_roles
+    df = store.get_df(owner, ds_id)
+    if df is None:
+        raise HTTPException(404, "Dataset not found")
+    confirmed = column_roles.confirmed(df)
+    detected = column_roles.detect(df)
+    rows = []
+    for col in df.columns:
+        name = str(col)
+        spec = confirmed.get(name) or detected[name]
+        s = df[col]
+        rows.append({
+            "name": name,
+            "role": spec["role"],
+            "direction": int(spec.get("direction") or 0),
+            "confirmed": name in confirmed,
+            "dtype": str(s.dtype),
+            "unique": int(s.nunique(dropna=True)),
+            "missing_pct": round(float(s.isna().mean()) * 100, 1),
+            "examples": _examples(s),
+        })
+    return {"columns": rows, "confirmed": bool(confirmed),
+            "roles": list(column_roles.ROLES)}
+
+
+@router.post("/{ds_id}/columns")
+def set_columns(ds_id: str, req: ColumnRolesRequest,
+                owner: str = Depends(current_owner)):
+    """Confirm the role of each column; every analysis uses them from now on."""
+    from app.services.column_roles import DIRECTIONS, ROLES, RoleError
+    df = store.get_df(owner, ds_id)
+    if df is None:
+        raise HTTPException(404, "Dataset not found")
+    names = {str(c) for c in df.columns}
+    unknown = sorted(set(req.columns) - names)
+    if unknown:
+        raise HTTPException(422, "No column named {} in this dataset.".format(
+            ", ".join("'{}'".format(u) for u in unknown[:5])))
+    for name, spec in req.columns.items():
+        if spec.role not in ROLES:
+            raise HTTPException(422, "'{}' is not a role. Choose one of: {}.".format(
+                spec.role, ", ".join(ROLES)))
+        if spec.direction not in DIRECTIONS:
+            raise HTTPException(422, "Direction for '{}' must be 1, -1 or 0.".format(name))
+    try:
+        notes = store.set_column_roles(
+            owner, ds_id, {k: v.model_dump() for k, v in req.columns.items()})
+    except RoleError as e:
+        raise HTTPException(422, str(e))
+    return {"saved": len(req.columns), "notes": notes}

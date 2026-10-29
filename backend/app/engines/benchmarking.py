@@ -58,8 +58,15 @@ def _matches(words: List[str], keywords) -> bool:
     return False
 
 
-def metric_direction(col_name: str) -> int:
-    """+1 higher-is-better, -1 lower-is-better, 0 unknown (skip)."""
+def metric_direction(col_name: str, series=None) -> int:
+    """+1 higher-is-better, -1 lower-is-better, 0 unknown (skip).
+
+    Read from the name unless the user confirmed the column's direction;
+    pass the column's data so a confirmed role can be seen."""
+    from app.services.column_roles import role_of
+    confirmed = role_of(col_name, series)
+    if confirmed:
+        return int(confirmed.get("direction") or 0) if confirmed.get("role") == "measure" else 0
     import re
     spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(col_name))
     words = [w for w in re.split(r"[^a-z0-9]+", spaced.lower()) if w]
@@ -108,7 +115,7 @@ def benchmark_metric(
     series: pd.Series, name: str, target: Optional[float] = None
 ) -> Optional[BenchmarkContext]:
     """Benchmark one metric vs target (if given) or its own top quartile."""
-    direction = metric_direction(name)
+    direction = metric_direction(name, series)
     if direction == 0:
         return None
     s = pd.to_numeric(series, errors="coerce").dropna()

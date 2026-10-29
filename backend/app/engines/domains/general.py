@@ -159,7 +159,7 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         # Which end is weak depends on the metric: the lowest-delay segment is
         # the strong one. Unknown direction gets neutral wording.
         from app.engines.benchmarking import metric_direction
-        direction = metric_direction(seg["num"])
+        direction = metric_direction(seg["num"], df[seg["num"]])
         if direction:
             weak, strong = ((seg["lo_seg"], seg["hi_seg"]) if direction > 0
                             else (seg["hi_seg"], seg["lo_seg"]))

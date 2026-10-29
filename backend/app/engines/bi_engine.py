@@ -196,7 +196,7 @@ def analyze_root_cause(
     # or absences the worst rows are the HIGH ones; for salary or age no
     # quarter is "worse", so it is described, not judged.
     from app.engines.benchmarking import metric_direction
-    direction = metric_direction(target_col)
+    direction = metric_direction(target_col, df[target_col])
     s         = df[target_col].dropna()
     if direction < 0:
         threshold = float(s.quantile(1 - threshold_pct / 100))
@@ -722,7 +722,7 @@ def analyze_segment_health(
                 continue
             # "Healthy" needs a direction: above-average absences or costs
             # used to raise a segment's health score.
-            direction = metric_direction(col)
+            direction = metric_direction(col, df[col])
             if direction == 0:
                 continue
             seg_mean = float(seg_df[col].mean())
@@ -909,7 +909,7 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
     # 2. Root cause — metrics with a known good direction first: "what
     #    separates low satisfaction" is a question; "the bottom quarter of
     #    age" rarely is.
-    targets = sorted(num_cols, key=lambda c: metric_direction(c) == 0)
+    targets = sorted(num_cols, key=lambda c: metric_direction(c, df[c]) == 0)
     for col in targets[:2]:
         try:
             report.root_causes.append(

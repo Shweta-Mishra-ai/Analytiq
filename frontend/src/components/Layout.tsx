@@ -3,6 +3,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 import {
   Upload,
   ShieldCheck,
+  Columns3,
   LayoutDashboard,
   FlaskConical,
   FlaskRound,
@@ -29,6 +30,7 @@ const navGroups = [
     label: 'Data',
     items: [
       { to: '/', label: 'Upload', icon: Upload },
+      { to: '/columns', label: 'Columns', icon: Columns3 },
       { to: '/quality', label: 'Data Quality', icon: ShieldCheck },
     ],
   },

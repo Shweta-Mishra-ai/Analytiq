@@ -57,7 +57,13 @@ def is_id_column(col: str, series=None) -> bool:
     excluded from correlation, benchmarking, Pareto, root-cause and predictive
     features — a 'Pareto of Response ID' is meaningless. Combines a name check
     (whole-word 'id'/'code'/'ref'…) with a value check (all-unique or a
-    monotonic 1-step sequence)."""
+    monotonic 1-step sequence).
+
+    A role the user confirmed for the column decides it outright."""
+    from app.services.column_roles import role_of
+    confirmed = role_of(col, series)
+    if confirmed:
+        return confirmed.get("role") == "identifier"
     import re as _re
     name = _re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', str(col)).lower()
     tokens = set(_re.split(r'[^a-z0-9]+', name))

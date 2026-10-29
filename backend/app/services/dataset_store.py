@@ -46,6 +46,8 @@ class DatasetMeta:
     owner: str = ""
     sheet_names: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
+    # What each column is, as the user confirmed it ({} until they do).
+    column_roles: dict = field(default_factory=dict)
 
 
 class DatasetStore:
@@ -168,7 +170,8 @@ class DatasetStore:
         with self._lock:
             self._save_df(owner, ds_id, "active.pkl", df)
             if mkey in self._mem:
-                self._mem[mkey]["active"] = df
+                self._mem[mkey]["active"] = self._with_roles(
+                    df, self.get_meta(owner, ds_id))
             self._bump_revision(owner, ds_id)
             meta = self.get_meta(owner, ds_id)
             if meta:
@@ -185,6 +188,43 @@ class DatasetStore:
             return None
         self.update_active(owner, ds_id, raw.copy())
         return raw
+
+    # ── column roles ─────────────────────────────────────
+    @staticmethod
+    def _with_roles(df: Optional[pd.DataFrame], meta) -> Optional[pd.DataFrame]:
+        """The frame as analysed: confirmed roles applied on every load, so
+        cleaning, undo and reset keep them."""
+        roles = getattr(meta, "column_roles", None) or {}
+        if df is None or not roles:
+            return df
+        from app.services.column_roles import apply
+        return apply(df, roles, strict=False)[0]
+
+    def set_column_roles(self, owner: str, ds_id: str, roles: dict) -> list:
+        """Confirm what each column is. Raises column_roles.RoleError when the
+        data cannot support a role; returns notes for the user otherwise."""
+        from app.services.column_roles import apply
+        with self._lock:
+            meta = self.get_meta(owner, ds_id)
+            if meta is None:
+                raise KeyError(ds_id)
+            # Start from the stored data, not the frame with the previous
+            # roles applied: a column changed back from date to text must
+            # not stay converted.
+            with open(self._path(owner, ds_id, "active.pkl"), "rb") as f:
+                stored = pickle.load(f)
+            applied, notes = apply(stored, roles, strict=True)
+            meta.column_roles = dict(applied.attrs.get("column_roles", {}))
+            with open(self._path(owner, ds_id, "meta.pkl"), "wb") as f:
+                pickle.dump(meta, f)
+            mkey = self._mkey(owner, ds_id)
+            if mkey in self._mem:
+                self._mem[mkey]["meta"] = meta
+                self._mem[mkey]["active"] = applied
+            # Every analysis depends on the roles, so none of the cached
+            # results still holds.
+            self._bump_revision(owner, ds_id)
+        return notes
 
     # ── analysis caches (revision-invalidated) ───────────
     #
@@ -278,6 +318,11 @@ class DatasetStore:
 
     # ── internals ────────────────────────────────────────
     def _save_df(self, owner: str, ds_id: str, name: str, df: pd.DataFrame) -> None:
+        # Roles live in the metadata and are applied on load; the stored
+        # frame stays free of them so a stale copy can never win.
+        if "column_roles" in df.attrs:
+            df = df.copy(deep=False)
+            df.attrs = {k: v for k, v in df.attrs.items() if k != "column_roles"}
         with open(self._path(owner, ds_id, name), "wb") as f:
             pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -298,9 +343,12 @@ class DatasetStore:
             with open(op, "rb") as f:
                 other_df = pickle.load(f)
         meta = self.get_meta(owner, ds_id)
+        active = df if which == "active" else other_df
+        raw = other_df if which == "active" else df
+        active = self._with_roles(active, meta)
         with self._lock:
-            self._touch_mem(owner, ds_id, **{which: df, other: other_df, "meta": meta})
-        return df
+            self._touch_mem(owner, ds_id, active=active, raw=raw, meta=meta)
+        return active if which == "active" else raw
 
     def _touch_mem(self, owner: str, ds_id: str, **entry) -> None:
         mkey = self._mkey(owner, ds_id)

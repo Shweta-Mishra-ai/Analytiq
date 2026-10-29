@@ -188,7 +188,10 @@ export default function UploadPage() {
                   · {dataset.size_mb} MB
                 </div>
               </div>
-              <Btn onClick={() => nav('/quality')}>Check quality →</Btn>
+              <div className="flex shrink-0 gap-2">
+                <Btn variant="subtle" onClick={() => nav('/columns')}>Check columns</Btn>
+                <Btn onClick={() => nav('/quality')}>Check quality →</Btn>
+              </div>
             </div>
             {/* One per line. Extraction warnings say things like "the table
                 is cut off, so this is a portion of it" — run together with
