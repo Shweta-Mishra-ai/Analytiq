@@ -163,3 +163,57 @@ def test_rate_tile_builds_and_cross_filters(client, uploaded_dataset_id):
         "filters": [{"column": "department", "op": "eq", "value": "Sales"}]})
     assert filtered.status_code == 200
     assert len(filtered.json()["figure"]["data"][0]["x"]) == 1
+
+
+# ══════════════════════════════════════════════════════════
+#  Exports and report robustness
+# ══════════════════════════════════════════════════════════
+
+def test_excel_export_keeps_every_cell(client):
+    import io
+    df = pd.DataFrame({"a": [1.5, 2.0, 3.0], "t": ["=SUM(A1)", "x", "-5"],
+                       "d": pd.to_datetime(["2024-01-01", "2024-02-01", "2024-03-01"])})
+    ds = client.post("/api/datasets/upload", files={
+        "file": ("x.csv", io.BytesIO(df.to_csv(index=False).encode()), "text/csv")}
+    ).json()["meta"]["dataset_id"]
+    back = pd.read_excel(io.BytesIO(client.get(f"/api/reports/{ds}/excel").content))
+    assert back["t"].astype(str).tolist() == ["=SUM(A1)", "x", "-5"]   # text, not formulas
+    assert back["d"].notna().all()
+
+
+@pytest.mark.parametrize("kind", ["hr", "ratings"])
+def test_reports_survive_markup_in_names_and_values(client, kind):
+    import io
+    rng = np.random.default_rng(2)
+    n = 300
+    bad = ["<b>A&B", "</para>", "R&D <i>", "x < y > z", "<font color='red'>"]
+    if kind == "hr":
+        df = pd.DataFrame({"department <d>": rng.choice(bad, n), "salary & bonus": rng.normal(5e4, 9e3, n),
+                           "attrition": rng.choice(["Yes", "No"], n), "notes</b>": rng.choice(bad, n)})
+    else:
+        cat = rng.choice(bad, n)
+        df = pd.DataFrame({"product_id": [f"P{i}" for i in range(n)], "category": cat,
+                           "rating": np.where(cat == "R&D <i>", rng.uniform(1, 2.5, n), rng.uniform(2.5, 5, n)),
+                           "price": rng.gamma(2, 20, n)})
+    ds = client.post("/api/datasets/upload", files={
+        "file": ("a<&>.csv", io.BytesIO(df.to_csv(index=False).encode()), "text/csv")}
+    ).json()["meta"]["dataset_id"]
+    assert client.post(f"/api/reports/{ds}/pdf", json={}).status_code == 200
+    assert client.post(f"/api/reports/{ds}/health-pdf", json={}).status_code == 200
+
+
+def test_correlations_match_scipy_pair_by_pair():
+    from scipy import stats
+    from app.engines.domains.base import correlations
+    rng = np.random.default_rng(1)
+    n = 400
+    d = pd.DataFrame({f"c{i}": rng.normal(size=n) for i in range(6)})
+    d["c1"] = d["c0"] * 0.8 + rng.normal(size=n) * 0.5
+    d.loc[rng.random(n) < 0.2, "c3"] = np.nan
+    d["c4"] = d["c5"].round(0)                       # ties
+    got = {frozenset((x["col_a"], x["col_b"])): (x["r"], x["p"]) for x in correlations(d, 0.0)}
+    for i, a in enumerate(d.columns):
+        for b in d.columns[i + 1:]:
+            cm = d[[a, b]].dropna()
+            r, p = stats.spearmanr(cm[a], cm[b])
+            assert got[frozenset((a, b))] == pytest.approx((r, p), abs=1e-4)

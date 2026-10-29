@@ -281,9 +281,9 @@ def _sec(story: list, s: dict, T: dict, title: str, sub: str = ""):
     """A section heading; it is listed on the contents page and kept on
     the same page as the start of its section."""
     story.append(CondPageBreak(50*mm))
-    story.append(Paragraph(title, s["h2"]))
+    story.append(Paragraph(_clean(title), s["h2"]))
     if sub:
-        story.append(Paragraph(sub, s["sub"]))
+        story.append(Paragraph(_clean(sub), s["sub"]))
     rule = HRFlowable(width="100%", thickness=0.8, color=_c(T["accent"]),
                       spaceBefore=2, spaceAfter=6)
     rule.keepWithNext = 1
@@ -294,18 +294,18 @@ def _kpi_row(story: list, s: dict, T: dict, kpis: list, CW: float):
     cols = min(4, len(kpis))
     cw   = CW / cols
     vals = [Paragraph(
-                "<b>{}</b>".format(k.get("value", "")),
+                "<b>{}</b>".format(_clean(k.get("value", ""))),
                 ParagraphStyle("kv", fontName=FONT_BOLD, fontSize=17,
                                textColor=HexColor(k.get("color", T["primary"])),
                                alignment=TA_CENTER))
             for k in kpis[:cols]]
     lbls = [Paragraph(
-                k.get("label", ""),
+                _clean(k.get("label", "")),
                 ParagraphStyle("kl", fontName=FONT_BOLD, fontSize=7.5,
                                textColor=_c(T["text_muted"]), alignment=TA_CENTER))
             for k in kpis[:cols]]
     subs = [Paragraph(
-                k.get("sub", ""),
+                _clean(k.get("sub", "")),
                 ParagraphStyle("ks", fontName=FONT_REG, fontSize=7,
                                textColor=_c(T["text_muted"]), alignment=TA_CENTER))
             for k in kpis[:cols]]
@@ -325,7 +325,9 @@ def _kpi_row(story: list, s: dict, T: dict, kpis: list, CW: float):
 
 def _narrative_box(story: list, s: dict, T: dict, text: str):
     if not text: return
-    t = Table([[Paragraph(text, s["body"])]], colWidths=["100%"])
+    # Engine text quotes data values ("'R&D <i>' rates 0.65 below …"), so
+    # it is escaped here, where it is drawn, and nowhere earlier.
+    t = Table([[Paragraph(_clean(text), s["body"])]], colWidths=["100%"])
     t.setStyle(TableStyle([
         ("BACKGROUND",    (0,0), (-1,-1), _c(T["bg_light"])),
         ("LINEBEFORE",    (0,0), (0,-1),  4, _c(T["accent"])),
@@ -352,7 +354,7 @@ def _gtable(story: list, T: dict, headers: list,
         return bool(_FIGURE_RE.match(str(v).strip()))
 
     def _cell(v, header=False, right=False):
-        return Paragraph(str(v), ParagraphStyle(
+        return Paragraph(_clean(str(v)), ParagraphStyle(
             "th" if header else "td",
             fontName=FONT_BOLD if header else FONT_REG, fontSize=8.2,
             leading=11, textColor=HexColor("#FFFFFF") if header else _c(T["text"]),
@@ -385,7 +387,7 @@ def _gtable(story: list, T: dict, headers: list,
             for k, (fg, bg) in _sev.items():
                 if k in val:
                     body[i - 1][severity_col] = Paragraph(
-                        "<b>{}</b>".format(row[severity_col]), ParagraphStyle(
+                        "<b>{}</b>".format(_clean(row[severity_col])), ParagraphStyle(
                             "sev", fontName=FONT_BOLD, fontSize=8, leading=11,
                             textColor=_c(T[fg])))
                     sty.append(("BACKGROUND", (severity_col, i), (severity_col, i),
@@ -453,7 +455,7 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
     ]
     if not rows:
         rows = [[Paragraph("DETAIL", rl),
-                 Paragraph(str(ins)[:200], rv)]]
+                 Paragraph(_clean(str(ins)[:200]), rv)]]
 
     body = Table(rows, colWidths=[lw, vw])
     body.setStyle(TableStyle([
@@ -563,7 +565,7 @@ def _exec_summary(story, s, T, summary, findings, risks, opps, CW):
     if findings:
         story.append(Paragraph("Key Findings", s["h3"]))
         for f in findings[:5]:
-            story.append(Paragraph("• " + str(f), s["bl"]))
+            story.append(Paragraph("• " + _clean(str(f)), s["bl"]))
         story.append(Spacer(1, 2*mm))
     if risks:
         story.append(Paragraph("Risks", s["h3"]))
@@ -611,7 +613,7 @@ def _top_insights(story, s, T, insights, CW, domain: str = "general"):
             "ran and found nothing it could support.", s["body"]))
         note = withheld_note(guarded)
         if note:
-            story.append(Paragraph(note, s["note"]))
+            story.append(Paragraph(_clean(note), s["note"]))
         return
 
     grouped = group_insights(bp, list(insights))
@@ -641,7 +643,7 @@ def _top_insights(story, s, T, insights, CW, domain: str = "general"):
     note = withheld_note(guarded)
     if note:
         story.append(Spacer(1, 3 * mm))
-        story.append(Paragraph(note, s["note"]))
+        story.append(Paragraph(_clean(note), s["note"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -705,7 +707,7 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
         story.append(Paragraph("Data Quality Recommendations", s["h3"]))
         for rec in recs[:6]:
             sty = "bl"
-            story.append(Paragraph("• " + str(rec), s[sty]))
+            story.append(Paragraph("• " + _clean(str(rec)), s[sty]))
 
 
 def _readiness_block(story, s, T, df: pd.DataFrame, CW):
@@ -739,7 +741,7 @@ def _readiness_block(story, s, T, df: pd.DataFrame, CW):
         story.append(Paragraph(
             "Personal data present: {}. This report and the underlying "
             "extract should be handled and retained accordingly.".format(
-                ", ".join(rep.personal_data_columns[:8])),
+                _clean(", ".join(map(str, rep.personal_data_columns[:8])))),
             s["note"]))
 
 
@@ -823,7 +825,7 @@ def _data_prep_section(story, s, T, cleaning_summary, CW, table="source_table"):
         "express the same treatment against <b>{}</b> so your data team can "
         "verify each step, or apply it upstream and stop the issue "
         "recurring. Order matters: deduplicating after imputing does not "
-        "give the same table. None of it has been executed.".format(table),
+        "give the same table. None of it has been executed.".format(_clean(table)),
         s["body"]))
     story.append(Spacer(1, 1.5*mm))
 
@@ -1036,7 +1038,7 @@ def _attrition_page(story, s, T, attrition, CW):
     ]
     if top_dept:
         kpis.append({"label": "HIGHEST DEPARTMENT", "value": "{:.1f}%".format(top_dept[1]),
-                     "sub": _clean(str(top_dept[0]))[:24]})
+                     "sub": str(top_dept[0])[:24]})
     _kpi_row(story, s, T, kpis, CW)
 
     _narrative_box(story, s, T,
@@ -1088,7 +1090,7 @@ def _dataset_overview(story, s, T, df, profile, CW):
     cat_cols = [c for c in text_columns(df) if c not in id_cols]
     dt_cols  = df.select_dtypes(include="datetime").columns.tolist()
 
-    rows = [[kind, len(cols), _clean(", ".join(map(str, cols[:8])))]
+    rows = [[kind, len(cols), ", ".join(map(str, cols[:8]))]
             for kind, cols in (("Measures", num_cols), ("Categories", cat_cols),
                                ("Dates", dt_cols), ("Identifiers", id_cols)) if cols]
     _gtable(story, T, ["Kind", "Columns", "Names"], rows,
@@ -1105,7 +1107,7 @@ def _dataset_overview(story, s, T, df, profile, CW):
             if v.empty:
                 continue
             q = v.quantile([0.25, 0.5, 0.75])
-            rows.append([_clean(str(c)), fmt(len(v)), fmt(v.mean()), fmt(q[0.5]),
+            rows.append([str(c), fmt(len(v)), fmt(v.mean()), fmt(q[0.5]),
                          fmt(v.min()), fmt(q[0.25]), fmt(q[0.75]), fmt(v.max())])
         _gtable(story, T, ["Measure", "Count", "Mean", "Median", "Min", "25th pct",
                            "75th pct", "Max"], rows,
@@ -1134,7 +1136,7 @@ def _stats_section(story, s, T, stats_report, CW):
     for col, cs in list(col_stats.items())[:10]:
         if getattr(cs, "mean", None) is None:
             continue
-        rows.append([_clean(str(col)),
+        rows.append([str(col),
                      "Normal" if getattr(cs, "is_normal", False) else "Not normal",
                      (getattr(cs, "skew_label", "") or "—").capitalize(),
                      str(getattr(cs, "outlier_count_iqr", 0))])
@@ -1150,7 +1152,7 @@ def _stats_section(story, s, T, stats_report, CW):
     if sig:
         story.append(Spacer(1, 2*mm))
         story.append(Paragraph("Measures that move together", s["h3"]))
-        rows = [[_clean(c.col_a), _clean(c.col_b), "{:.2f}".format(c.pearson_r),
+        rows = [[str(c.col_a), str(c.col_b), "{:.2f}".format(c.pearson_r),
                  "{:.3f}".format(getattr(c, "p_value", 0)), c.strength.capitalize(),
                  "{:.0f}%".format(c.pearson_r ** 2 * 100)]
                 for c in sig[:6]]
@@ -1180,7 +1182,7 @@ def _bi_section(story, s, T, bi_report, CW):
     if bms:
         from app.engines.chart_exporter import fmt
         story.append(Paragraph("How spread out each measure is", s["h3"]))
-        rows = [[_clean(bm.column), fmt(bm.mean), fmt(bm.median),
+        rows = [[str(bm.column), fmt(bm.mean), fmt(bm.median),
                  fmt(bm.top_10_pct), fmt(bm.bottom_10_pct),
                  bm.benchmark_label.split("—")[0].strip()[:24]]
                 for bm in bms[:6]]
@@ -1194,7 +1196,7 @@ def _bi_section(story, s, T, bi_report, CW):
     if sig_c:
         story.append(Paragraph("Segments that differ", s["h3"]))
         for c in sig_c[:3]:
-            story.append(Paragraph("• " + c.interpretation, s["bl"]))
+            story.append(Paragraph("• " + _clean(c.interpretation), s["bl"]))
 
     # Key insights
     ki = getattr(bi_report, "key_insights", [])
@@ -1202,7 +1204,7 @@ def _bi_section(story, s, T, bi_report, CW):
         story.append(Spacer(1, 2*mm))
         story.append(Paragraph("Observations", s["h3"]))
         for ins in ki[:5]:
-            story.append(Paragraph("• " + str(ins), s["bl"]))
+            story.append(Paragraph("• " + _clean(str(ins)), s["bl"]))
 
 
 def _ml_section(story, s, T, ml_report, CW):
@@ -1224,7 +1226,7 @@ def _ml_section(story, s, T, ml_report, CW):
             score += " · typical error ±{:,.2f}".format(best.rmse)
     else:
         score = "{:.1f}% accuracy on held-out rows".format(best.test_score * 100)
-    _narrative_box(story, s, T, _clean("{} predicting '{}' from {} column(s), {:,} rows: {}.".format(
+    _narrative_box(story, s, T, ("{} predicting '{}' from {} column(s), {:,} rows: {}.".format(
         best.name, target, ml_report.n_features, ml_report.n_rows_used, score)))
 
     note = getattr(ml_report, "no_signal", "")
@@ -1238,7 +1240,7 @@ def _ml_section(story, s, T, ml_report, CW):
         story.append(Spacer(1, 2*mm))
         story.append(Paragraph("What the model relies on", s["h3"]))
         _gtable(story, T, ["Column", "Share of the model", "Direction"],
-                [[_clean(f.feature), "{:.0f}%".format(f.importance * 100), f.direction]
+                [[str(f.feature), "{:.0f}%".format(f.importance * 100), f.direction]
                  for f in imps],
                 [CW * x for x in (0.50, 0.25, 0.25)])
         story.append(Paragraph(
@@ -1247,7 +1249,7 @@ def _ml_section(story, s, T, ml_report, CW):
     elif note:
         # No ranking: it would only order noise.
         story.append(Spacer(1, 2*mm))
-        _narrative_box(story, s, T, _clean(note))
+        _narrative_box(story, s, T, note)
 
     # The task description ("Continuous numeric target (497 unique values)")
     # is an internal detail, not a caveat for the reader.

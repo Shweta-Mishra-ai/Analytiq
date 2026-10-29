@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.engines.data_cleaner import table_name_from_filename
@@ -82,9 +81,11 @@ def _neutralise_formulas(df):
 @router.get("/{ds_id}/csv")
 def export_csv(ds_id: str, owner: str = Depends(current_owner)):
     df = _neutralise_formulas(_df_or_404(owner, ds_id))
-    buf = io.BytesIO(df.to_csv(index=False).encode("utf-8-sig"))
-    return StreamingResponse(buf, media_type="text/csv", headers={
-        "Content-Disposition": "attachment; filename=analytiq_cleaned_data.csv"})
+    # Sent whole. A StreamingResponse over a BytesIO iterates it line by
+    # line: 60,000 rows went out as 60,000 chunks and took 12 s instead of 2.
+    return Response(df.to_csv(index=False).encode("utf-8-sig"), media_type="text/csv",
+                    headers={"Content-Disposition":
+                             "attachment; filename=analytiq_cleaned_data.csv"})
 
 
 def _excel_safe_times(df):
@@ -110,15 +111,16 @@ def export_excel(ds_id: str, owner: str = Depends(current_owner)):
     import pandas as pd
     # Strings are written as text. xlsxwriter's default turns any value
     # beginning with "=" into a live formula in the delivered workbook.
+    # Not constant_memory: it is faster, but pandas does not write row by
+    # row, and in that mode every text and date cell came back empty.
     with pd.ExcelWriter(buf, engine="xlsxwriter", engine_kwargs={
             "options": {"strings_to_formulas": False}}) as writer:
         df.to_excel(writer, sheet_name="Data", index=False)
         num = df.select_dtypes(include="number")
         if not num.empty:
             num.describe().T.to_excel(writer, sheet_name="Summary")
-    buf.seek(0)
-    return StreamingResponse(
-        buf,
+    return Response(
+        buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=analytiq_export.xlsx"})
 
@@ -239,8 +241,8 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
         logger.exception("PDF build failed")
         raise HTTPException(500, f"PDF build failed: {e}")
 
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes), media_type="application/pdf",
+    return Response(
+        pdf_bytes, media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=analytiq_report.pdf"})
 
 
@@ -307,7 +309,7 @@ def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
         logger.exception("Health PDF build failed")
         raise HTTPException(500, f"Health report build failed: {e}")
 
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes), media_type="application/pdf",
+    return Response(
+        pdf_bytes, media_type="application/pdf",
         headers={"Content-Disposition":
                  "attachment; filename=analytiq_health_report.pdf"})

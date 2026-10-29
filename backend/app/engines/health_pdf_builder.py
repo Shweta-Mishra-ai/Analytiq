@@ -316,7 +316,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         "period it covers. Statistical association is reported where present; "
         "it does not establish causation. Recommendations assume the data is "
         "complete and accurate as supplied.".format(
-            agency_name, now, fname[:40]),
+            _clean_text(agency_name), now, _clean_text(fname[:40])),
         ST["sm"]))
     story.append(PageBreak())
 
@@ -325,7 +325,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # ══════════════════════════════════════════════════════
     story.append(Spacer(1, 6*mm))
     story.append(_section("Data Health Overview"))
-    story.append(Paragraph(fname[:70], ST["sm"]))
+    story.append(Paragraph(_clean_text(fname[:70]), ST["sm"]))
     story.append(HRFlowable(width="100%", thickness=2.5, color=accent, spaceAfter=6))
     story.append(Paragraph(
         "Generated: {}  ·  {:,} rows  ·  {} columns  ·  Domain: <b>{}</b>".format(
@@ -648,15 +648,17 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             st_c   = HexColor("#059669")
 
         rows2.append([
-            Paragraph(truncate_label(col, 20), td_st2),
-            Paragraph(str(sc.dtype)[:8], td_c2),
+            # Every cell is data, so every cell is escaped: a value such as
+            # "<b>&amp;" crashed the whole report as unbalanced markup.
+            Paragraph(_clean_text(truncate_label(col, 20)), td_st2),
+            Paragraph(_clean_text(str(sc.dtype)[:8]), td_c2),
             Paragraph(miss, ParagraphStyle("mv", fontName=_BB, fontSize=8,
                            textColor=HexColor("#DC2626") if miss_f > 5 else dark,
                            alignment=TA_CENTER)),
             Paragraph(uniq, td_c2),
-            Paragraph(mn, td_c2),
-            Paragraph(mx, td_c2),
-            Paragraph(sample_val, td_st2),
+            Paragraph(_clean_text(mn), td_c2),
+            Paragraph(_clean_text(mx), td_c2),
+            Paragraph(_clean_text(sample_val), td_st2),
             Paragraph(status, ParagraphStyle("sv3", fontName=_BB, fontSize=7.5,
                                              textColor=st_c, alignment=TA_CENTER)),
         ])

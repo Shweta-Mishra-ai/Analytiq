@@ -430,6 +430,7 @@ def build_report_payload(df: pd.DataFrame, niche: str,
         "actions": [],
     }
 
+    story = None
     try:
         from app.engines.story_engine import generate_story
         story = generate_story(df)
@@ -443,11 +444,12 @@ def build_report_payload(df: pd.DataFrame, niche: str,
                        "payload — narrative sections will be empty",
                        exc_info=True)
 
-    payload["insights"] = build_full_insights(df, niche, max_cards=max_cards)
+    payload["insights"] = build_full_insights(df, niche, max_cards=max_cards, story=story)
     return payload
 
 
-def build_full_insights(df: pd.DataFrame, niche: str, max_cards: int = 12) -> List[Dict]:
+def build_full_insights(df: pd.DataFrame, niche: str, max_cards: int = 12,
+                        story=None) -> List[Dict]:
     """Every insight the Health Report should carry, best-first.
 
     Sources, in priority order:
@@ -465,8 +467,9 @@ def build_full_insights(df: pd.DataFrame, niche: str, max_cards: int = 12) -> Li
     cards: List[Dict] = []
 
     try:
-        from app.engines.story_engine import generate_story
-        story = generate_story(df)
+        if story is None:       # the caller's story, so it is not built twice
+            from app.engines.story_engine import generate_story
+            story = generate_story(df)
         for ins in story.top_insights:
             cards.append(_insight_to_card(ins))
     except Exception:
