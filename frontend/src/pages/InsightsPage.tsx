@@ -100,7 +100,7 @@ export default function InsightsPage() {
   if (!dataset) return <NeedData />
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="Business Insights"
         subtitle="Problem → Cause → Evidence → Action → Impact"

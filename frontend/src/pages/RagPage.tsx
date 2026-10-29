@@ -170,9 +170,9 @@ export default function RagPage() {
   }
 
   return (
-    <div className="flex h-full">
-      {/* KB list */}
-      <div className="w-64 shrink-0 space-y-3 border-r border-edge p-4">
+    <div className="flex h-full flex-col md:flex-row">
+      {/* KB list — above the content on a phone, beside it from tablet up */}
+      <div className="w-full shrink-0 space-y-3 border-b border-edge p-4 md:w-64 md:border-r md:border-b-0">
         <h2 className="flex items-center gap-2 text-sm font-bold text-ink">
           <Layers className="h-4 w-4 text-accent" /> Knowledge bases
         </h2>

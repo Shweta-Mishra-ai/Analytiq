@@ -83,6 +83,23 @@ body {
   color: var(--color-faint);
 }
 
+/* ── Page container ──────────────────────────────────────
+   One padding rule for every page, tightening on small screens; pages
+   each chose their own (p-6, p-8) and phones got 32px of gutter. */
+.page {
+  padding: 1rem;
+}
+@media (min-width: 768px) {
+  .page {
+    padding: 1.5rem;
+  }
+}
+@media (min-width: 1280px) {
+  .page {
+    padding: 2rem;
+  }
+}
+
 /* ── Depth ───────────────────────────────────────────────
    A flat 1px border on a flat fill is what makes a dark UI look like a
    wireframe. Real surfaces get a soft ambient shadow plus a 1px inner

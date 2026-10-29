@@ -92,7 +92,7 @@ export default function EdaPage() {
   if (!dataset) return <NeedData />
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="Deep EDA"
         subtitle="Statistical tests, distributions, VIF, group comparisons and time series"

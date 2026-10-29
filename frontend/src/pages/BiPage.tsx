@@ -93,7 +93,7 @@ export default function BiPage() {
   if (!dataset) return <NeedData />
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="Business Intelligence"
         subtitle="Root cause, cohorts, Pareto and segment health"

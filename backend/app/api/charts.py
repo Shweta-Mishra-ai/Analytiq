@@ -94,7 +94,9 @@ def kpis(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
     rest = [c for c in df.select_dtypes(include="number").columns
             if c not in ranked and not pd.api.types.is_bool_dtype(df[c])
             and not is_id_column(c, df[c]) and (not out or c != out[0])]
-    for col in (ranked + rest)[:4]:
+    # Six cards fill one row on a wide screen: rows, the outcome rate when
+    # there is one, the leading measures, and missing values.
+    for col in (ranked + rest)[:3 if out else 4]:
         s = pd.to_numeric(df[col], errors="coerce").dropna()
         if not len(s):
             continue
@@ -123,9 +125,12 @@ def auto_tiles(df: pd.DataFrame) -> List[dict]:
     from app.engines.chart_exporter import (_event_date, _group_column, _label,
                                             _measures, _outcome, is_additive)
     measures = _measures(df)
-    group = _group_column(df)
-    second = _group_column(df, exclude=(group,)) if group else None
     out = _outcome(df)
+    # The outcome is what the tiles break down, never a way to group it:
+    # "Attrition rate by attrition" is 0% and 100%.
+    skip = (out[0],) if out else ()
+    group = _group_column(df, exclude=skip)
+    second = _group_column(df, exclude=skip + (group,)) if group else None
     date = _event_date(df)
     if out:
         measures = [m for m in measures if m != out[0]]
@@ -226,11 +231,20 @@ def _rate_figure(df: pd.DataFrame, req: ChartRequest):
     overall = float(tmp["y"].mean() * 100)
     fig.add_hline(y=overall, line_dash="dash", line_color="#94A3B8",
                   annotation_text="overall {:.0f}%".format(overall),
-                  annotation_position="top left")
+                  annotation_position="top right",
+                  annotation_font=dict(size=11, color="#94A3B8"),
+                  annotation_bgcolor="rgba(16,18,21,0.85)")
     return fig
 
 
 def _figure(df: pd.DataFrame, req: ChartRequest) -> dict:
+    # Held across building, annotating and serialising the figure; see
+    # chart_engine.PLOTLY_LOCK.
+    with chart_engine.PLOTLY_LOCK:
+        return _figure_unlocked(df, req)
+
+
+def _figure_unlocked(df: pd.DataFrame, req: ChartRequest) -> dict:
     t = req.type
     try:
         if t == "rate":

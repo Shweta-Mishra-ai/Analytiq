@@ -163,7 +163,7 @@ export default function DeepAnalysisPage() {
   }
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="Deep Analysis"
         subtitle="Benchmarks, what predicts your outcome, and what-if projections"

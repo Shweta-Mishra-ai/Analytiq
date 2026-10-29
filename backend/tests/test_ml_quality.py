@@ -143,6 +143,7 @@ def test_dashboard_tiles_follow_the_report_rules(hr_df):
                    for t in tiles), kinds
     assert not any(t["type"] == "line" and t.get("x") == "hire_date" for t in tiles)
     assert not any("employee_id" in (t.get("x"), t.get("y")) for t in tiles)
+    assert not any(t.get("x") == "attrition" for t in tiles), kinds   # "rate by itself"
 
 
 def test_dashboard_kpis_average_what_should_be_averaged(client, uploaded_dataset_id):
@@ -217,3 +218,15 @@ def test_correlations_match_scipy_pair_by_pair():
             cm = d[[a, b]].dropna()
             r, p = stats.spearmanr(cm[a], cm[b])
             assert got[frozenset((a, b))] == pytest.approx((r, p), abs=1e-4)
+
+
+def test_dashboard_tiles_build_safely_in_parallel(client, uploaded_dataset_id):
+    # The browser asks for every tile at once; plotly's shared template
+    # raised "ValueError: Invalid value" when they were built in parallel.
+    from concurrent.futures import ThreadPoolExecutor
+    ds = uploaded_dataset_id
+    specs = client.get(f"/api/charts/{ds}/auto-tiles").json()["tiles"] * 4
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        codes = list(pool.map(lambda t: client.post(
+            f"/api/charts/{ds}/build", json={**t, "filters": []}).status_code, specs))
+    assert codes == [200] * len(specs)

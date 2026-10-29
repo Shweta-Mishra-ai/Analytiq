@@ -105,7 +105,7 @@ export default function ColumnsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl p-6">
+    <div className="page mx-auto max-w-6xl">
       <PageHeader
         title="Columns"
         subtitle="What each column is. Every analysis uses this — identifiers are never averaged, labels are never summed, and a measure is judged the right way round."

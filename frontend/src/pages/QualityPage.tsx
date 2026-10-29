@@ -146,7 +146,7 @@ export default function QualityPage() {
   }
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="Data Quality"
         subtitle="Per-column scores, missing data, outliers and one-click auto-clean"

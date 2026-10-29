@@ -128,7 +128,7 @@ export default function SurvivalPage() {
   }
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="Survival Analysis"
         subtitle="How long until people leave, churn or cancel — and which groups last longer"

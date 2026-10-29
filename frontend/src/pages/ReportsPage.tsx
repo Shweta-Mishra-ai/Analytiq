@@ -110,7 +110,7 @@ export default function ReportsPage() {
     'w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink placeholder:text-mute focus:border-accent focus:outline-none'
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="Reports"
         subtitle="Client-ready analysis PDF, plus clean data exports"

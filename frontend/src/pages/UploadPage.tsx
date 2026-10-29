@@ -92,7 +92,7 @@ export default function UploadPage() {
   }
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="Data Upload"
         subtitle="CSV, Excel (multi-sheet) or JSON up to 200 MB — or let AI extract a table from a photo or video"

@@ -89,7 +89,7 @@ export default function AbTestPage() {
   }
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="A/B Test"
         subtitle="Is the difference between two groups real, or just noise?"
