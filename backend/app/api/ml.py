@@ -78,10 +78,15 @@ def train(ds_id: str, req: TrainRequest, owner: str = Depends(current_owner)):
         raise HTTPException(
             422, f"'{req.target}' is a date — predict something measured "
                  f"about the rows instead, such as a duration in days")
-    from app.engines.ml_engine import run_ml_pipeline
+    from app.engines.ml_engine import TargetError, run_ml_pipeline
     try:
         report = run_ml_pipeline(df, req.target, max_rows=req.max_rows)
+    except TargetError as e:
+        # A target the pipeline refuses (too many classes) is the request's
+        # problem, said in words the user can act on — not a server error.
+        raise HTTPException(422, str(e))
     except Exception as e:
+        logger.warning("training failed", exc_info=True)
         raise HTTPException(500, f"Training failed: {e}")
     store.cache_set(owner, ds_id, f"ml_{req.target}", report)
     store.cache_set(owner, ds_id, "ml_last", report)

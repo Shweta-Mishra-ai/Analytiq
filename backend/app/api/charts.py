@@ -32,7 +32,7 @@ class FilterSpec(BaseModel):
 
 
 class ChartRequest(BaseModel):
-    type: str                       # bar|line|area|scatter|histogram|pie|heatmap|table
+    type: str                       # bar|line|area|scatter|histogram|pie|heatmap|rate|table
     x: Optional[str] = None
     y: Optional[str] = None
     color: Optional[str] = None
@@ -71,36 +71,123 @@ def fields(ds_id: str, owner: str = Depends(current_owner)):
 
 @router.post("/{ds_id}/kpis")
 def kpis(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
+    """Headline figures for the current filters.
+
+    A measure is totalled only when adding it up means something (revenue,
+    units, hours); salary, age or a score is averaged. The cards used to
+    read "Σ age" and "Σ tenure_years" — sums nobody can use.
+    """
+    from app.engines.chart_exporter import _label, _measures, _outcome, fmt, is_additive
     df = _df(owner, ds_id, body.filters)
-    # Measures only: summing an identifier ("Σ customer_id 181.5K") is a
-    # number with no meaning, and it took one of the four KPI slots.
+    cards = [{"label": "Rows", "value": len(df), "format": "int",
+              "sub": "after filters" if body.filters else "in the dataset"}]
+    out = _outcome(df) if len(df) else None
+    if out:
+        col, y, event = out
+        cards.append({"label": "{} rate".format(_label(col)),
+                      "value": round(float(y.mean()) * 100, 1), "format": "pct",
+                      "sub": "{:,} of {:,} are '{}'".format(int(y.sum()), int(y.notna().sum()), event)})
+    # Ranked measures first; then any other number that is not an identifier
+    # or a flag (a constant revenue column still has a total).
     from app.engines.domains.base import is_id_column
-    num_cols = [c for c in df.select_dtypes(include="number").columns
-                if not pd.api.types.is_bool_dtype(df[c]) and not is_id_column(c, df[c])]
-    cards = [
-        {"label": "Rows", "value": len(df), "format": "int"},
-        {"label": "Columns", "value": df.shape[1], "format": "int"},
-        {"label": "Missing %",
-         "value": round(float(df.isna().mean().mean()) * 100, 1),
-         "format": "pct"},
-        {"label": "Duplicates", "value": int(df.duplicated().sum()),
-         "format": "int"},
-    ]
-    for col in num_cols[:4]:
+    ranked = _measures(df)
+    rest = [c for c in df.select_dtypes(include="number").columns
+            if c not in ranked and not pd.api.types.is_bool_dtype(df[c])
+            and not is_id_column(c, df[c]) and (not out or c != out[0])]
+    for col in (ranked + rest)[:4]:
         s = pd.to_numeric(df[col], errors="coerce").dropna()
-        if len(s):
-            cards.append({
-                "label": f"Σ {col}", "value": float(s.sum()), "format": "num",
-                "mean": float(s.mean()),
-            })
+        if not len(s):
+            continue
+        if is_additive(col):
+            cards.append({"label": "Total {}".format(_label(col).lower()),
+                          "value": float(s.sum()), "format": "num",
+                          "sub": "average {}".format(fmt(float(s.mean())))})
+        else:
+            cards.append({"label": "Average {}".format(_label(col).lower()),
+                          "value": float(s.mean()), "format": "num",
+                          "sub": "median {}".format(fmt(float(s.median())))})
+    missing = round(float(df.isna().mean().mean()) * 100, 1) if df.size else 0.0
+    cards.append({"label": "Missing values", "value": missing, "format": "pct",
+                  "sub": "of all cells"})
     return {"kpis": to_jsonable(cards)}
+
+
+def auto_tiles(df: pd.DataFrame) -> List[dict]:
+    """The dashboard's opening tiles, chosen the way the report's charts are:
+    an outcome as a rate, a measure totalled only when that means something
+    and averaged otherwise, a trend only over a date things happened on (not
+    a hire or birth date), and a correlation grid only when something
+    correlates. The tiles used to sum the first numeric column — salary,
+    tenure — by the first text column and draw a pie of the sums.
+    """
+    from app.engines.chart_exporter import (_event_date, _group_column, _label,
+                                            _measures, _outcome, is_additive)
+    measures = _measures(df)
+    group = _group_column(df)
+    second = _group_column(df, exclude=(group,)) if group else None
+    out = _outcome(df)
+    date = _event_date(df)
+    if out:
+        measures = [m for m in measures if m != out[0]]
+
+    def agg(m):
+        return "sum" if is_additive(m) else "mean"
+
+    def word(m):
+        return "Total" if is_additive(m) else "Average"
+
+    tiles = []
+    if out and group:
+        tiles.append({"title": "{} rate by {}".format(_label(out[0]), _label(group).lower()),
+                      "type": "rate", "x": group, "y": out[0]})
+    if measures and group:
+        m = measures[0]
+        tiles.append({"title": "{} {} by {}".format(word(m), _label(m).lower(), _label(group).lower()),
+                      "type": "bar", "x": group, "y": m, "agg": agg(m)})
+    if measures and date:
+        m = measures[0]
+        tiles.append({"title": "{} {} over time".format(word(m), _label(m).lower()),
+                      "type": "line", "x": date, "y": m, "agg": agg(m)})
+    if out and second:
+        tiles.append({"title": "{} rate by {}".format(_label(out[0]), _label(second).lower()),
+                      "type": "rate", "x": second, "y": out[0]})
+    if measures:
+        tiles.append({"title": "Distribution of {}".format(_label(measures[0]).lower()),
+                      "type": "histogram", "x": measures[0]})
+    if len(measures) > 1 and (second or group):
+        m, g = measures[1], second or group
+        tiles.append({"title": "{} {} by {}".format(word(m), _label(m).lower(), _label(g).lower()),
+                      "type": "bar", "x": g, "y": m, "agg": agg(m)})
+    if len(measures) >= 3:
+        corr = df[measures[:8]].corr(method="spearman").abs()
+        np_corr = corr.where(~pd.DataFrame(
+            [[i == j for j in range(len(corr))] for i in range(len(corr))],
+            index=corr.index, columns=corr.columns))
+        if float(np_corr.max().max()) >= 0.3:
+            tiles.append({"title": "How the measures relate", "type": "heatmap"})
+    for i, t in enumerate(tiles, 1):
+        t["id"] = "t{}".format(i)
+    return tiles[:6]
+
+
+@router.get("/{ds_id}/auto-tiles")
+def auto_tiles_route(ds_id: str, owner: str = Depends(current_owner)):
+    return {"tiles": auto_tiles(_df(owner, ds_id))}
 
 
 @router.post("/{ds_id}/recommend")
 def recommend(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
+    """The opening tiles, rendered."""
     df = _df(owner, ds_id, body.filters)
-    charts = chart_engine.recommend_charts(df)
-    return {"charts": [{"title": t, "figure": _fig_json(f)} for t, f in charts]}
+    charts = []
+    for t in auto_tiles(df):
+        req = ChartRequest(type=t["type"], x=t.get("x"), y=t.get("y"),
+                           agg=t.get("agg", "sum"), title=t["title"])
+        try:
+            charts.append({"title": t["title"], "figure": _figure(df, req)})
+        except HTTPException:
+            continue
+    return {"charts": charts}
 
 
 @router.post("/{ds_id}/build")
@@ -108,15 +195,54 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
     df = _df(owner, ds_id, req.filters)
     if df.empty:
         raise HTTPException(422, "No rows match the current filters")
-    t = req.type
+    if req.type == "table":
+        grouped = _aggregate(df, req) if (req.x and req.y) else df.head(req.top_n)
+        from app.services.serialize import df_records
+        return {"table": df_records(grouped, req.top_n)}
+    return {"figure": _figure(df, req)}
 
+
+def _rate_figure(df: pd.DataFrame, req: ChartRequest):
+    """Share of rows with the outcome (left, churned, returned) per group,
+    with the overall rate drawn across for reference."""
+    from app.engines.predictive import _to_binary
+    if not req.x or not req.y:
+        raise HTTPException(422, "x and y are required")
+    if req.x not in df.columns or req.y not in df.columns:
+        raise KeyError(req.x if req.x not in df.columns else req.y)
+    coded = _to_binary(df[req.y])
+    if coded is None:
+        raise HTTPException(422, f"'{req.y}' is not a two-value outcome")
+    y, event = coded
+    y = y.where(df[req.y].notna())
+    tmp = pd.DataFrame({req.x: df[req.x].astype(str).where(df[req.x].notna()), "y": y}).dropna()
+    if tmp.empty:
+        raise HTTPException(422, f"No rows have both '{req.x}' and '{req.y}'")
+    g = tmp.groupby(req.x)["y"].agg(["mean", "size"])
+    g = g[g["size"] >= 5].sort_values("mean", ascending=False).head(req.top_n)
+    label = "% '{}'".format(event)
+    grouped = pd.DataFrame({req.x: g.index, label: (g["mean"] * 100).round(1).values})
+    fig = chart_engine.make_bar(grouped, req.x, label, req.title)
+    overall = float(tmp["y"].mean() * 100)
+    fig.add_hline(y=overall, line_dash="dash", line_color="#94A3B8",
+                  annotation_text="overall {:.0f}%".format(overall),
+                  annotation_position="top left")
+    return fig
+
+
+def _figure(df: pd.DataFrame, req: ChartRequest) -> dict:
+    t = req.type
     try:
-        if t == "histogram":
+        if t == "rate":
+            fig = _rate_figure(df, req)
+        elif t == "histogram":
             fig = chart_engine.make_histogram(df, req.x or req.y, req.nbins, req.title)
         elif t == "heatmap":
-            if df.select_dtypes(include="number").shape[1] < 2:
-                raise HTTPException(422, "Need 2+ numeric columns for a heatmap")
-            fig = chart_engine.make_heatmap(df)
+            from app.engines.chart_exporter import _measures
+            cols = _measures(df)[:8]
+            if len(cols) < 2:
+                raise HTTPException(422, "Need 2+ measure columns for a heatmap")
+            fig = chart_engine.make_heatmap(df[cols])
         elif t == "scatter":
             fig = chart_engine.make_scatter(df, req.x, req.y, req.color, req.title)
         elif t in ("bar", "line", "area", "pie"):
@@ -141,10 +267,6 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
                 if omitted:
                     fig.update_xaxes(title_text="{} ({} partial {} excluded)".format(
                         req.x, " and ".join(omitted), grouped.attrs["period"]))
-        elif t == "table":
-            grouped = _aggregate(df, req) if (req.x and req.y) else df.head(req.top_n)
-            from app.services.serialize import df_records
-            return {"table": df_records(grouped, req.top_n)}
         else:
             raise HTTPException(422, f"Unknown chart type '{t}'")
     except HTTPException:
@@ -152,9 +274,9 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
     except KeyError as e:
         raise HTTPException(422, f"Column not found: {e}")
     except Exception as e:
+        logger.warning("chart build failed", exc_info=True)
         raise HTTPException(500, f"Chart build failed: {e}")
-
-    return {"figure": _fig_json(fig)}
+    return _fig_json(fig)
 
 
 def _drop_partial_periods(out: pd.DataFrame, x: str, rule: str, agg: str,

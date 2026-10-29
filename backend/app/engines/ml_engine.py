@@ -1,7 +1,6 @@
 """
-ml_engine.py — Production ML pipeline.
-Auto model selection, cross-validation, SHAP, what-if analysis.
-No shortcuts — proper ML engineering.
+ml_engine.py — model training, held-out evaluation, feature effects and
+what-if prediction.
 """
 import logging
 import pandas as pd
@@ -11,21 +10,23 @@ from typing import List, Dict, Optional, Tuple, Any
 import warnings
 warnings.filterwarnings("ignore")
 
-from sklearn.model_selection import cross_val_score, train_test_split
+from sklearn.model_selection import cross_validate, train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
+from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
-from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifier
+from sklearn.ensemble import HistGradientBoostingRegressor, HistGradientBoostingClassifier
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.metrics import (
     r2_score, mean_absolute_error, mean_squared_error,
     accuracy_score, f1_score, roc_auc_score,
-    classification_report
 )
 
+from app.engines.chart_exporter import fmt
 from app.engines.domains.base import is_id_column
-from app.services.dtypes import is_text_dtype, text_columns
+from app.services.dtypes import is_text_dtype
 try:
     from xgboost import XGBRegressor, XGBClassifier
     XGBOOST_AVAILABLE = True
@@ -59,6 +60,9 @@ class ModelResult:
     # Model object (not serialized)
     model:          Any = field(default=None, repr=False)
     is_best:        bool = False
+    # What the models were ranked on: R² for regression, log-loss (negated)
+    # for classification.
+    cv_pick:        float = 0.0
 
 
 @dataclass
@@ -81,14 +85,15 @@ class MLReport:
     models:             List[ModelResult] = field(default_factory=list)
     best_model:         Optional[ModelResult] = None
     feature_importance: List[FeatureImportance] = field(default_factory=list)
-    shap_values:        Optional[np.ndarray] = None
-    shap_feature_names: Optional[List[str]] = None
     X_test:             Optional[pd.DataFrame] = None
     y_test:             Optional[pd.Series] = None
     y_pred:             Optional[np.ndarray] = None
-    preprocessor:       Any = field(default=None, repr=False)
-    label_encoders:     Dict = field(default_factory=dict)
     target_encoder:     Any = field(default=None, repr=False)
+    # Columns trained as categories (one-hot inside the pipeline).
+    categorical_cols:   List[str] = field(default_factory=list)
+    # 10th and 90th percentile of held-out errors (regression): the range
+    # a what-if prediction is quoted with.
+    residual_band:      Optional[Tuple[float, float]] = None
     # Datetime features are trained as days since this origin; a what-if
     # input date has to be converted the same way.
     datetime_origins:   Dict = field(default_factory=dict)
@@ -139,6 +144,38 @@ def detect_task(series: pd.Series) -> Tuple[str, str]:
     return "regression", "Continuous numeric target ({} unique values)".format(n_uniq)
 
 
+# A classification target with more classes than this is a lookup, not a
+# prediction: 40 product types from two numeric columns took 37 seconds to
+# train and scored 2%.
+MAX_CLASSES = 20
+
+
+class TargetError(ValueError):
+    """A target this pipeline cannot model, explained for the user."""
+
+
+def _target_kind(col: str, s: pd.Series, task: str) -> float:
+    """How much a column reads as something worth predicting.
+
+    Outcomes (attrition, churn, default) and money or volume measures come
+    first; a grouping column such as department or region is a way to slice
+    the data, not an outcome, and was the first suggestion for HR data.
+    """
+    from app.engines.chart_exporter import _ADDITIVE, _GROUP_WORDS, _MONEY, _words
+    from app.engines.predictive import _BINARY_TARGET_NAMES, _EVENT_WORDS
+    words = _words(col)
+    bonus = 0.0
+    if words & set(_BINARY_TARGET_NAMES) or (
+            task == "classification" and s.nunique() == 2
+            and {str(v).lower() for v in s.unique()} & (_EVENT_WORDS - {"1", "1.0", "y", "t"})):
+        bonus += 1.0
+    if task == "regression" and words & (_MONEY | _ADDITIVE):
+        bonus += 0.6
+    if words & _GROUP_WORDS:
+        bonus -= 0.5
+    return bonus
+
+
 def suggest_targets(df: pd.DataFrame) -> List[Dict]:
     """
     Suggest good target columns.
@@ -164,17 +201,17 @@ def suggest_targets(df: pd.DataFrame) -> List[Dict]:
             continue
 
         task, reason = detect_task(s)
-        score = 0
+        if task == "classification" and s.nunique() > MAX_CLASSES:
+            continue
 
-        # Prefer columns that are informative
         if task == "regression":
             cv = s.std() / abs(s.mean()) if s.mean() != 0 else 0
-            score = min(cv, 1.0)
+            score = min(float(cv), 1.0)
         else:
             # Prefer balanced classes
             vc = s.value_counts(normalize=True)
-            balance = 1 - vc.max()   # higher = more balanced
-            score = balance
+            score = float(1 - vc.max())
+        score += _target_kind(str(col), s, task)
 
         suggestions.append({
             "column": col, "task": task,
@@ -189,38 +226,46 @@ def suggest_targets(df: pd.DataFrame) -> List[Dict]:
 #  FEATURE ENGINEERING
 # ══════════════════════════════════════════════════════════
 
+def _as_category(s: pd.Series) -> pd.Series:
+    """Text, flag or category values as plain strings, missing kept missing."""
+    out = pd.Series(np.nan, index=s.index, dtype=object)
+    filled = s.notna()
+    out[filled] = s[filled].astype(str).astype(object)
+    return out
+
+
 def prepare_features(
     df: pd.DataFrame,
     target_col: str,
     selected_features: Optional[List[str]] = None,
-) -> Tuple[pd.DataFrame, pd.Series, Dict[str, LabelEncoder]]:
+) -> Tuple[pd.DataFrame, pd.Series, List[str], Dict]:
     """
-    Prepare X, y for ML.
-    - Encode categoricals
-    - Handle missing values
-    - Remove low-variance features
-    Returns (X, y, label_encoders).
+    X and y for training, in the user's own terms.
+
+    Categories stay as their values ("Sales", "HR") and are one-hot encoded
+    inside the model pipeline. They used to be label-encoded here, which
+    handed the linear models an order (HR=1 < Sales=2) that does not exist,
+    and made a blank what-if input the median code — an arbitrary category.
+    Dates become days since the earliest date.
+
+    Returns (X, y, categorical columns, datetime origins).
     """
     df = df.copy()
 
-    # Target
     y = df[target_col].copy()
     df = df.drop(columns=[target_col])
 
-    # Use selected features or auto-select
     if selected_features:
-        available = [c for c in selected_features if c in df.columns]
-        df = df[available]
+        df = df[[c for c in selected_features if c in df.columns]]
     else:
-        # Drop ID-like columns
         drop_cols = []
         for col in df.columns:
             s = df[col].dropna()
             if len(s) == 0:
                 drop_cols.append(col)
                 continue
-            # High cardinality string → drop
-            if is_text_dtype(df[col]) and df[col].nunique() / max(len(df), 1) > 0.5:
+            # Free text that differs on most rows is a label, not a feature.
+            if is_text_dtype(df[col]) and s.nunique() / max(len(df), 1) > 0.5:
                 drop_cols.append(col)
                 continue
             # Identifiers (employee_id, order_no, a 1..n row number) carry no
@@ -230,79 +275,104 @@ def prepare_features(
                 drop_cols.append(col)
         df = df.drop(columns=drop_cols)
 
-    # Encode categorical columns
-    label_encoders = {}
-    for col in text_columns(df):
-        le = LabelEncoder()
-        df[col] = df[col].fillna("Unknown")
-        df[col] = le.fit_transform(df[col].astype(str))
-        label_encoders[col] = le
+    cat_cols, datetime_origins = [], {}
+    for col in list(df.columns):
+        s = df[col]
+        if pd.api.types.is_datetime64_any_dtype(s):
+            origin = s.min()
+            datetime_origins[col] = origin
+            df[col] = (s - origin).dt.days.astype(float)
+        elif (pd.api.types.is_bool_dtype(s) or is_text_dtype(s)
+              or isinstance(s.dtype, pd.CategoricalDtype)):
+            df[col] = _as_category(s)
+            cat_cols.append(col)
+        elif pd.api.types.is_numeric_dtype(s):
+            df[col] = pd.to_numeric(s, errors="coerce").astype(float)
+        else:
+            df = df.drop(columns=[col])
 
-    # Convert datetime to numeric (days since min)
-    datetime_origins = {}
-    for col in df.select_dtypes(include="datetime").columns:
-        origin = df[col].min()
-        datetime_origins[col] = origin
-        df[col] = (df[col] - origin).dt.days
-
-    # Keep only numeric
-    df = df.select_dtypes(include="number")
-
-    # Remove constant columns
-    df = df.loc[:, df.nunique() > 1]
-
-    # Align y with X index
-    common_idx = df.index.intersection(y.dropna().index)
-    df = df.loc[common_idx]
-    y  = y.loc[common_idx]
-
+    # Constant columns teach nothing.
+    df = df.loc[:, df.nunique(dropna=True) > 1]
+    cat_cols = [c for c in cat_cols if c in df.columns]
     datetime_origins = {c: o for c, o in datetime_origins.items() if c in df.columns}
-    return df, y, label_encoders, datetime_origins
+
+    keep = y.notna()
+    return df.loc[keep], y.loc[keep], cat_cols, datetime_origins
 
 
 # ══════════════════════════════════════════════════════════
 #  MODEL TRAINING
 # ══════════════════════════════════════════════════════════
 
-def _get_models(task: str) -> List[Tuple[str, Any]]:
-    """Return list of (name, model) tuples for given task."""
+def _get_models(task: str, n_classes: int = 2, n_rows: int = 0) -> List[Tuple[str, Any]]:
+    """Return list of (name, model) tuples for given task.
+
+    Histogram gradient boosting replaces sklearn's classic gradient
+    boosting: the same method, an order of magnitude faster on large data,
+    which is where training used to hang.
+
+    Each forest tree sees at most 20,000 rows, and a regression forest
+    considers half the features at each split rather than all of them: on
+    60,000 rows the forest alone took 56 of 74 seconds.
+    """
+    per_tree = min(1.0, 20_000 / n_rows) if n_rows else None
     if task == "regression":
         models = [
             ("Ridge Regression",    Ridge(alpha=1.0)),
             ("Random Forest",       RandomForestRegressor(
-                                        n_estimators=100, random_state=42,
-                                        n_jobs=-1)),
-            ("Gradient Boosting",   GradientBoostingRegressor(
-                                        n_estimators=100, random_state=42)),
+                                        n_estimators=150, min_samples_leaf=5,
+                                        max_features=0.5, max_samples=per_tree,
+                                        random_state=42, n_jobs=-1)),
+            ("Gradient Boosting",   HistGradientBoostingRegressor(
+                                        max_iter=300, early_stopping=True,
+                                        random_state=42)),
         ]
         if XGBOOST_AVAILABLE:
             models.append(("XGBoost", XGBRegressor(
-                n_estimators=100, random_state=42,
-                verbosity=0, eval_metric="rmse")))
+                n_estimators=200, max_depth=5, learning_rate=0.08,
+                random_state=42, verbosity=0, n_jobs=-1)))
     else:
         models = [
             ("Logistic Regression", LogisticRegression(
-                                        max_iter=1000, random_state=42)),
+                                        max_iter=2000, random_state=42)),
+            # Leaves of at least five rows: with two, the forest's
+            # probabilities on noise ran to 99% and it won on F1.
             ("Random Forest",       RandomForestClassifier(
-                                        n_estimators=100, random_state=42,
-                                        n_jobs=-1)),
-            ("Gradient Boosting",   GradientBoostingClassifier(
-                                        n_estimators=100, random_state=42)),
+                                        n_estimators=150, min_samples_leaf=5,
+                                        max_samples=per_tree,
+                                        random_state=42, n_jobs=-1)),
+            # Early stopping: a 9-class target took 18 s without it, 1 s with.
+            ("Gradient Boosting",   HistGradientBoostingClassifier(
+                                        max_iter=300, early_stopping=True,
+                                        random_state=42)),
         ]
-        if XGBOOST_AVAILABLE:
+        if XGBOOST_AVAILABLE and n_classes <= 10:
             models.append(("XGBoost", XGBClassifier(
-                n_estimators=100, random_state=42,
-                verbosity=0, eval_metric="logloss",
-                use_label_encoder=False)))
+                n_estimators=200, max_depth=5, learning_rate=0.08,
+                random_state=42, verbosity=0, n_jobs=-1)))
     return models
 
 
-def _make_pipeline(model, task: str) -> Pipeline:
-    """Wrap model in imputer + scaler pipeline."""
+def _make_pipeline(model, num_cols: List[str], cat_cols: List[str]) -> Pipeline:
+    """Numbers imputed with the median and scaled; categories filled with
+    their most common value and one-hot encoded, with rare values (and
+    values never seen in training) grouped together."""
+    parts = []
+    if num_cols:
+        parts.append(("num", Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler",  StandardScaler()),
+        ]), num_cols))
+    if cat_cols:
+        parts.append(("cat", Pipeline([
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("onehot",  OneHotEncoder(handle_unknown="infrequent_if_exist",
+                                      min_frequency=5, max_categories=30,
+                                      sparse_output=False)),
+        ]), cat_cols))
     return Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
-        ("scaler",  StandardScaler()),
-        ("model",   model),
+        ("prep",  ColumnTransformer(parts)),
+        ("model", model),
     ])
 
 
@@ -336,11 +406,15 @@ def train_models(
     y: pd.Series,
     task: str,
     target_encoder: Optional[LabelEncoder] = None,
-) -> List[ModelResult]:
+    cat_cols: Optional[List[str]] = None,
+):
     """
     Train all models, cross-validate, evaluate on holdout.
-    Returns list of ModelResult sorted by cv_score descending.
+    Returns (results sorted by cv_score, X_test, y_test, target_encoder).
     """
+    cat_cols = [c for c in (cat_cols or []) if c in X.columns]
+    num_cols = [c for c in X.columns if c not in cat_cols]
+
     # Encode classification target
     if task == "classification":
         # Always label-encode. `y.astype(int)` on a numeric target truncated
@@ -348,36 +422,45 @@ def train_models(
         # one model that still fit reported a meaningless 100% accuracy.
         if target_encoder is None:
             target_encoder = LabelEncoder()
-        values = y.astype(str) if is_text_dtype(y) else y
+        values = y.astype(str) if (is_text_dtype(y) or pd.api.types.is_bool_dtype(y)) else y
         y = pd.Series(target_encoder.fit_transform(values), index=y.index)
 
     # Train/test split — stratified for classification, which needs at
     # least two rows of every class or train_test_split raises.
-    stratify = (y if task == "classification" and y.nunique() <= 20
+    stratify = (y if task == "classification" and y.nunique() <= MAX_CLASSES
                 and y.value_counts().min() >= 2 else None)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=stratify
     )
 
-    scoring = "r2" if task == "regression" else "f1_weighted"
+    # Classifiers are chosen on log-loss, which charges a model for being
+    # confidently wrong. Chosen on F1, a boosted model that said "No" with
+    # 99.7% certainty on pure noise beat an honest one. The score shown is
+    # accuracy, the same measure as the held-out test score.
+    scoring = ({"show": "r2"} if task == "regression"
+               else {"show": "accuracy", "pick": "neg_log_loss"})
+    # Five folds on small data, three on large: the extra two folds change
+    # the estimate little past ~10,000 rows and cost 40% more time.
+    folds = 5 if len(X_train) <= 10_000 else 3
+    n_classes = int(y.nunique()) if task == "classification" else 0
     results = []
 
-    for name, model in _get_models(task):
+    for name, model in _get_models(task, n_classes, len(X_train)):
         try:
-            pipe = _make_pipeline(model, task)
+            pipe = _make_pipeline(model, num_cols, cat_cols)
 
-            # Cross-validation on training set
-            cv_scores = cross_val_score(
-                pipe, X_train, y_train,
-                cv=5, scoring=scoring, n_jobs=-1
-            )
+            # Cross-validation on the training set. One job here: the models
+            # parallelise internally, and nesting the two oversubscribed the
+            # machine.
+            cv = cross_validate(pipe, X_train, y_train, cv=folds,
+                                scoring=scoring, n_jobs=1, error_score="raise")
+            cv_scores = cv["test_show"]
+            pick = float(np.mean(cv["test_pick"] if "test_pick" in cv else cv_scores))
 
-            # Fit on full training set
             pipe.fit(X_train, y_train)
             y_pred_train = pipe.predict(X_train)
             y_pred_test  = pipe.predict(X_test)
 
-            # Scores
             if task == "regression":
                 train_s = r2_score(y_train, y_pred_train)
                 test_s  = r2_score(y_test,  y_pred_test)
@@ -402,9 +485,9 @@ def train_models(
                 name=name, task=task,
                 cv_score=round(float(np.mean(cv_scores)), 4),
                 cv_std=round(float(np.std(cv_scores)), 4),
-                train_score=round(train_s, 4),
-                test_score=round(test_s, 4),
-                overfit_gap=round(gap, 4),
+                train_score=round(float(train_s), 4),
+                test_score=round(float(test_s), 4),
+                overfit_gap=round(float(gap), 4),
                 overfit_label=o_lbl,
                 metric_name=metric_name,
                 mae=metrics.get("mae"),
@@ -412,6 +495,7 @@ def train_models(
                 f1=metrics.get("f1"),
                 roc_auc=metrics.get("roc_auc"),
                 model=pipe,
+                cv_pick=round(pick, 4),
             ))
 
         except Exception as e:
@@ -423,11 +507,12 @@ def train_models(
                 overfit_gap=0, overfit_label="N/A",
                 metric_name="N/A",
                 model=None,
+                cv_pick=-1e9,
             ))
 
-    # Sort by cv_score. A model that failed to train is never "best": with
-    # every model failed, the -999 sentinel used to be crowned and reported.
-    results.sort(key=lambda x: x.cv_score, reverse=True)
+    # Best by the selection score. A model that failed to train is never
+    # "best": with every model failed, the sentinel used to be crowned.
+    results.sort(key=lambda x: x.cv_pick, reverse=True)
     if results and results[0].model is not None:
         results[0].is_best = True
 
@@ -435,138 +520,165 @@ def train_models(
 
 
 # ══════════════════════════════════════════════════════════
-#  FEATURE IMPORTANCE + SHAP
+#  FEATURE IMPORTANCE AND EFFECTS
 # ══════════════════════════════════════════════════════════
+
+def _focus_class(task: str, target_encoder, y_train: Optional[pd.Series]):
+    """(index, label) of the class whose chance the effects describe: the
+    rarer of two — the event (left, churned, defaulted) in practice."""
+    if task != "classification" or target_encoder is None:
+        return None, None
+    if len(target_encoder.classes_) != 2:
+        return None, None
+    idx = 1
+    if y_train is not None and len(y_train):
+        counts = pd.Series(y_train).value_counts()
+        idx = int(counts.idxmin()) if len(counts) == 2 else 1
+    return idx, str(target_encoder.classes_[idx])
+
+
+def _level(pipe, X: pd.DataFrame, task: str, focus: Optional[int]) -> float:
+    """The model's average prediction over X: the target for regression,
+    the chance of the focus class for a two-class outcome."""
+    if task == "regression":
+        return float(np.mean(pipe.predict(X)))
+    return float(np.mean(pipe.predict_proba(X)[:, focus]))
+
 
 def get_feature_importance(
     model_result: ModelResult,
-    feature_names: List[str],
+    X_train: pd.DataFrame,
     X_test: pd.DataFrame,
+    y_test: pd.Series,
     task: str,
-) -> Tuple[List[FeatureImportance], Optional[np.ndarray]]:
+    cat_cols: List[str],
+    target_col: str,
+    target_encoder=None,
+    y_train: Optional[pd.Series] = None,
+) -> List[FeatureImportance]:
+    """How much the model depends on each column, and which way it pushes.
+
+    Importance is permutation importance on held-out rows: shuffle one
+    column and measure how much worse the predictions get. A column the
+    model memorised but cannot use on new rows scores about zero. The old
+    figures came from each model's own training-time importances, so a
+    row-stamp date led the ranking of a model with no skill.
+
+    Direction is measured, not read off a sign: for a number, the model's
+    average prediction with the column at its 25th against its 75th
+    percentile; for a category, the prediction for each of its values.
     """
-    Extract feature importance — tries SHAP first, falls back to
-    model-native importance.
-    """
-    importances = []
-    shap_values = None
+    if model_result.model is None or X_test is None or len(X_test) == 0:
+        return []
+    from sklearn.inspection import permutation_importance
+    pipe = model_result.model
+    Xs, ys = X_test, y_test
+    if len(Xs) > 2000:
+        Xs = Xs.sample(2000, random_state=42)
+        ys = ys.loc[Xs.index]
 
-    if model_result.model is None:
-        return importances, shap_values
-
-    pipe  = model_result.model
-    model = pipe.named_steps["model"]
-
-    # ── Try SHAP ──────────────────────────────────────────
+    scoring = "r2" if task == "regression" else "accuracy"
+    if task == "classification" and hasattr(pipe, "predict_proba"):
+        scoring = "neg_log_loss"
     try:
-        import shap
-        # Transform X_test through imputer + scaler
-        X_transformed = pipe[:-1].transform(X_test)
-        X_transformed = pd.DataFrame(X_transformed, columns=feature_names)
-
-        if hasattr(model, "feature_importances_"):
-            explainer   = shap.TreeExplainer(model)
-            shap_vals   = explainer.shap_values(X_transformed)
-            if isinstance(shap_vals, list):
-                shap_vals = shap_vals[1]  # binary classification
-            shap_values = shap_vals
-            raw_imp     = np.abs(shap_vals).mean(axis=0)
-        else:
-            explainer = shap.LinearExplainer(
-                model, X_transformed,
-                feature_perturbation="interventional"
-            )
-            shap_vals   = explainer.shap_values(X_transformed)
-            shap_values = shap_vals
-            raw_imp     = np.abs(shap_vals).mean(axis=0)
-
+        perm = permutation_importance(pipe, Xs, ys, scoring=scoring, n_repeats=5,
+                                      random_state=42, n_jobs=1)
     except Exception:
-        # ── Fallback: model-native importance ─────────────
-        raw_imp = None
-        if hasattr(model, "feature_importances_"):
-            raw_imp = model.feature_importances_
-        elif hasattr(model, "coef_"):
-            raw_imp = np.abs(model.coef_).flatten()[:len(feature_names)]
+        logger.info("permutation importance with %s failed; using accuracy", scoring,
+                    exc_info=True)
+        try:
+            perm = permutation_importance(pipe, Xs, ys, scoring=None, n_repeats=5,
+                                          random_state=42, n_jobs=1)
+        except Exception:
+            logger.warning("permutation importance failed", exc_info=True)
+            return []
 
-        if raw_imp is None:
-            return importances, shap_values
+    raw = np.clip(np.asarray(perm.importances_mean, dtype=float), 0, None)
+    total = float(raw.sum())
+    if total <= 0:
+        return []
+    share = raw / total
 
-    # Ensure raw_imp matches feature_names length — trim or pad
-    raw_imp = np.array(raw_imp).flatten()
-    n_feats = len(feature_names)
-    if len(raw_imp) > n_feats:
-        raw_imp = raw_imp[:n_feats]
-    elif len(raw_imp) < n_feats:
-        raw_imp = np.pad(raw_imp, (0, n_feats - len(raw_imp)))
+    focus, focus_label = _focus_class(task, target_encoder, y_train)
+    effects_ok = task == "regression" or focus is not None
+    y_scale = float(np.std(ys)) if task == "regression" else 1.0
+    tgt = "'{}'".format(target_col)
 
-    # Normalize
-    total    = raw_imp.sum()
-    norm_imp = raw_imp / total if total > 0 else raw_imp
+    def _amount(d: float) -> str:
+        return ("{:.1f} points".format(abs(d) * 100) if task == "classification"
+                else fmt(abs(d)))
 
-    # Direction from SHAP or coef — safely
-    directions = ["mixed"] * n_feats
-    try:
-        if shap_values is not None:
-            sv = np.array(shap_values)
-            if sv.ndim == 2 and sv.shape[1] >= n_feats:
-                for i in range(n_feats):
-                    mean_shap = float(np.mean(sv[:, i]))
-                    directions[i] = (
-                        "positive" if mean_shap > 0.01
-                        else "negative" if mean_shap < -0.01
-                        else "mixed"
-                    )
-        elif hasattr(model, "coef_"):
-            coef = np.array(model.coef_).flatten()
-            for i in range(min(n_feats, len(coef))):
-                directions[i] = "positive" if coef[i] > 0 else "negative"
-    except Exception:
-        directions = ["mixed"] * n_feats
+    out = []
+    order = np.argsort(-share)
+    for rank, i in enumerate(order, 1):
+        col = X_test.columns[i]
+        pct = float(share[i]) * 100
+        direction, explanation = "mixed", ""
+        if effects_ok and pct >= 1:
+            try:
+                if col in cat_cols:
+                    values = X_train[col].value_counts().index[:6]
+                    levels = {}
+                    for v in values:
+                        Xa = Xs.copy()
+                        Xa[col] = v
+                        levels[str(v)] = _level(pipe, Xa, task, focus)
+                    if len(levels) >= 2:
+                        hi = max(levels, key=levels.get)
+                        lo = min(levels, key=levels.get)
+                        show = ((lambda x: "{:.0f}%".format(x * 100)) if task == "classification"
+                                else fmt)
+                        what = ("the chance of '{}'".format(focus_label)
+                                if task == "classification" else tgt)
+                        direction = "varies"
+                        explanation = ("In the model, {} is highest for '{}' ({}) and "
+                                       "lowest for '{}' ({}).".format(
+                                           what, hi, show(levels[hi]), lo, show(levels[lo])))
+                else:
+                    lo_v, hi_v = (float(v) for v in X_train[col].quantile([0.25, 0.75]))
+                    if hi_v > lo_v:
+                        Xa, Xb = Xs.copy(), Xs.copy()
+                        Xa[col], Xb[col] = lo_v, hi_v
+                        delta = _level(pipe, Xb, task, focus) - _level(pipe, Xa, task, focus)
+                        small = (0.005 if task == "classification"
+                                 else 0.01 * (y_scale or 1.0))
+                        what = ("a {} chance of '{}'" if task == "classification"
+                                else "{} " + tgt)
+                        if abs(delta) < small:
+                            direction = "flat"
+                            explanation = ("Moving '{}' from {} to {} (its middle half) "
+                                           "barely changes the prediction.".format(
+                                               col, fmt(lo_v), fmt(hi_v)))
+                        else:
+                            direction = "positive" if delta > 0 else "negative"
+                            way = "higher" if delta > 0 else "lower"
+                            explanation = ("In the model, '{}' at {} rather than {} goes "
+                                           "with {} by {}.".format(
+                                               col, fmt(hi_v), fmt(lo_v),
+                                               what.format(way, focus_label) if task == "classification"
+                                               else what.format(way),
+                                               _amount(delta)))
+            except Exception:
+                logger.debug("effect for %s failed", col, exc_info=True)
+        if not explanation:
+            explanation = "{:.0f}% of what the model's accuracy depends on.".format(pct)
+        out.append(FeatureImportance(feature=str(col), importance=round(float(share[i]), 4),
+                                     rank=rank, direction=direction,
+                                     explanation=explanation))
+    return out[:20]
 
-    # Build FeatureImportance list — zip ensures equal length
-    pairs  = list(zip(feature_names, norm_imp, directions))
-    ranked = sorted(enumerate(pairs), key=lambda x: x[1][1], reverse=True)
 
-    for rank, (i, (feat, imp, direction)) in enumerate(ranked, 1):
-        pct = float(imp) * 100
-
-        if pct > 30:
-            explanation = "Dominant feature — drives {:.0f}% of predictions. {}influence.".format(
-                pct, "Positive " if direction == "positive"
-                else "Negative " if direction == "negative" else "Mixed ")
-        elif pct > 10:
-            explanation = "Important feature ({:.0f}% contribution). {}effect on target.".format(
-                pct, "Increases " if direction == "positive"
-                else "Decreases " if direction == "negative" else "Mixed ")
-        elif pct > 3:
-            explanation = "Moderate contribution ({:.0f}%). Minor {} effect.".format(
-                pct, direction)
-        else:
-            explanation = "Low importance ({:.1f}%). Minimal impact on predictions.".format(pct)
-
-        importances.append(FeatureImportance(
-            feature=feat, importance=round(float(imp), 4),
-            rank=rank, direction=direction, explanation=explanation,
-        ))
-
-    return importances[:20], shap_values
-
-
-def describe_feature_inputs(X: pd.DataFrame, label_encoders: Dict,
+def describe_feature_inputs(X: pd.DataFrame, cat_cols: List[str],
                             datetime_origins: Dict) -> List[Dict]:
-    """What each feature accepts as a what-if input, in the user's terms.
-
-    X is the encoded training matrix, so categories and dates are decoded
-    back to what the user would type.
-    """
+    """What each feature accepts as a what-if input, in the user's terms."""
     out = []
     for col in X.columns:
         s = X[col].dropna()
-        if col in label_encoders:
-            classes = [str(c) for c in label_encoders[col].classes_]
-            mode = int(s.mode().iloc[0]) if len(s) else 0
-            out.append({"name": col, "kind": "category", "options": classes,
-                        "default": classes[mode] if mode < len(classes) else classes[0]})
+        if col in cat_cols:
+            counts = s.value_counts()
+            options = [str(v) for v in counts.index[:200]]
+            out.append({"name": col, "kind": "category", "options": options,
+                        "default": options[0] if options else None})
         elif col in datetime_origins:
             origin = pd.Timestamp(datetime_origins[col])
             day = lambda d: (origin + pd.Timedelta(days=float(d))).date().isoformat()
@@ -588,17 +700,17 @@ def describe_feature_inputs(X: pd.DataFrame, label_encoders: Dict,
 
 def _encode_what_if_inputs(ml_report: MLReport,
                            input_values: Dict[str, Any]) -> Tuple[pd.DataFrame, List[str]]:
-    """One feature row encoded exactly as the training data was.
+    """One feature row in the form the model was trained on.
 
-    The model was trained on label-encoded categories and on dates as days
-    since the earliest date, so raw inputs ("Sales", "2021-03-01") cannot
-    go to it as typed — they used to, and every categorical what-if failed
-    with "could not convert string to float". Features left out are passed
-    as missing, which the pipeline's imputer fills with the training median;
-    they are listed back so the caller knows the prediction assumed them.
+    Categories go in as their values, dates as days since the earliest
+    training date. A field left blank is passed as missing and filled the
+    way training filled it — the most common value of a category, the
+    median of a number — and is listed back so the caller knows.
     """
-    encoders = ml_report.label_encoders or {}
+    cat_cols = set(getattr(ml_report, "categorical_cols", None) or [])
     origins = getattr(ml_report, "datetime_origins", None) or {}
+    options = {f["name"]: set(f.get("options") or [])
+               for f in (ml_report.feature_inputs or []) if f.get("kind") == "category"}
     row, assumed = {}, []
     unknown = [k for k in input_values if k not in ml_report.feature_cols]
     if unknown:
@@ -610,12 +722,13 @@ def _encode_what_if_inputs(ml_report: MLReport,
             assumed.append(col)
             continue
         v = input_values[col]
-        if col in encoders:
-            known = list(encoders[col].classes_)
-            if str(v) not in known:
+        if col in cat_cols:
+            known = options.get(col, set())
+            if known and str(v) not in known:
+                shown = sorted(known)
                 raise ValueError("'{}' is not a value '{}' had in training. Known: {}".format(
-                    v, col, ", ".join(map(str, known[:20])) + (" …" if len(known) > 20 else "")))
-            row[col] = float(encoders[col].transform([str(v)])[0])
+                    v, col, ", ".join(shown[:20]) + (" …" if len(shown) > 20 else "")))
+            row[col] = str(v)
         elif col in origins:
             try:
                 when = pd.Timestamp(v)
@@ -630,7 +743,10 @@ def _encode_what_if_inputs(ml_report: MLReport,
                 row[col] = float(v)
             except (ValueError, TypeError):
                 raise ValueError("'{}' needs a number, got {!r}".format(col, v))
-    return pd.DataFrame([row])[ml_report.feature_cols], assumed
+    frame = pd.DataFrame([row])[ml_report.feature_cols]
+    for col in ml_report.feature_cols:
+        frame[col] = frame[col].astype(object) if col in cat_cols else frame[col].astype(float)
+    return frame, assumed
 
 
 def predict_what_if(
@@ -639,7 +755,7 @@ def predict_what_if(
 ) -> Dict:
     """
     Make a single prediction from user-supplied input values.
-    Returns prediction + confidence info, or {"error": ...}.
+    Returns prediction + how far to trust it, or {"error": ...}.
     """
     if ml_report.best_model is None or ml_report.best_model.model is None:
         return {"error": "No trained model available."}
@@ -653,7 +769,9 @@ def predict_what_if(
         pipe = ml_report.best_model.model
         pred = pipe.predict(X_input)[0]
         result: Dict[str, Any] = {"prediction": float(pred), "task": ml_report.task,
-                                  "target": ml_report.target_col}
+                                  "target": ml_report.target_col,
+                                  "model_score": ml_report.best_model.test_score,
+                                  "reliable": not ml_report.no_signal}
         if assumed:
             result["assumed_at_training_median"] = assumed
 
@@ -673,11 +791,14 @@ def predict_what_if(
             except Exception:
                 result["confidence"] = None
         else:
-            # Regression confidence interval (naive ± 1 RMSE)
-            rmse = ml_report.best_model.rmse or 0
-            result["lower"] = round(float(pred) - rmse, 4)
-            result["upper"] = round(float(pred) + rmse, 4)
-            result["confidence_note"] = "±{:.2f} (1x RMSE)".format(rmse)
+            # The range held-out predictions actually missed by: 8 in 10 of
+            # them fell between these errors. This was ±1 RMSE, labelled a
+            # confidence interval, which it is not.
+            lo_e, hi_e = getattr(ml_report, "residual_band", None) or (None, None)
+            if lo_e is not None:
+                result["lower"] = round(float(pred) + lo_e, 4)
+                result["upper"] = round(float(pred) + hi_e, 4)
+                result["confidence_note"] = "8 in 10 held-out predictions fell within this range"
 
         return result
 
@@ -688,6 +809,35 @@ def predict_what_if(
 # ══════════════════════════════════════════════════════════
 #  INSIGHTS GENERATOR
 # ══════════════════════════════════════════════════════════
+
+def _beats_chance(report: MLReport) -> bool:
+    """Does the classifier do better than chance on the held-out rows?
+
+    For two classes: do rows with the outcome get higher predicted
+    probabilities than rows without (a one-sided Mann-Whitney test — the
+    significance of the AUC)? Accuracy against the majority class has
+    little power on an imbalanced outcome: a real effect on 800 rows went
+    unrecognised. For more classes: is accuracy above always answering the
+    commonest class by more than chance (binomial test)?
+    """
+    from scipy.stats import binomtest, mannwhitneyu
+    best, y_test, X_test = report.best_model, report.y_test, report.X_test
+    try:
+        classes = np.unique(y_test)
+        if len(classes) == 2 and hasattr(best.model, "predict_proba"):
+            p = best.model.predict_proba(X_test)[:, 1]
+            pos, neg = p[np.asarray(y_test) == 1], p[np.asarray(y_test) == 0]
+            if len(pos) >= 5 and len(neg) >= 5:
+                return mannwhitneyu(pos, neg, alternative="greater").pvalue < 0.05
+        baseline = max((report.class_balance or {"": 1.0}).values())
+        n = len(y_test)
+        k = int(round(best.test_score * n))
+        return best.test_score > baseline and \
+            binomtest(k, n, baseline, alternative="greater").pvalue < 0.05
+    except Exception:
+        logger.debug("chance test failed", exc_info=True)
+        return False
+
 
 def _no_signal_note(report: MLReport) -> str:
     """Explain, when it applies, that the model has nothing to teach."""
@@ -707,12 +857,16 @@ def _no_signal_note(report: MLReport) -> str:
     if not balance:
         return ""
     label, baseline = max(balance.items(), key=lambda kv: kv[1])
-    if best.test_score > baseline + 0.01:
+    # Better than the free baseline by more than chance, on the held-out
+    # rows. "One point above" called 53% against 50% on 160 rows a signal.
+    n_test = len(report.y_test) if report.y_test is not None else 0
+    if n_test and _beats_chance(report):
         return ""
     return ("This model is no better than answering '{}' for every row ({:.1f}% "
-            "accuracy against {:.1f}%). Its feature ranking reflects noise, not "
-            "influence, and what-if predictions should not be relied on.".format(
-                label, best.test_score * 100, baseline * 100))
+            "accuracy against {:.1f}%, a difference within chance on {:,} held-out "
+            "rows). Its feature ranking reflects noise, not influence, and what-if "
+            "predictions should not be relied on.".format(
+                label, best.test_score * 100, baseline * 100, n_test))
 
 
 def _generate_insights(report: MLReport) -> List[str]:
@@ -805,6 +959,45 @@ def _generate_insights(report: MLReport) -> List[str]:
 #  MAIN ENTRY POINT
 # ══════════════════════════════════════════════════════════
 
+def _leaky_columns(X: pd.DataFrame, y: pd.Series, cat_cols: List[str]) -> List[Tuple[str, str]]:
+    """Columns that are (nearly) a copy of the target, with why.
+
+    A number correlated beyond 0.98 with a numeric target, or a category
+    whose value settles the outcome on 99% of rows when the outcome itself
+    is not that lopsided (a "leaving reason" that is blank for everyone who
+    stayed). Either produces a spectacular model that cannot be used,
+    because the column is only known once the outcome is.
+    """
+    out = []
+    y_num = pd.to_numeric(y, errors="coerce")
+    y_txt = y.astype(str)
+    base = float(y_txt.value_counts(normalize=True).iloc[0]) if len(y_txt) else 1.0
+    for col in X.columns:
+        try:
+            if col in cat_cols:
+                if y.nunique() > MAX_CLASSES or base > 0.95:
+                    continue
+                x = X[col].fillna("(blank)")
+                if x.nunique() > len(x) / 2:
+                    continue
+                majority = pd.crosstab(x, y_txt).max(axis=1).sum() / len(x)
+                if majority >= 0.99:
+                    out.append((col, "its value decides the outcome on {:.0%} of rows"
+                                .format(majority)))
+            elif y_num.notna().sum() >= 20:
+                x = X[col]
+                m = x.notna() & y_num.notna()
+                if m.sum() < 20 or x[m].nunique() < 2 or y_num[m].nunique() < 2:
+                    continue
+                r = float(np.corrcoef(x[m], y_num[m])[0, 1])
+                if abs(r) > 0.98:
+                    out.append((col, "it is almost identical to the target (|r|={:.3f})"
+                                .format(abs(r))))
+        except Exception:
+            logger.debug("leakage check failed for %s", col, exc_info=True)
+    return out
+
+
 def run_ml_pipeline(
     df: pd.DataFrame,
     target_col: str,
@@ -816,86 +1009,71 @@ def run_ml_pipeline(
     1. Detect task (regression/classification)
     2. Prepare features
     3. Train + cross-validate multiple models
-    4. Feature importance (SHAP if available)
+    4. Feature importance and effects, measured on held-out rows
     5. Generate insights
-    Returns MLReport.
+    Returns MLReport. Raises TargetError for a target that cannot be modelled.
     """
-    # Sample if large
     if len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
 
     task, task_reason = detect_task(df[target_col])
+    if task == "classification":
+        n_classes = int(df[target_col].nunique())
+        if n_classes > MAX_CLASSES:
+            raise TargetError(
+                "'{}' has {} different values — too many to predict as categories. "
+                "Pick an outcome with at most {} values, or a numeric measure.".format(
+                    target_col, n_classes, MAX_CLASSES))
 
-    # Class balance for classification
     class_balance = None
     if task == "classification":
-        vc = df[target_col].value_counts(normalize=True)
+        vc = df[target_col].dropna().astype(str).value_counts(normalize=True)
         class_balance = {str(k): round(float(v), 4) for k, v in vc.items()}
 
-    # Prepare features
-    X, y, label_encoders, datetime_origins = prepare_features(
-        df, target_col, selected_features)
+    X, y, cat_cols, datetime_origins = prepare_features(df, target_col, selected_features)
 
-    # ── Target-leakage guard ──────────────────────────────
-    # A feature that is (nearly) a copy of the target produces a
-    # spectacular but meaningless model. Detect and drop, with a warning.
     leakage_warnings = []
-    y_num = pd.to_numeric(pd.Series(y).reset_index(drop=True), errors="coerce")
-    if y_num.notna().sum() >= 20:
-        for col in list(X.columns):
-            try:
-                x_num = pd.to_numeric(X[col].reset_index(drop=True),
-                                      errors="coerce")
-                mask = x_num.notna() & y_num.notna()
-                if mask.sum() < 20 or x_num[mask].nunique() < 2:
-                    continue
-                r = float(np.corrcoef(x_num[mask], y_num[mask])[0, 1])
-                if abs(r) > 0.98:
-                    X = X.drop(columns=[col])
-                    leakage_warnings.append(
-                        "Dropped '{}' — it is almost identical to the target "
-                        "(|r|={:.3f}). Using it would fake a perfect model "
-                        "(target leakage).".format(col, abs(r)))
-            except Exception:
-                logger.debug("run_ml_pipeline: suppressed exception", exc_info=True)
-                continue
+    for col, why in _leaky_columns(X, y, cat_cols):
+        X = X.drop(columns=[col])
+        leakage_warnings.append(
+            "Left out '{}': {}. It is only known once the outcome is, so a model "
+            "using it would look perfect and be useless.".format(col, why))
+    cat_cols = [c for c in cat_cols if c in X.columns]
+    datetime_origins = {c: o for c, o in datetime_origins.items() if c in X.columns}
 
     if len(X.columns) == 0:
-        report = MLReport(
-            task=task, target_col=target_col,
-            feature_cols=[], n_rows_used=len(df), n_features=0,
-        )
+        report = MLReport(task=task, target_col=target_col, feature_cols=[],
+                          n_rows_used=len(df), n_features=0)
         report.warnings.append("No usable feature columns found after preprocessing.")
         return report
 
     if len(X) < 20:
-        report = MLReport(
-            task=task, target_col=target_col,
-            feature_cols=list(X.columns), n_rows_used=len(X), n_features=len(X.columns),
-        )
+        report = MLReport(task=task, target_col=target_col, feature_cols=list(X.columns),
+                          n_rows_used=len(X), n_features=len(X.columns))
         report.warnings.append("Too few rows ({}) for reliable ML. Need at least 20.".format(len(X)))
         return report
 
-    # Train models
-    model_results, X_test, y_test, target_encoder = train_models(X, y, task)
+    model_results, X_test, y_test, target_encoder = train_models(
+        X, y, task, cat_cols=cat_cols)
     best = next((m for m in model_results if m.is_best), None)
     if best is None:
         leakage_warnings.append(
             "No model could be trained on this target with these features.")
 
-    # Feature importance
-    feat_importance = []
-    shap_values     = None
-    if best and best.model is not None:
-        feat_importance, shap_values = get_feature_importance(
-            best, list(X.columns), X_test, task
-        )
+    X_train = X.drop(index=X_test.index)
+    y_train = (pd.Series(target_encoder.transform(
+                   y.loc[X_train.index].astype(str) if (is_text_dtype(y) or pd.api.types.is_bool_dtype(y))
+                   else y.loc[X_train.index]), index=X_train.index)
+               if task == "classification" else y.loc[X_train.index])
 
-    # Predictions on test set
-    y_pred = None
+    y_pred, residual_band = None, None
     if best and best.model is not None:
         try:
             y_pred = best.model.predict(X_test)
+            if task == "regression":
+                resid = np.asarray(y_test, dtype=float) - np.asarray(y_pred, dtype=float)
+                residual_band = (float(np.quantile(resid, 0.10)),
+                                 float(np.quantile(resid, 0.90)))
         except Exception:
             logger.debug("run_ml_pipeline: suppressed exception", exc_info=True)
 
@@ -908,17 +1086,14 @@ def run_ml_pipeline(
         class_balance=class_balance,
         models=model_results,
         best_model=best,
-        feature_importance=feat_importance,
-        shap_values=shap_values,
-        shap_feature_names=list(X.columns) if shap_values is not None else None,
         X_test=X_test,
         y_test=y_test,
         y_pred=y_pred,
-        preprocessor=None,
-        label_encoders=label_encoders,
         target_encoder=target_encoder,
         datetime_origins=datetime_origins,
-        feature_inputs=describe_feature_inputs(X, label_encoders, datetime_origins),
+        categorical_cols=cat_cols,
+        residual_band=residual_band,
+        feature_inputs=describe_feature_inputs(X, cat_cols, datetime_origins),
         warnings=[task_reason] + leakage_warnings,
         task_reason=task_reason,
     )
@@ -932,8 +1107,13 @@ def run_ml_pipeline(
             "(target leakage).".format(best.test_score))
 
     report.no_signal = _no_signal_note(report)
+    if best and best.model is not None:
+        report.feature_importance = get_feature_importance(
+            best, X_train, X_test, y_test, task, cat_cols, target_col,
+            target_encoder=target_encoder, y_train=y_train)
     if report.no_signal:
         for f in report.feature_importance:
+            f.direction = "mixed"
             f.explanation = ("{:.0f}% of what the model used — not evidence of an "
                              "effect, since the model does not predict.".format(
                                  f.importance * 100))

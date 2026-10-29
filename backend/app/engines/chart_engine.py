@@ -1,8 +1,6 @@
 import logging
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from typing import List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +8,6 @@ PALETTE  = ["#4f8ef7","#22d3a5","#f7934f","#a78bfa","#f77070","#ffd43b","#38bdf8
 TEMPLATE = "plotly_dark"
 
 
-from app.services.dtypes import text_columns
 
 
 def _style(fig):
@@ -23,69 +20,6 @@ def _style(fig):
     fig.update_xaxes(gridcolor="#1e2035", zeroline=False)
     fig.update_yaxes(gridcolor="#1e2035", zeroline=False)
     return fig
-
-
-def recommend_charts(df: pd.DataFrame) -> List[Tuple[str, go.Figure]]:
-    num_cols  = df.select_dtypes(include="number").columns.tolist()
-    cat_cols  = text_columns(df)
-    date_cols = df.select_dtypes(include="datetime").columns.tolist()
-    charts    = []
-
-    if date_cols and num_cols:
-        fig = px.line(
-            df.sort_values(date_cols[0]),
-            x=date_cols[0], y=num_cols[0],
-            title=f"📈 {num_cols[0]} Over Time",
-            template=TEMPLATE, color_discrete_sequence=PALETTE
-        )
-        charts.append(("Time Series", _style(fig)))
-
-    if len(num_cols) >= 3:
-        corr = df[num_cols].corr().round(2)
-        fig  = px.imshow(
-            corr, text_auto=True,
-            title="🔗 Correlation Matrix",
-            template=TEMPLATE,
-            color_continuous_scale="RdBu_r",
-            zmin=-1, zmax=1
-        )
-        charts.append(("Correlations", _style(fig)))
-
-    if cat_cols and num_cols:
-        best = next((c for c in cat_cols if 2 <= df[c].nunique() <= 30), cat_cols[0])
-        agg  = (df.groupby(best)[num_cols[0]].sum()
-                  .reset_index()
-                  .sort_values(num_cols[0], ascending=False)
-                  .head(20))
-        fig  = px.bar(
-            agg, x=best, y=num_cols[0],
-            title=f"📊 {num_cols[0]} by {best}",
-            template=TEMPLATE, color=num_cols[0],
-            color_continuous_scale="Blues"
-        )
-        charts.append(("Top Categories", _style(fig)))
-
-    if num_cols:
-        fig = px.histogram(
-            df, x=num_cols[0], nbins=40, marginal="box",
-            title=f"📉 Distribution: {num_cols[0]}",
-            template=TEMPLATE, color_discrete_sequence=PALETTE
-        )
-        charts.append(("Distribution", _style(fig)))
-
-    if len(num_cols) >= 2:
-        fig = px.scatter(
-            df.head(2000),
-            x=num_cols[0], y=num_cols[1],
-            color=cat_cols[0] if cat_cols else None,
-            title=f"🔵 {num_cols[0]} vs {num_cols[1]}",
-            template=TEMPLATE,
-            color_discrete_sequence=PALETTE,
-            opacity=0.7
-        )
-        charts.append(("Scatter", _style(fig)))
-
-    return charts
 
 
 def make_bar(df, x, y, title=""):
@@ -146,11 +80,14 @@ def make_pie(df, names_col, values_col, title="", max_slices=10):
 
 
 def make_heatmap(df):
-    num_cols = df.select_dtypes(include="number").columns.tolist()
-    corr     = df[num_cols].corr().round(2)
+    """Spearman correlation between the measures it is given; callers pass
+    measures only, so identifiers no longer appear as correlated."""
+    num_cols = [c for c in df.select_dtypes(include="number").columns
+                if not pd.api.types.is_bool_dtype(df[c])]
+    corr     = df[num_cols].corr(method="spearman").round(2)
     return _style(px.imshow(
         corr, text_auto=True,
-        title="Correlation Matrix",
+        title="",
         template=TEMPLATE,
         color_continuous_scale="RdBu_r",
         zmin=-1, zmax=1))
