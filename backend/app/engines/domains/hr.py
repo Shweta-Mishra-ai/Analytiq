@@ -58,6 +58,25 @@ def _segment_attrition_evidence(df: pd.DataFrame, segment_mask, segment_label: s
         return ""
 
 
+def _segment_exit_rates(df: pd.DataFrame, segment_mask):
+    """(segment rate %, everyone-else rate %, chi-square p) or None."""
+    try:
+        from app.services.stat_guards import chi2_association
+        left = _find_left_mask(df)
+        if left is None:
+            return None
+        mask = segment_mask.reindex(left.index, fill_value=False)
+        seg, rest = left[mask], left[~mask]
+        if len(seg) < 10 or len(rest) < 10:
+            return None
+        test = chi2_association(pd.crosstab(mask, left))
+        return (float(seg.mean() * 100), float(rest.mean() * 100),
+                float(test["p"]) if test else float("nan"))
+    except Exception:
+        logger.warning("segment exit rates failed", exc_info=True)
+        return None
+
+
 def compute_flight_risk(df: pd.DataFrame, left_mask=None):
     """Single source of truth for 'flight risk' headcount.
 
@@ -202,7 +221,9 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
 
     # Flight risk — single shared definition, see compute_flight_risk().
     n_flight, flight_pct, _sat_col = compute_flight_risk(df, left_mask=left_mask)
-    cost_str   = "Replacing {:,} employees estimated at 50-150% of annual salary each".format(n_left)
+    cost_str   = ("Replacing an employee is commonly estimated at 50–150% of a year's "
+                  "salary (SHRM); applied to {:,} leavers, your own replacement cost "
+                  "gives the figure for this organisation".format(n_left))
 
     return AttritionAnalysis(
         rate=rate, n_left=n_left, n_total=n_total,
@@ -211,9 +232,11 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
         salary_attrition=salary_attrition,
         n_flight_risk=n_flight, flight_risk_pct=flight_pct,
         cost_estimate=cost_str,
-        interpretation="{:.1f}% attrition ({:,} employees). {} severity. Top driver: {}.".format(
-            rate, n_left, severity.upper(),
-            top_drivers[0]["factor"] if top_drivers else "unknown"),
+        interpretation="{:.1f}% attrition ({:,} employees).{}".format(
+            rate, n_left,
+            " The factor most associated with leaving is '{}'.".format(
+                top_drivers[0]["factor"]) if top_drivers else
+            " No factor in this data separates leavers from stayers beyond chance."),
     )
 
 
@@ -300,20 +323,21 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
                 cause="Rate is {:.1f}pp above the 10–15% planning band used in this "
                       "analysis (healthy rates vary by industry — verify against your "
                       "sector data). ".format(rate - 12.5) +
-                      ("Primary driver: '{}'".format(attrition.top_drivers[0]["factor"])
-                       if attrition.top_drivers else "Multiple factors"),
+                      ("The factor most associated with leaving is '{}'.".format(
+                          attrition.top_drivers[0]["factor"])
+                       if attrition.top_drivers else
+                       "This data does not show what is driving it."),
                 evidence="Planning band: 10–15% (indicative). Current: {:.1f}%. "
                          "{:,} remaining employees at flight risk ({:.0f}%).".format(
                     rate, attrition.n_flight_risk, attrition.flight_risk_pct),
-                action="1. Exit interviews with all {:,} leavers this week  "
-                       "2. Salary benchmarking vs market  "
-                       "3. Engagement survey for remaining staff  "
-                       "4. Identify and retain top performers".format(attrition.n_left),
-                impact=attrition.cost_estimate + ". Knowledge loss accelerates with each exit.",
+                action="1. Interview leavers where possible, to learn why they left  "
+                       "2. Compare pay with the market for the roles with the most exits  "
+                       "3. Ask the staff who remain what would keep them",
+                impact=attrition.cost_estimate + ".",
                 severity="critical", category="attrition"
             ))
-            risks.append("CRITICAL: {:.1f}% attrition — {:,} employees left. {}".format(
-                rate, attrition.n_left, attrition.cost_estimate))
+            risks.append("{:.1f}% attrition — {:,} employees left, above the 10–15% "
+                         "planning band.".format(rate, attrition.n_left))
         else:
             findings.append("Attrition rate {:.1f}% within the 10–15% planning band.".format(rate))
 
@@ -392,6 +416,19 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
         low_n      = int(low_mask.sum()) if sat_col in df.columns else 0
         low_pct    = round(low_n / len(df) * 100, 1) if len(df) else 0.0
 
+        exits = _segment_exit_rates(df, df[sat_col] < low_thresh)
+        drives_exits = bool(exits and exits[0] > exits[1] and exits[2] < 0.05)
+        if exits is None:
+            exit_impact = ("This data has no record of who left, so the effect of low "
+                           "satisfaction on exits cannot be measured here.")
+        elif drives_exits:
+            exit_impact = ("Employees in the bottom band leave at {:.1f}% against {:.1f}% "
+                           "for everyone else (p={:.3f}) — the measured cost of low "
+                           "satisfaction in this data.".format(*exits))
+        else:
+            exit_impact = ("Employees in the bottom band leave at about the same rate as "
+                           "everyone else ({:.1f}% vs {:.1f}%), so low satisfaction is not "
+                           "what separates leavers here.".format(exits[0], exits[1]))
         if pct < 55:
             insights.append(build_insight(
                 title="Satisfaction averages {:.0f}% of scale — {:,} employees in the bottom band".format(pct, low_n),
@@ -411,15 +448,16 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
                               mean_s, min_s, max_s, pct, low_n, low_pct, low_thresh)
                           + _segment_attrition_evidence(
                               df, df[sat_col] < low_thresh,
-                              "critically dissatisfied employees")),
-                action="1. Anonymous pulse survey — identify top 3 pain points (48 hrs)  "
-                       "2. Quick wins: flexible hours, recognition program, manager training  "
-                       "3. Publish action plan within 30 days",
-                impact="The dissatisfied segment is the highest-priority retention risk — "
-                       "its measured exit rate above quantifies the exposure for this dataset.",
-                severity="critical", category="satisfaction"
+                              "employees in the bottom band")),
+                action="1. Find out what lies behind the low scores — survey comments, exit "
+                       "interviews  2. Break satisfaction down by department or manager to "
+                       "see where it is lowest",
+                impact=exit_impact,
+                severity="critical" if (pct < 40 or drives_exits) else "warning",
+                category="satisfaction"
             ))
-            risks.append("Satisfaction {:.0f}% — {:,} employees critically disengaged".format(pct, low_n))
+            risks.append("{:,} employees ({:.0f}%) score in the bottom band of the "
+                         "satisfaction scale.".format(low_n, low_pct))
         elif pct < 70:
             insights.append(build_insight(
                 title="Satisfaction Below Target: {:.0f}% (Target: 70%+)".format(pct),

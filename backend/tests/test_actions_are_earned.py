@@ -35,7 +35,7 @@ def _transactions(heavy: bool, n: int = 1000, seed: int = 4) -> pd.DataFrame:
 
 def _overview(story):
     return next(i for i in story.top_insights
-                if getattr(i, "title", "").startswith("Revenue Overview"))
+                if getattr(i, "title", "").startswith("Revenue per transaction"))
 
 
 def test_the_fixture_is_read_as_sales_data():

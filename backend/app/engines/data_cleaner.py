@@ -169,24 +169,16 @@ def _describe_key_duplicates(df: pd.DataFrame) -> tuple[str, str]:
 
     Returns (column, description); ("", "") when no identifier repeats.
     """
-    from app.engines.domains.base import is_id_column
-    for col in df.columns:
-        try:
-            if not is_id_column(col, df[col]):
-                continue
-            non_null = df[col].dropna()
-            if len(non_null) < 10:
-                continue
-            n_dupe_keys = int(non_null.duplicated().sum())
-            if n_dupe_keys > 0:
-                return col, (
-                    f"'{col}' repeats for {n_dupe_keys:,} row(s). Exact-duplicate "
-                    "rows were removed, but these share an identifier while "
-                    "differing elsewhere — confirm whether they are genuine "
-                    "repeat events or an unresolved join before aggregating."
-                )
-        except Exception:
-            logger.debug("key-duplicate check failed for %s", col, exc_info=True)
+    from app.engines.domains.base import duplicated_key
+    found = duplicated_key(df)
+    if found:
+        col, n_dupe_keys = found
+        return col, (
+            f"'{col}' repeats for {n_dupe_keys:,} row(s). Exact-duplicate "
+            "rows were removed, but these share an identifier while "
+            "differing elsewhere — confirm whether they are genuine "
+            "repeat events or an unresolved join before aggregating."
+        )
     return "", ""
 
 

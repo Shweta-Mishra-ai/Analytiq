@@ -86,6 +86,39 @@ def is_id_column(col: str, series=None) -> bool:
     return False
 
 
+def duplicated_key(df) -> "tuple[str, int] | None":
+    """The row key that repeats when it should not: (column, repeats).
+
+    Only a column meant to name each row can be duplicated. In an orders
+    table order_id is that key; customer_id repeats because customers order
+    more than once, and flagging it called an ordinary sales file "not
+    ready to analyse". So: if any identifier is unique, the table has its
+    key and the others are references. Otherwise an identifier is treated
+    as the key when the table records no events (no date column: one row
+    per entity is expected), or when it is nearly unique — a few repeats in
+    a column of distinct values is a duplicate, while systematic repetition
+    alongside a date is the same customer coming back.
+    """
+    ids = []
+    for col in df.columns:
+        try:
+            if not is_id_column(col, df[col]):
+                continue
+            s = df[col].dropna()
+            if len(s) >= 10:
+                ids.append((col, s))
+        except Exception:
+            logger.debug("duplicated_key: skipped %r", col, exc_info=True)
+    if any(s.is_unique for _, s in ids):
+        return None
+    has_events = any(str(t).startswith("datetime") for t in df.dtypes)
+    for col, s in ids:
+        repeats = int(s.duplicated().sum())
+        if repeats and (not has_events or s.nunique() >= 0.9 * len(s)):
+            return str(col), repeats
+    return None
+
+
 def infer_confidence(evidence: str, severity: str = "") -> str:
     """
     Grade how strongly the DATA supports an insight, from its evidence text.

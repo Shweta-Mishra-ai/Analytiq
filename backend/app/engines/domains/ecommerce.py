@@ -201,12 +201,10 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                 cause="Bottom-rated products are pulling the catalogue average down — "
                       "quality, description, or delivery mismatch worth investigating",
                 evidence=("Mean={:.2f} on a {:.0f}-{:.0f} scale. Planning target: {}+. "
-                          "Bottom 25% rated below {:.1f}. {:,} critically low-rated "
-                          "products. ".format(mean_r, lo, hi, pt, q1, low_n) + rev_ev),
-                action="1. Immediate audit of the lowest-rated products  "
-                       "2. Customer feedback analysis for bottom-rated items  "
-                       "3. Supplier quality review for failing products  "
-                       "4. Remove or improve within 14 days",
+                          "Bottom 25% rated below {:.1f}. {:,} products rated "
+                          "low. ".format(mean_r, lo, hi, pt, q1, low_n) + rev_ev),
+                action="1. Read the reviews of the lowest-rated products for a common "
+                       "complaint  2. Check whether the same supplier or category recurs",
                 impact="Low ratings are associated with lower revenue in this catalog "
                        "(see the comparison above); lifting them is a retention lever "
                        "to test, not a guaranteed gain.",

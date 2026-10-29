@@ -95,6 +95,11 @@ def _sales_cycle_insights(df: pd.DataFrame, insights: List, findings: List,
         logger.warning("sales cycle length analysis failed", exc_info=True)
 
 
+def _fmt_money(x: float) -> str:
+    from app.engines.chart_exporter import fmt
+    return fmt(float(x))
+
+
 def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     findings, risks, opps, actions = [], [], [], []
     insights = []
@@ -139,8 +144,8 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         revenue_concentrated = concentrated
 
         insights.append(build_insight(
-            title="Revenue Overview: Mean {:.0f} | Median {:.0f} | Range {:.0f}-{:.0f}".format(
-                mean, med, st["min"], st["max"]),
+            title="Revenue per transaction: median {}, mean {}".format(
+                _fmt_money(med), _fmt_money(mean)),
             problem="Revenue distribution" + (
                 " — concentrated in the largest transactions" if concentrated else
                 " — skewed, but not concentrated" if skew > 1 else ""),
@@ -308,15 +313,16 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
 
         if neg_n > 0:
             insights.append(build_insight(
-                title="{:,} Loss-Making Transactions ({:.0f}%) — Immediate Review".format(neg_n, neg_pct),
+                title="{:,} loss-making transactions ({:.0f}%)".format(neg_n, neg_pct),
                 problem="{:,} transactions ({:.0f}%) generating negative profit/margin".format(neg_n, neg_pct),
-                cause="Below-cost pricing, excessive discounts, high returns, or incorrect cost allocation",
+                cause="Not identifiable from this data. Common causes are below-cost "
+                      "pricing, discounts, returns or how costs are allocated.",
                 evidence="{:,} negative profit transactions. Mean margin={:.2f}. "
                          "Loss transactions erode overall profitability.".format(neg_n, mean_profit),
-                action="1. Identify all loss-making transactions this week  "
-                       "2. Root cause: pricing error, returns, or discounts?  "
-                       "3. Reprice or discontinue unprofitable products",
-                impact="Eliminating {:.0f}% loss transactions = direct profitability improvement".format(neg_pct),
+                action="1. List the loss-making transactions and look for what they share  "
+                       "2. Check pricing, discounts and returns for those lines",
+                impact="Losses on {:.0f}% of transactions reduce overall margin by the "
+                       "amount they lose.".format(neg_pct),
                 severity="critical" if neg_pct>10 else "warning",
                 category="profitability"
             ))

@@ -252,4 +252,4 @@ def test_no_page_or_report_analyses_an_identifier(client, uploaded_dataset_id):
     # Allowed: the note that tells the reader to exclude it, and the bare
     # name in a table cell (column inventories). Not allowed: any sentence
     # or statistic about it.
-    assert all("ID COLUMNS DETECTED" in l or l.strip() == "employee_id" for l in lines), lines
+    assert all("Identifier columns (" in l or l.strip() == "employee_id" for l in lines), lines

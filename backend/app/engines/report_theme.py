@@ -10,6 +10,10 @@ that fought each other on the page. Status colours are reserved for status.
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Shared by every theme: text, rules and the meaning of status colours.
 _NEUTRAL = {
     "text":        "#1F2937", "text_muted":  "#6B7280",

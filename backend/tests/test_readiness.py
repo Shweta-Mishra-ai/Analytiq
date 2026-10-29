@@ -103,6 +103,33 @@ def test_a_repeated_identity_key_blocks_analysis():
     assert "customer_id" in _issue_columns(rep)
 
 
+def test_a_customer_reference_in_an_orders_table_is_not_a_duplicate():
+    # Customers order more than once; order_id is the row key. This was
+    # reported as "not ready to analyse" for an ordinary sales export.
+    rng = np.random.default_rng(72)
+    n = 300
+    df = pd.DataFrame({
+        "order_id": [f"O{i}" for i in range(n)],
+        "customer_id": rng.integers(1, 60, n),
+        "order_date": pd.date_range("2025-01-01", periods=n, freq="D"),
+        "amount": rng.gamma(2, 50, n).round(2),
+    })
+    assert "customer_id" not in _issue_columns(assess_readiness(df))
+    # Without an order id, a dated table still records repeat purchases.
+    assert "customer_id" not in _issue_columns(assess_readiness(df.drop(columns="order_id")))
+
+
+def test_a_nearly_unique_key_with_a_few_repeats_is_still_flagged():
+    rng = np.random.default_rng(73)
+    n = 300
+    df = pd.DataFrame({
+        "invoice_id": [f"I{i}" for i in range(n - 6)] + [f"I{i}" for i in range(6)],
+        "invoice_date": pd.date_range("2025-01-01", periods=n, freq="D"),
+        "amount": rng.gamma(2, 50, n).round(2),
+    })
+    assert "invoice_id" in _issue_columns(assess_readiness(df))
+
+
 def test_a_mostly_empty_column_blocks_analysis(clean_df):
     df = clean_df.copy()
     df.loc[df.index[:200], "revenue"] = np.nan

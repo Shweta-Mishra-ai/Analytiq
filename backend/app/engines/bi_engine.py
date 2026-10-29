@@ -668,10 +668,12 @@ def analyze_pareto(
 
     # The top group count is rounded up, so with 7 groups "the top 20%" is
     # 2 of them — 29%. State the real fraction.
+    lead = ("The largest of {} '{}' groups".format(n, group_col) if top_20_n == 1
+            else "The largest {} of {} '{}' groups ({:.0f}% of groups)".format(
+                top_20_n, n, group_col, top_20_n / n * 100))
     interp = (
-        "The top {} of {} '{}' groups ({:.0f}% of groups) account for {:.1f}% "
-        "of total '{}'. {}".format(
-            top_20_n, n, group_col, top_20_n / n * 100, top_share, value_col,
+        "{} account{} for {:.1f}% of total '{}'. {}".format(
+            lead, "s" if top_20_n == 1 else "", top_share, value_col,
             "A concentrated, 80/20-like pattern." if pareto_holds
             else "Value is spread more widely than an 80/20 pattern.")
     )
@@ -805,6 +807,17 @@ def analyze_segment_health(
 #  KEY INSIGHTS GENERATOR
 # ══════════════════════════════════════════════════════════
 
+def _top_groups_phrase(p) -> str:
+    """'Central, the largest of 5 region groups,' or 'the largest 2 of 7'."""
+    if p.top_20_pct_groups == 1 and getattr(p, "groups", None):
+        first = p.groups[0]
+        name = first.get("name", first.get(p.group_col, "")) if isinstance(first, dict) else first
+        if name not in (None, ""):
+            return "'{}', the largest of {} groups,".format(name, len(p.groups))
+        return "the largest of {} groups".format(len(p.groups))
+    return "the largest {} of {} groups".format(p.top_20_pct_groups, len(p.groups))
+
+
 def _generate_key_insights(
     report: BIReport, df: pd.DataFrame
 ) -> Tuple[List[str], str]:
@@ -814,17 +827,15 @@ def _generate_key_insights(
     for p in report.pareto:
         if p.pareto_holds:
             insights.append(
-                "'{}' is concentrated by '{}': the top {} of {} groups hold "
-                "{:.0f}% of the total.".format(
-                    p.value_col, p.group_col, p.top_20_pct_groups,
-                    len(p.groups), p.top_groups_share)
+                "'{}' is concentrated: {} hold{} {:.0f}% of the total.".format(
+                    p.value_col, _top_groups_phrase(p),
+                    "s" if p.top_20_pct_groups == 1 else "", p.top_groups_share)
             )
         else:
             insights.append(
-                "The top {} of {} '{}' groups hold {:.0f}% of '{}' — spread "
-                "more widely than an 80/20 pattern.".format(
-                    p.top_20_pct_groups, len(p.groups), p.group_col,
-                    p.top_groups_share, p.value_col)
+                "'{}' is spread across '{}' groups: {} hold{} {:.0f}% of it.".format(
+                    p.value_col, p.group_col, _top_groups_phrase(p),
+                    "s" if p.top_20_pct_groups == 1 else "", p.top_groups_share)
             )
 
     # Root cause insights
@@ -863,7 +874,7 @@ def _generate_key_insights(
         )
 
     # Executive brief
-    brief = "Business Intelligence analysis completed. "
+    brief = ""
     if insights:
         brief += insights[0] + " "
     if sig_cohorts:

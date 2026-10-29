@@ -364,18 +364,17 @@ def _generate_recommendations(
     if dup_rows > 0:
         dup_pct = dup_rows / max(n_rows, 1) * 100
         recs.append(
-            "CRITICAL: {:,} duplicate rows detected ({:.1f}% of data). "
-            "Remove duplicates before any analysis — they inflate counts "
-            "and distort aggregations.".format(dup_rows, dup_pct)
+            "{:,} duplicate rows ({:.1f}% of the data) — remove them before "
+            "analysis; they inflate counts and totals.".format(dup_rows, dup_pct)
         )
 
     # Critical: High missing overall
     miss_pct_overall = missing / max(total, 1) * 100
     if miss_pct_overall > 20:
         recs.append(
-            "CRITICAL: {:.1f}% of all data is missing. "
-            "Analysis reliability is compromised. "
-            "Review data collection process and imputation strategy.".format(miss_pct_overall)
+            "{:.1f}% of all values are missing, which limits what the analysis can "
+            "rely on. Review how the data is collected before drawing "
+            "conclusions.".format(miss_pct_overall)
         )
 
     # Per-column issues — sorted by severity
@@ -403,17 +402,16 @@ def _generate_recommendations(
     # Constant columns
     if const_cols:
         recs.append(
-            "DROP COLUMNS: {} column(s) have zero variance ({}) — "
-            "they add no analytical value and should be removed.".format(
+            "{} column(s) hold a single value ({}) and add nothing to the "
+            "analysis.".format(
                 len(const_cols), ", ".join(const_cols[:3]))
         )
 
     # High missing — recommend drop
     for col, pct in drop_cols[:3]:
         recs.append(
-            "CONSIDER DROPPING '{}': {:.1f}% missing values. "
-            "Imputing more than 50% of a column introduces more noise than signal. "
-            "Drop unless the column is critical.".format(col, pct)
+            "'{}' is {:.1f}% empty; filling in that much would invent more than it "
+            "recovers, so leave it out unless it is essential.".format(col, pct)
         )
 
     # Missing — recommend imputation
@@ -422,16 +420,16 @@ def _generate_recommendations(
 
     if numeric_impute:
         recs.append(
-            "IMPUTE (Numeric): {} column(s) have missing values — {}. "
-            "Use median imputation (robust to outliers) not mean.".format(
+            "{} numeric column(s) have gaps — {}. If they are filled, use the "
+            "median, which outliers do not distort.".format(
                 len(numeric_impute),
                 ", ".join(["'{}' ({:.0f}%)".format(c,p) for c,p in numeric_impute[:3]]))
         )
 
     if cat_impute:
         recs.append(
-            "IMPUTE (Categorical): {} column(s) have missing values — {}. "
-            "Fill with mode (most frequent value) or a dedicated 'Unknown' category.".format(
+            "{} text column(s) have gaps — {}. Fill them with an explicit "
+            "'Unknown' rather than the most common value.".format(
                 len(cat_impute),
                 ", ".join(["'{}' ({:.0f}%)".format(c,p) for c,p in cat_impute[:3]]))
         )
@@ -440,19 +438,17 @@ def _generate_recommendations(
     if outlier_cols:
         top_out = max(outlier_cols, key=lambda x: x[2])
         recs.append(
-            "OUTLIERS DETECTED: {} column(s) have significant outliers. "
-            "Worst: '{}' ({:,} values, {:.1f}%). "
-            "Investigate: are these data entry errors or genuine extremes? "
-            "Do NOT remove without understanding root cause.".format(
+            "{} column(s) contain notable outliers; most in '{}' ({:,} values, "
+            "{:.1f}%). Check whether they are entry errors or genuine extremes "
+            "before removing any.".format(
                 len(outlier_cols), top_out[0], top_out[1], top_out[2])
         )
 
     # Skewness
     if skew_cols:
         recs.append(
-            "SKEWED DISTRIBUTIONS: {} column(s) are heavily skewed — {}. "
-            "Use MEDIAN not mean for reporting these columns. "
-            "Apply log-transform if using in regression models.".format(
+            "{} column(s) are heavily skewed — {}. Report their median rather "
+            "than the mean.".format(
                 len(skew_cols),
                 ", ".join(["'{}' (skew={:.1f})".format(c,s) for c,s in skew_cols[:3]]))
         )
@@ -460,18 +456,16 @@ def _generate_recommendations(
     # ID columns
     if id_cols:
         recs.append(
-            "ID COLUMNS DETECTED: {} ({}) — exclude from statistical analysis, "
-            "grouping, and ML features. Use only as row identifiers.".format(
-                len(id_cols), ", ".join(id_cols[:4]))
+            "Identifier columns ({}) name records and are left out of every "
+            "statistic.".format(", ".join(id_cols[:4]))
         )
 
     # Positive finding
     good_cols = [p for p in profiles if p.quality_score >= 95]
     if len(good_cols) >= len(profiles) * 0.7:
         recs.append(
-            "GOOD: {:.0f}% of columns ({}/{}) have high data quality scores (95+). "
-            "Dataset is suitable for reliable analysis.".format(
-                len(good_cols)/len(profiles)*100, len(good_cols), len(profiles))
+            "{} of {} columns score 95 or more for quality.".format(
+                len(good_cols), len(profiles))
         )
 
     return recs

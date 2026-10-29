@@ -223,7 +223,7 @@ def test_pareto_only_for_additive_non_negative_totals_with_enough_groups():
     cols = {p.value_col: p for p in run_bi(df).pareto}
     assert "satisfaction_score" not in cols and "profit" not in cols
     p = cols["revenue"]
-    assert f"top {p.top_20_pct_groups} of 7" in p.interpretation
+    assert f"largest {p.top_20_pct_groups} of 7" in p.interpretation
     four = df[df["region"].isin(list("ABCD"))]
     assert run_bi(four).pareto == []
 

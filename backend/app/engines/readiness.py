@@ -236,29 +236,22 @@ def _check_duplicates(df: pd.DataFrame, issues: List[ReadinessIssue]) -> None:
             fix="Remove exact duplicates (auto-clean does this).",
             blocking=True))
 
-    for col in df.columns:
-        try:
-            if not is_id_column(col, df[col]):
-                continue
-            non_null = df[col].dropna()
-            if len(non_null) < 10:
-                continue
-            repeats = int(non_null.duplicated().sum())
-            if repeats:
-                issues.append(ReadinessIssue(
-                    column=str(col),
-                    issue=f"identifier repeats for {repeats:,} row(s)",
-                    consequence=(
-                        "One entity appears more than once, so it is counted "
-                        "more than once in every total. Exact-duplicate "
-                        "removal does not catch this because the other "
-                        "columns differ."),
-                    fix=("Confirm whether these are genuine repeat events or "
-                         "an unresolved join, and aggregate to one row per "
-                         "entity if they are not."),
-                    blocking=True))
-        except Exception:
-            logger.debug("duplicate-key check failed for %s", col, exc_info=True)
+    from app.engines.domains.base import duplicated_key
+    found = duplicated_key(df)
+    if found:
+        col, repeats = found
+        issues.append(ReadinessIssue(
+            column=col,
+            issue=f"identifier repeats for {repeats:,} row(s)",
+            consequence=(
+                "One entity appears more than once, so it is counted "
+                "more than once in every total. Exact-duplicate "
+                "removal does not catch this because the other "
+                "columns differ."),
+            fix=("Confirm whether these are genuine repeat events or "
+                 "an unresolved join, and aggregate to one row per "
+                 "entity if they are not."),
+            blocking=True))
 
 
 def _check_shape(df: pd.DataFrame, issues: List[ReadinessIssue]) -> None:

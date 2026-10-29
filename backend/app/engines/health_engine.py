@@ -193,8 +193,8 @@ def build_insights(df: pd.DataFrame, niche: str) -> list:
                 insights.append(_ins(
                     "DEPARTMENT RISK",
                     "'{}' has the highest attrition: {:.1f}%".format(top_dept, top_rate),
-                    "The **{}** department shows {:.1f}% attrition — {} the 10% planning threshold. Department-level attrition often signals a specific manager, workload, or pay equity issue.".format(top_dept, top_rate, "critically above" if top_rate > 20 else "above"),
-                    "Prioritize '{}' for skip-level interviews and exit interview analysis.".format(top_dept),
+                    "The **{}** department shows {:.1f}% attrition, {} the 10% planning threshold.".format(top_dept, top_rate, "well above" if top_rate > 20 else "above"),
+                    "Ask leavers from '{}' why they left, and compare its pay and workload with other departments.".format(top_dept),
                     sev
                 ))
             except Exception:
@@ -376,9 +376,8 @@ def build_insights(df: pd.DataFrame, niche: str) -> list:
                         "**{:,} current employees** ({:.0f}% of workforce) fall in the bottom "
                         "quartile of satisfaction — the flight risk profile.{}".format(
                             n_flight, risk_pct, tenure_note),
-                        "Pull this segment's names from your HRIS immediately. "
-                        "Schedule 1:1 career conversations within 2 weeks. "
-                        "This is your highest-priority retention action — act before they decide.",
+                        "Satisfaction alone marks this group; check whether it also "
+                        "leaves at a higher rate before treating it as the priority.",
                         "critical" if risk_pct > 20 else "warning"
                     ))
             except Exception:

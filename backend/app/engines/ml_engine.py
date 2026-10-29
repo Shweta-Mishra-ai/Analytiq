@@ -98,6 +98,9 @@ class MLReport:
     feature_inputs:     List[Dict] = field(default_factory=list)
     warnings:           List[str] = field(default_factory=list)
     insights:           List[str] = field(default_factory=list)
+    # Why the task was chosen ("Continuous numeric target (…)"): shown in
+    # the app, not printed in the report.
+    task_reason:        str = ""
     # Set when the best model is no better than a trivial guess. Feature
     # importances always sum to 100%, so they still rank — noise.
     no_signal:          str = ""
@@ -720,22 +723,12 @@ def _generate_insights(report: MLReport) -> List[str]:
     # Performance interpretation
     if report.task == "regression":
         r2 = best.test_score
-        if r2 >= 0.85:
+        fit = ("a strong fit" if r2 >= 0.85 else "a good fit" if r2 >= 0.70
+               else "a moderate fit" if r2 >= 0.50 else "a weak fit")
+        if r2 >= 0.05:
             insights.append(
-                "Excellent model: R2={:.2f} — model explains {:.0f}% of variance in '{}'.".format(
-                    r2, r2*100, report.target_col))
-        elif r2 >= 0.70:
-            insights.append(
-                "Good model: R2={:.2f} — explains {:.0f}% of variance. "
-                "Acceptable for business use.".format(r2, r2*100))
-        elif r2 >= 0.50:
-            insights.append(
-                "Moderate model: R2={:.2f} — explains {:.0f}% of variance. "
-                "Consider adding more features.".format(r2, r2*100))
-        else:
-            insights.append(
-                "Weak model: R2={:.2f} — '{}' is difficult to predict "
-                "from current features.".format(r2, report.target_col))
+                "The model explains {:.0f}% of the variation in '{}' on rows it was not "
+                "trained on (R²={:.2f}) — {}.".format(r2 * 100, report.target_col, r2, fit))
     else:
         # Judged against always predicting the most common class — the
         # accuracy any model gets for free. This said "Good classifier: 80%
@@ -751,8 +744,7 @@ def _generate_insights(report: MLReport) -> List[str]:
             insights.append(
                 "No better than always predicting the most common class: "
                 "{:.1f}% accuracy, against {:.1f}% from answering '{}' for "
-                "every row. Not usable for prediction as it stands.".format(
-                    acc * 100, baseline * 100, majority_label))
+                "every row.".format(acc * 100, baseline * 100, majority_label))
         elif lift_pp < 5:
             insights.append(
                 "Weak classifier: {:.1f}% accuracy, only {:.1f} points above "
@@ -765,35 +757,33 @@ def _generate_insights(report: MLReport) -> List[str]:
                     acc * 100, lift_pp, baseline * 100, majority_label))
 
     # Overfitting
-    if best.overfit_label == "Severe":
+    if best.overfit_label == "Severe" and not report.no_signal:
         insights.append(
-            "WARNING: Severe overfitting detected (train={:.2f} vs test={:.2f}). "
-            "Model memorized training data — will not generalize.".format(
-                best.train_score, best.test_score))
-    elif best.overfit_label == "Mild":
+            "It scores {:.2f} on its training rows but {:.2f} on new ones, so expect "
+            "its predictions for new records to be noticeably worse than its "
+            "training score suggests.".format(best.train_score, best.test_score))
+    elif best.overfit_label == "Mild" and not report.no_signal:
         insights.append(
-            "Mild overfitting (gap={:.2f}). "
-            "Consider regularization or more training data.".format(best.overfit_gap))
+            "It does slightly better on its training rows than on new ones (a gap of "
+            "{:.2f}).".format(best.overfit_gap))
 
     # Top feature — meaningless when the model has no predictive power.
     if report.feature_importance and not report.no_signal:
         top = report.feature_importance[0]
         insights.append(
-            "Most important predictor: '{}' ({:.0f}% contribution). {}".format(
-                top.feature, top.importance*100, top.explanation))
+            "It relies most on '{}' ({:.0f}% of the model).".format(
+                top.feature, top.importance * 100))
 
     # Model comparison — among models that trained; a failed one carries a
     # -999 sentinel score, not a result.
     trained = [m for m in report.models if m.model is not None]
-    if len(trained) >= 2:
+    if len(trained) >= 2 and not report.no_signal:
         best_cv  = trained[0].cv_score
         worst_cv = trained[-1].cv_score
         if best_cv - worst_cv > 0.1:
             insights.append(
-                "Large model performance gap: best ({}) CV={:.2f} "
-                "vs worst ({}) CV={:.2f}. Model choice matters for this dataset.".format(
-                    trained[0].name, best_cv,
-                    trained[-1].name, worst_cv))
+                "{} did best of the {} methods tried ({:.2f} against {:.2f} for {}).".format(
+                    trained[0].name, len(trained), best_cv, worst_cv, trained[-1].name))
     failed = [m.name for m in report.models if m.model is None]
     if failed:
         insights.append("Could not train: {}.".format(", ".join(failed)))
@@ -928,6 +918,7 @@ def run_ml_pipeline(
         datetime_origins=datetime_origins,
         feature_inputs=describe_feature_inputs(X, label_encoders, datetime_origins),
         warnings=[task_reason] + leakage_warnings,
+        task_reason=task_reason,
     )
 
     # Suspiciously perfect scores usually mean leakage we couldn't detect
