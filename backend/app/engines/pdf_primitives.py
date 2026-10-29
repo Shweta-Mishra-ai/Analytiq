@@ -8,15 +8,10 @@ they can't disagree about which columns to describe for the same dataset.
 from __future__ import annotations
 
 import logging
-import re
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
-
-
-_ID_KW = {"index", "idx", "id", "rowid", "row_id", "empid", "emp_id",
-          "order_id", "orderid", "product_id", "customer_id", "user_id"}
 
 
 def truncate_label(text: str, width: int) -> str:
@@ -33,23 +28,13 @@ def truncate_label(text: str, width: int) -> str:
 
 
 def is_id_col(col: str, series: pd.Series) -> bool:
-    """True if a numeric column looks like an identifier (EmployeeNumber,
-    OrderID, ...) or a near-constant column (EmployeeCount, StandardHours)
-    rather than a real analytic variable. Shared by the Main Report and
-    Health Report builders so BOTH pick the same columns for describe/
-    correlation tables — previously only the Main Report filtered these
-    out, so the two reports' first-8-columns correlation/stats tables
-    disagreed on the same dataset.
+    """True if a column is an identifier. Delegates to the one shared test,
+    so a role the user confirmed decides it here too.
+
+    This used to be a second, looser test of its own: it ignored confirmed
+    roles, raised on text columns, and disagreed with the main report about
+    which columns to describe.
     """
-    import re as _re
-    cl = col.lower().strip()
-    if cl in _ID_KW or _re.search(r'\bid\b|\bindex\b', cl):
-        return True
-    if len(series.dropna()) > 10:
-        try:
-            diffs = series.dropna().sort_values().diff().dropna()
-            if (diffs == 1).mean() > 0.90:
-                return True
-        except Exception:
-            logger.warning("id-col check failed", exc_info=True)
-    return False
+    from app.engines.domains.base import is_id_column
+    return is_id_column(col, series)
+

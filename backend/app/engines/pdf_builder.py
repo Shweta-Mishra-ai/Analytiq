@@ -280,7 +280,7 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
 def _sec(story: list, s: dict, T: dict, title: str, sub: str = ""):
     """A section heading; it is listed on the contents page and kept on
     the same page as the start of its section."""
-    story.append(CondPageBreak(70*mm))
+    story.append(CondPageBreak(50*mm))
     story.append(Paragraph(title, s["h2"]))
     if sub:
         story.append(Paragraph(sub, s["sub"]))
@@ -429,7 +429,7 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
                         textColor=HexColor(col), alignment=TA_CENTER)
     hdr = Table([[
         Paragraph(_get(ins, "severity", "INFO").upper(), bs),
-        Paragraph("{}{}".format(num_str, _get(ins, "title", "")), ts),
+        Paragraph("{}{}".format(num_str, _clean(_get(ins, "title", ""))), ts),
     ]], colWidths=[20*mm, CW - 20*mm])
     hdr.setStyle(TableStyle([
         ("BACKGROUND", (0,0), (0,0), HexColor(bg)),
@@ -445,7 +445,7 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
 
     lw, vw = 22*mm, CW - 22*mm
     rows = [
-        [Paragraph(k, rl), Paragraph(_get(ins, fk, ""), rv)]
+        [Paragraph(k, rl), Paragraph(_steps(_get(ins, fk, "")), rv)]
         for k, fk in [("Finding", "problem"), ("Why",  "cause"),
                       ("Evidence","evidence"),("Next step", "action"),
                       ("Impact",  "impact")]
@@ -486,6 +486,37 @@ def _toc(story, s, T, CW):
         "toc0", fontName=FONT_REG, fontSize=10.5, leading=20,
         textColor=_c(T["text"]), leftIndent=0, firstLineIndent=0)]
     story.append(toc)
+
+
+def _basis_box(story, s, T, config):
+    """The basis of preparation, under the contents. As the last item of the
+    appendix it was pushed onto a page of its own whenever the appendix ran
+    a few lines long."""
+    story.append(Spacer(1, 10*mm))
+    disc = Table([[Paragraph(
+        "<b>Basis of preparation</b><br/>"
+        "Prepared for {} on {}. All figures derive solely from the dataset "
+        "supplied for this engagement and describe the period it covers. "
+        "Statistical association is reported where present; it does not "
+        "establish causation. Any external reference range cited is "
+        "indicative and should be validated against the organisation's own "
+        "sector and prior periods before it informs a decision. "
+        "Recommendations assume the data is complete and accurate as "
+        "supplied.{}".format(
+            config.get("client_name", "Client"),
+            datetime.now().strftime("%B %d, %Y"),
+            _prepared_by_line(config)),
+        s["body"])]],
+        colWidths=["100%"])
+    disc.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0), (-1,-1), _c(T["bg_light"])),
+        ("TOPPADDING",    (0,0), (-1,-1), 10),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 10),
+        ("LEFTPADDING",   (0,0), (-1,-1), 12),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 12),
+        ("LINEBEFORE",    (0,0), (0,-1), 2.5, _c(T["accent"])),
+    ]))
+    story.append(disc)
 
 
 def _bind_headings(story: list) -> list:
@@ -716,6 +747,13 @@ def _clean(text: str) -> str:
     """Escape for ReportLab's mini-HTML parser."""
     return (str(text).replace("&", "&amp;")
             .replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _steps(text: str) -> str:
+    """Escaped text with "1. …  2. …" steps on lines of their own; written
+    inline they ran together into one sentence."""
+    out = _clean(str(text).strip())
+    return _re.sub(r"\s{2,}(?=\d+\.\s)", "<br/>", out)
 
 
 # ══════════════════════════════════════════════════════════
@@ -982,14 +1020,18 @@ def _attrition_page(story, s, T, attrition, CW):
     _sec(story, s, T, "Attrition", "Who left, from where, and what it costs")
 
     dept = getattr(attrition, "dept_attrition", {}) or {}
-    top_dept = max(dept.items(), key=lambda kv: kv[1]) if dept else None
+    dept_p = getattr(attrition, "dept_p", None)
+    dept_differs = dept_p is not None and dept_p < 0.05
+    # A "highest department" is only worth a headline figure when the
+    # departments really differ; otherwise it is whichever one chance put on top.
+    top_dept = max(dept.items(), key=lambda kv: kv[1]) if dept and dept_differs else None
     kpis = [
         {"label": "ATTRITION RATE", "value": "{:.1f}%".format(attrition.rate),
          "sub": "{:,} of {:,} left".format(attrition.n_left, attrition.n_total),
          "color": T["negative"] if attrition.rate > 15 else T["primary"]},
         {"label": "PLANNING BAND", "value": "10–15%",
          "sub": "indicative; varies by sector"},
-        {"label": "LOW SATISFACTION", "value": "{:,}".format(attrition.n_flight_risk),
+        {"label": "LOWEST-QUARTER SATISFACTION", "value": "{:,}".format(attrition.n_flight_risk),
          "sub": "{:.0f}% of those remaining".format(attrition.flight_risk_pct)},
     ]
     if top_dept:
@@ -1018,10 +1060,17 @@ def _attrition_page(story, s, T, attrition, CW):
         story.append(Paragraph("Attrition by Department", s["h3"]))
         sorted_d = sorted(dept_atr.items(), key=lambda x: x[1], reverse=True)
         rows = [[str(dept), "{:.1f}%".format(rate),
-                 "CRITICAL" if rate > 25 else "HIGH" if rate > 18 else "OK"]
+                 "above band" if rate > 15 else "within band" if rate >= 10 else "below band"]
                 for dept, rate in sorted_d]
-        _gtable(story, T, ["Department","Rate","Status"],
-                rows, [CW*0.50, CW*0.25, CW*0.25], severity_col=2)
+        _gtable(story, T, ["Department", "Rate", "Against the 10–15% band"],
+                rows, [CW*0.50, CW*0.20, CW*0.30])
+        if dept_p is not None:
+            story.append(Paragraph(
+                "Departments differ in attrition by more than chance (chi-square "
+                "p={:.3f}).".format(dept_p) if dept_differs else
+                "The differences between departments are within what chance alone "
+                "produces (chi-square p={:.2f}); the ranking should not be relied "
+                "on.".format(dept_p), s["note"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -1411,31 +1460,6 @@ def _appendix(story, s, T, config, CW, domain: str = "general"):
     if _bp.reference_note:
         story.append(Paragraph(_bp.reference_note, s["note"]))
 
-    story.append(Spacer(1, 4*mm))
-    disc = Table([[Paragraph(
-        "<b>Basis of preparation</b><br/>"
-        "Prepared for {} on {}. All figures derive solely from the dataset "
-        "supplied for this engagement and describe the period it covers. "
-        "Statistical association is reported where present; it does not "
-        "establish causation. Any external reference range cited is "
-        "indicative and should be validated against the organisation's own "
-        "sector and prior periods before it informs a decision. "
-        "Recommendations assume the data is complete and accurate as "
-        "supplied.{}".format(
-            config.get("client_name", "Client"),
-            datetime.now().strftime("%B %d, %Y"),
-            _prepared_by_line(config)),
-        s["body"])]],
-        colWidths=["100%"])
-    disc.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0), (-1,-1), _c(T["bg_light"])),
-        ("TOPPADDING",    (0,0), (-1,-1), 10),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 10),
-        ("LEFTPADDING",   (0,0), (-1,-1), 12),
-        ("RIGHTPADDING",  (0,0), (-1,-1), 12),
-        ("LINEBEFORE",    (0,0), (0,-1), 2.5, _c(T["accent"])),
-    ]))
-    story.append(disc)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1536,6 +1560,7 @@ def build_pdf(
     # ── Assemble: sections flow; each starts a new page only when too
     # little room is left (see _sec). ─────────────────────
     _toc(story, s, T, CW)
+    _basis_box(story, s, T, config)
     story.append(PageBreak())
 
     _exec_summary(story, s, T, executive_summary,
@@ -1558,7 +1583,7 @@ def build_pdf(
     if getattr(ml_report, "best_model", None) is not None:
         _ml_section(story, s, T, ml_report, CW)
     _recommendations(story, s, T, recommendations, CW)
-    story.append(PageBreak())
+    # No forced break: a short "Next Steps" was left alone on its page.
     _appendix(story, s, T, config, CW, domain=domain)
 
     # ── Build PDF ─────────────────────────────────────────

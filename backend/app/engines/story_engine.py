@@ -14,6 +14,8 @@ the richer domain engines are adapted into that shape rather than
 replacing it.
 """
 import logging
+import re
+
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
@@ -248,13 +250,14 @@ def _build_narrative_summary(
         # Only claim a domain when detection is confident. Printing
         # "HR domain (detection confidence: 7%)" in a client PDF both
         # mislabels the data and advertises the uncertainty.
+        _kind = {"hr": "HR", "ecommerce": "e-commerce"}.get(domain, domain)
         domain_phrase = (
-            f"in the {domain.upper()} domain " if confidence >= 0.4 else ""
+            f" of {_kind} data" if confidence >= 0.4 and domain != "general" else ""
         )
         headline = (
-            f"This review covers {n_rows:,} records and {len(df.columns)} columns "
-            f"{domain_phrase}. No single finding stands out from the rest."
-        ).replace(" .", ".")
+            f"This review covers {n_rows:,} records and {len(df.columns)} columns"
+            f"{domain_phrase}."
+        )
 
     # ── SUPPORTING sentences — connect to headline, don't repeat it ────────
     support = []
@@ -374,21 +377,6 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
     # Findings" section while the rest of the page was full, with no error
     # anywhere. Fall back to the insight titles, then to a dataset-shape
     # summary, so this section is never silently empty.
-    findings_flat = raw["findings"][:6]
-    if not findings_flat and deduped:
-        findings_flat = ["{}: {}".format(ins.severity.upper(), ins.title)
-                          for ins in deduped[:6]]
-    if not findings_flat:
-        n_cat = len(df.select_dtypes(include=["object", "string"]).columns)
-        miss_pct = round(df.isna().mean().mean() * 100, 1)
-        findings_flat = [
-            "{:,} records × {} columns ({} numeric, {} categorical)".format(
-                len(df), len(df.columns), len(num_cols), n_cat),
-            "Missing data: {:.1f}%{}".format(
-                miss_pct, " — fully complete" if miss_pct == 0
-                else " — imputation applied"),
-        ]
-
     risks_flat    = raw["risks"][:6]
     opps_flat     = raw["opportunities"][:4]
     # No urgency label: it was assigned by list position — the first two
@@ -418,13 +406,36 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
             parts.append("Attrition: {:.1f}%.".format(attrition.rate))
         exec_s = " ".join(parts)
 
+    findings_flat = raw["findings"][:6]
+    if not findings_flat and deduped:
+        # The measured statement, not "CRITICAL: <card title>" — the label
+        # is the card's job, and the title is printed again on the card.
+        # A finding whose figures are all in the summary already ("98 of 500
+        # employees left") was printed twice, one line apart.
+        def _nums(t):
+            return set(re.findall(r"\d[\d,.]*\d|\d", t))
+        said = _nums(exec_s)
+        findings_flat = [f for f in (str(ins.problem or ins.title).strip()
+                                     for ins in deduped[:6])
+                         if not (_nums(f) and _nums(f) <= said)]
+    if not findings_flat:
+        n_cat = len(df.select_dtypes(include=["object", "string"]).columns)
+        miss_pct = round(df.isna().mean().mean() * 100, 1)
+        findings_flat = [
+            "{:,} records × {} columns ({} numeric, {} categorical)".format(
+                len(df), len(df.columns), len(num_cols), n_cat),
+            "No values are missing." if miss_pct == 0 else
+            "{:.1f}% of values are missing.".format(miss_pct),
+        ]
+
     headline = critical[0].title if critical else (
         deduped[0].title if deduped else "No finding stands out")
 
     # Quality
     avg_miss = sum(st.get("missing_pct",0) for st in all_stats.values()) / max(len(all_stats),1)
     quality  = ("GOOD — data suitable for reliable analysis." if avg_miss<5
-                else "FAIR — {:.1f}% avg missing. Imputation applied.".format(avg_miss)
+                else "FAIR — {:.1f}% of values missing on average; figures use the "
+                     "rows that are filled.".format(avg_miss)
                 if avg_miss<20
                 else "NEEDS ATTENTION — {:.1f}% missing. Treat findings with caution.".format(avg_miss))
 

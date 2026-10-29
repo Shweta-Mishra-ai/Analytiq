@@ -164,6 +164,10 @@ class AttritionAnalysis:
     flight_risk_pct:  float
     cost_estimate:    str
     interpretation:   str
+    # Chi-square p for "do departments differ in attrition", None when the
+    # test could not be run. Without it the report labelled departments
+    # HIGH or OK off a fixed threshold, whatever the test said.
+    dept_p:           Optional[float] = None
 
 
 @dataclass

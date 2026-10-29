@@ -146,27 +146,22 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         insights.append(build_insight(
             title="Revenue per transaction: median {}, mean {}".format(
                 _fmt_money(med), _fmt_money(mean)),
-            problem="Revenue distribution" + (
-                " — concentrated in the largest transactions" if concentrated else
-                " — skewed, but not concentrated" if skew > 1 else ""),
+            problem=("Half of all transactions are below {}; the mean, {}, is pulled "
+                     "up by the largest. ".format(_fmt_money(med), _fmt_money(mean))
+                     if skew > 1 else
+                     "Mean and median are close, so transaction sizes are fairly even. ")
+                    + ("Revenue is concentrated in the largest transactions."
+                       if concentrated else
+                       "Revenue is not concentrated in a few of them."),
             cause="The top 20% of transactions bring {:.0f}% of revenue{}.".format(
-                top_share,
-                " — a minority of large transactions carries most of it" if concentrated
-                else "; large transactions lift the mean above the median, but revenue "
-                     "is spread across many of them"),
-            evidence="Mean={:.0f}, Median={:.0f} ({:.0f}% difference). Skewness={:.1f}. "
-                     "Top 25% of transactions above {:.0f}.".format(
-                mean, med, abs(mean-med)/max(med,1)*100, skew, st["q3"]),
-            action=("1. Find which customers or products the largest transactions belong to  "
-                    "2. Check how exposed revenue is if they stop  "
-                    "3. Report the median beside the mean" if concentrated else
-                    "Report the median ({:,.0f}) beside the mean — the mean is pulled up by "
-                    "large transactions.".format(med)),
+                top_share, ", most of it" if concentrated else ""),
+            evidence="Skewness {:.1f}; a quarter of transactions are above {}.".format(
+                skew, _fmt_money(st["q3"])),
+            action=("Find which customers or products the largest transactions belong "
+                    "to, and how exposed revenue is if they stop." if concentrated else
+                    "Report the median ({}) beside the mean.".format(_fmt_money(med))),
             impact=("Losing a handful of large transactions would move total revenue "
-                    "materially — quantify that exposure before planning on it."
-                    if concentrated else
-                    "No single-deal concentration risk: revenue is spread across many "
-                    "transactions."),
+                    "materially." if concentrated else ""),
             severity="warning" if concentrated else "info",
             category="revenue"
         ))

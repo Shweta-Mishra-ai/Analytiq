@@ -57,14 +57,17 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                 "'{}' has {:.0f}% outliers — verify before using it in any "
                 "decision; extremes distort averages and models.".format(col, out_pct))
             insights.append(build_insight(
-                title="'{}': {:.0f}% Outliers — Data Quality Issue".format(col, out_pct),
-                problem="{:.0f}% of '{}' values are statistical outliers".format(out_pct, col),
-                cause="Data entry errors, measurement anomalies, or genuine extreme values",
+                title="'{}': {:.0f}% of values lie far from the rest".format(col, out_pct),
+                problem="{:.0f}% of '{}' values fall outside 1.5 times the interquartile "
+                        "range.".format(out_pct, col),
+                cause="They may be entry errors or genuine extremes; the data alone "
+                      "cannot say which",
                 evidence="IQR method: {:.0f}% outliers. Range: {:.2f} to {:.2f}".format(
                     out_pct, st.get("min", 0), st.get("max", 0)),
-                action="1. Inspect outlier records  2. Determine error or genuine  "
-                       "3. Cap or remove confirmed errors  4. Document decisions",
-                impact="Outliers distort all statistical analyses and reduce ML accuracy",
+                action="Look at the outlying records and correct any that are errors; "
+                       "keep genuine extremes and report the median beside the mean.",
+                impact="Averages and correlations that use '{}' are pulled by these "
+                       "values.".format(col),
                 severity="warning", category="data_quality"
             ))
         if abs(skew) > 1.5:
@@ -106,11 +109,10 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
             if p50 > 0 and p90 / p50 >= 2.0 and cv > 40:
                 # This called the 10th percentile "the bottom quartile" and
                 # quoted the top-decile gap as the gain from lifting it.
-                opps.append(
+                findings.append(
                     f"'{col}': the top 10% of rows are above {_num(p90)}, "
                     f"{p90/p50:.1f}× the median ({_num(p50)}); the bottom 10% are "
-                    f"below {_num(p10)}. Worth checking what the highest rows have "
-                    f"in common."
+                    f"below {_num(p10)}."
                 )
             # High concentration risk: >50% in one value for numeric col
             top_val_pct = float(s.value_counts(normalize=True).iloc[0]) * 100
@@ -136,26 +138,17 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
             problem=("Median '{num}' ranges from {lo_txt} in '{lo_seg}' to {hi_txt} "
                      "in '{hi_seg}' — a {ratio:.1f}× spread across '{cat}' segments."
                      .format(**seg)),
-            cause="A gap this size is statistically unlikely to be chance "
-                  "(Kruskal-Wallis p<0.01, see evidence). That points to a "
-                  "structural or operational difference between the segments — "
-                  "a hypothesis to confirm, not yet a proven cause.",
+            cause="A gap this size is unlikely to be chance. What causes it is not "
+                  "in the data.",
             evidence=("Kruskal-Wallis H={h:.1f}, {ptxt}, {k} groups, n={n:,}. "
                       "Highest: '{hi_seg}' (median {hi_txt}) | Lowest: '{lo_seg}' "
                       "(median {lo_txt}).".format(**seg)),
-            action=("1. Determine which end of the '{num}' range is desirable, then "
-                    "profile what separates '{hi_seg}' from '{lo_seg}'  "
-                    "2. Check the gap persists after controlling for volume/size  "
-                    "3. Pilot the stronger segment's practices in the weaker one"
+            action=("Find out what separates '{hi_seg}' from '{lo_seg}', and check "
+                    "whether the gap holds once record size or volume is allowed for."
                     .format(**seg)),
-            impact=("Moving the weaker segment to the overall median is the measured "
-                    "upper bound of the '{num}' opportunity in this dataset."
-                    .format(**seg)),
-            severity="high", category="segmentation",
+            impact="",
+            severity="warning", category="segmentation",
         ))
-        # A significant segment gap is both a risk (the weak segment) and an
-        # opportunity (the gap to close) — count both so the exec summary
-        # doesn't read '0 risks, 0 opportunities' next to a real finding.
         # Which end is weak depends on the metric: the lowest-delay segment is
         # the strong one. Unknown direction gets neutral wording.
         from app.engines.benchmarking import metric_direction
@@ -168,18 +161,11 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
             risks.append(
                 "'{}' trails on '{}' ({} vs {} in '{}'), a statistically significant "
                 "{:.1f}× gap.".format(weak, seg["num"], weak_v, strong_v, strong, seg["ratio"]))
-            opps.append(
-                "Closing the '{}' gap on '{}' — moving '{}' toward the '{}' level — is "
-                "a quantified, testable improvement.".format(
-                    seg["cat"], seg["num"], weak, strong))
         else:
             risks.append(
                 "'{cat}' segments differ on '{num}' ({lo_txt} in '{lo_seg}' vs {hi_txt} "
                 "in '{hi_seg}'), a statistically significant {ratio:.1f}× gap — decide "
                 "which end is desirable before acting.".format(**seg))
-            opps.append(
-                "Find out what separates '{hi_seg}' from '{lo_seg}' on '{num}' — the "
-                "{ratio:.1f}× gap is real, and testable.".format(**seg))
 
     # ── Concentration (Pareto) risk on categorical columns ───────────────
     for col in df.select_dtypes(include=["object", "string"]).columns[:6]:
@@ -202,8 +188,9 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         actions.append("Validate the outliers flagged above before analysis or modelling")
     if any(abs(stats.get(c, {}).get("skew", 0)) > 1 for c in analysable):
         actions.append("Use the median, not the mean, for the skewed columns in executive reports")
-    if any(2 <= df[c].nunique() <= 30 for c in df.select_dtypes(include=["object", "string"]).columns):
-        actions.append("Segment analysis — subgroups may tell different stories")
+    if seg:
+        actions.append("Find out what separates '{hi_seg}' from '{lo_seg}' on "
+                       "'{num}'.".format(**seg))
     return {"findings": findings, "risks": risks, "opportunities": opps,
             "actions": actions, "insights": insights}
 

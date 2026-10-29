@@ -77,6 +77,52 @@ def _segment_exit_rates(df: pd.DataFrame, segment_mask):
         return None
 
 
+def _exit_sentence(label: str, exits) -> str:
+    """'Those X leave at a% against b% for everyone else (p=…).'"""
+    if not exits:
+        return "This data has no record of who left, or too few people in the group."
+    a, b, p = exits
+    test = "" if p != p else " (p={:.3f})".format(p)      # NaN: test not valid
+    return "{} leave at {:.1f}% against {:.1f}% for everyone else{}.".format(label, a, b, test)
+
+
+def group_exit_gap(groups: pd.Series, left_mask: pd.Series, min_n: int = 20):
+    """Exit rate per group and whether the groups really differ.
+
+    Returns None unless at least two groups have ``min_n`` people and the
+    chi-square test can be run on them. Otherwise a dict with ``rates``
+    (group -> exit %, highest first), ``sizes``, ``worst``, ``best`` and
+    ``p``. A gap between the highest and lowest group is a finding only when
+    ``p`` is small: with four groups of ~120, ranges of 5–10 points turn up
+    by chance alone, and reporting one as "the department with the highest
+    attrition" was reporting noise.
+    """
+    try:
+        g = groups.reindex(left_mask.index)
+        keep = g.notna()
+        g, left = g[keep].astype(str), left_mask[keep].astype(bool)
+        sizes = g.value_counts()
+        big = sizes[sizes >= min_n].index
+        if len(big) < 2:
+            return None
+        g, left = g[g.isin(big)], left[g.isin(big)]
+        test = chi2_association(pd.crosstab(g, left))
+        if test is None:
+            return None
+        rates = (left.groupby(g).mean() * 100).sort_values(ascending=False)
+        return {"rates": rates, "sizes": sizes[big], "p": float(test["p"]),
+                "worst": str(rates.index[0]), "best": str(rates.index[-1])}
+    except Exception:
+        logger.warning("group exit gap failed", exc_info=True)
+        return None
+
+
+def describe_rates(gap: dict) -> str:
+    """'HR 23% (n=120) · Sales 19% (n=131)' — the figures behind a gap."""
+    return " · ".join("{} {:.0f}% (n={:,})".format(k, v, int(gap["sizes"][k]))
+                      for k, v in gap["rates"].items())
+
+
 def compute_flight_risk(df: pd.DataFrame, left_mask=None):
     """Single source of truth for 'flight risk' headcount.
 
@@ -221,9 +267,13 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
 
     # Flight risk — single shared definition, see compute_flight_risk().
     n_flight, flight_pct, _sat_col = compute_flight_risk(df, left_mask=left_mask)
-    cost_str   = ("Replacing an employee is commonly estimated at 50–150% of a year's "
-                  "salary (SHRM); applied to {:,} leavers, your own replacement cost "
-                  "gives the figure for this organisation".format(n_left))
+    # Gallup puts the cost of replacing an employee at one-half to two times
+    # their annual salary. The figure is general, so the text says so.
+    cost_str   = ("Gallup estimates replacing an employee at one-half to two times "
+                  "their annual salary; applied to {:,} leavers with your own salary "
+                  "figures, that gives the cost for this organisation".format(n_left))
+
+    dept_gap = group_exit_gap(df[dept_col], left_mask) if dept_col else None
 
     return AttritionAnalysis(
         rate=rate, n_left=n_left, n_total=n_total,
@@ -232,6 +282,7 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
         salary_attrition=salary_attrition,
         n_flight_risk=n_flight, flight_risk_pct=flight_pct,
         cost_estimate=cost_str,
+        dept_p=dept_gap["p"] if dept_gap else None,
         interpretation="{:.1f}% attrition ({:,} employees).{}".format(
             rate, n_left,
             " The factor most associated with leaving is '{}'.".format(
@@ -320,77 +371,101 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
                 title="Attrition at {:.1f}% — above the planning band".format(rate),
                 problem="{:,} out of {:,} employees left — {:.1f}% rate".format(
                     attrition.n_left, attrition.n_total, rate),
-                cause="Rate is {:.1f}pp above the 10–15% planning band used in this "
-                      "analysis (healthy rates vary by industry — verify against your "
-                      "sector data). ".format(rate - 12.5) +
-                      ("The factor most associated with leaving is '{}'.".format(
-                          attrition.top_drivers[0]["factor"])
-                       if attrition.top_drivers else
-                       "This data does not show what is driving it."),
-                evidence="Planning band: 10–15% (indicative). Current: {:.1f}%. "
-                         "{:,} remaining employees at flight risk ({:.0f}%).".format(
-                    rate, attrition.n_flight_risk, attrition.flight_risk_pct),
-                action="1. Interview leavers where possible, to learn why they left  "
-                       "2. Compare pay with the market for the roles with the most exits  "
-                       "3. Ask the staff who remain what would keep them",
+                cause="That is {:.1f} points above the top of the 10–15% planning band "
+                      "used here; healthy rates vary by industry.".format(rate - 15),
+                evidence=("Leavers differ from stayers most on '{}' ({}).".format(
+                              attrition.top_drivers[0]["factor"],
+                              attrition.top_drivers[0]["detail"])
+                          if attrition.top_drivers else
+                          "No measured factor separates leavers from stayers beyond chance."),
+                action="Interview leavers where possible to learn why they left, and "
+                       "compare pay with the market for the roles with the most exits.",
                 impact=attrition.cost_estimate + ".",
                 severity="critical", category="attrition"
             ))
             risks.append("{:.1f}% attrition — {:,} employees left, above the 10–15% "
                          "planning band.".format(rate, attrition.n_left))
+        elif 10 <= rate <= 15:
+            findings.append("Attrition rate {:.1f}% is within the 10–15% planning band.".format(rate))
+        elif rate < 10:
+            findings.append("Attrition rate {:.1f}% is below the 10–15% planning band.".format(rate))
         else:
-            findings.append("Attrition rate {:.1f}% within the 10–15% planning band.".format(rate))
+            findings.append("Attrition rate {:.1f}% is {:.1f} points above the 10–15% "
+                            "planning band.".format(rate, rate - 15))
 
-        # Dept breakdown
-        if attrition.dept_attrition:
-            sorted_d = sorted(attrition.dept_attrition.items(), key=lambda x:x[1], reverse=True)
-            if len(sorted_d)>=2 and sorted_d[0][1] > sorted_d[-1][1]+10:
-                worst_d, worst_r = sorted_d[0]
-                best_d,  best_r  = sorted_d[-1]
-                insights.append(build_insight(
-                    title="'{}' Department: {:.0f}% Attrition vs {:.0f}% Best".format(
-                        worst_d, worst_r, best_r),
-                    problem="'{}' losing {:.0f}% of staff vs company average {:.1f}%".format(
-                        worst_d, worst_r, rate),
-                    # Naming management quality or workload as the cause
-                    # asserts something no column in this dataset measures.
-                    # State what is established — the gap — and what would
-                    # establish the rest.
-                    cause="The gap is established; its driver is not, because this "
-                          "dataset holds no manager, workload or progression fields "
-                          "to test against. Comparing '{}' with '{}' on tenure, pay "
-                          "band and role would narrow it.".format(worst_d, best_d),
-                    evidence="{:.0f}pp gap between highest ({}) and lowest ({}) attrition dept".format(
-                        worst_r-best_r, worst_d, best_d),
-                    action="Review '{}' against '{}' on tenure mix, pay band and role "
-                           "profile to establish what differs. Where the data cannot "
-                           "explain the gap, exit-interview commentary from '{}' is "
-                           "the next source.".format(worst_d, best_d, worst_d),
-                    impact="{:.0f}pp of the company-wide attrition rate is concentrated "
-                           "in this one department.".format(worst_r - rate),
-                    severity="critical" if worst_r>25 else "warning",
-                    category="attrition"
-                ))
-                risks.append("'{}' department attrition {:.0f}% — {:.0f}pp above best performer '{}'".format(
-                    worst_d, worst_r, worst_r-best_r, best_d))
+        # Department and pay-band gaps. Each is reported only when the
+        # chi-square test says the groups really differ: with a few groups
+        # of ~100 people, a 5–10 point spread between the highest and lowest
+        # turns up by chance, and was printed as "the department with the
+        # highest attrition".
+        left_mask = _find_left_mask(df)
+        dept_c = next((c for c in df.columns
+                       if "department" in c.lower() or "dept" in c.lower()), None)
+        dept_gap = (group_exit_gap(df[dept_c], left_mask)
+                    if dept_c is not None and left_mask is not None else None)
+        if dept_gap and dept_gap["p"] < 0.05:
+            worst_d, best_d = dept_gap["worst"], dept_gap["best"]
+            worst_r = float(dept_gap["rates"].iloc[0])
+            best_r = float(dept_gap["rates"].iloc[-1])
+            excess = round((worst_r - rate) / 100 * int(dept_gap["sizes"][worst_d]))
+            insights.append(build_insight(
+                title="'{}' loses {:.0f}% of its staff, against {:.0f}% in '{}'".format(
+                    worst_d, worst_r, best_r, best_d),
+                problem="Attrition in '{}' is {:.1f}%, against {:.1f}% company-wide.".format(
+                    worst_d, worst_r, rate),
+                # Naming management quality or workload as the cause
+                # asserts something no column in this dataset measures.
+                cause="The gap is established; its driver is not, because this "
+                      "dataset holds no manager, workload or progression fields "
+                      "to test it against.",
+                evidence="Exit rate by department: {}. Chi-square p={:.3f}.".format(
+                    describe_rates(dept_gap), dept_gap["p"]),
+                action="Compare '{}' with '{}' on tenure mix, pay and role to see what "
+                       "differs; where the data cannot explain the gap, exit interviews "
+                       "in '{}' are the next source.".format(worst_d, best_d, worst_d),
+                impact="At the company rate, '{}' would have lost about {:,} fewer "
+                       "people.".format(worst_d, excess) if excess > 0 else "",
+                severity="critical" if worst_r > 25 else "warning",
+                category="department"
+            ))
+            risks.append("'{}' attrition {:.0f}%, against {:.0f}% in '{}' (p={:.3f}).".format(
+                worst_d, worst_r, best_r, best_d, dept_gap["p"]))
 
-        # Salary band attrition
-        if attrition.salary_attrition:
-            sorted_s = sorted(attrition.salary_attrition.items(), key=lambda x:x[1], reverse=True)
-            if sorted_s[0][1] > 20:
-                insights.append(build_insight(
-                    title="'{}' Salary Band: {:.0f}% Attrition — Pay Issue".format(
-                        sorted_s[0][0], sorted_s[0][1]),
-                    problem="Lowest salary band losing {:.0f}% of employees".format(sorted_s[0][1]),
-                    cause="Below-market compensation driving employees to better-paying companies",
-                    evidence="Attrition by pay: " + " | ".join(
-                        ["{}: {:.0f}%".format(k,v) for k,v in sorted_s]),
-                    action="1. Market salary benchmarking immediately  "
-                           "2. Targeted retention bonuses for low-pay high-performers  "
-                           "3. Review compensation bands",
-                    impact="Pay-driven attrition is fastest to fix but most expensive if ignored",
-                    severity="critical", category="attrition"
-                ))
+        pay_c = next((c for c in df.columns
+                      if any(k in c.lower() for k in ("salary", "pay", "compensation", "wage"))
+                      and not any(k in c.lower() for k in ("percent", "pct", "hike",
+                                                           "rate", "ratio", "date"))), None)
+        bands = None
+        if pay_c is not None and left_mask is not None:
+            if pd.api.types.is_numeric_dtype(df[pay_c]) and df[pay_c].nunique() > 8:
+                try:
+                    bands = pd.qcut(df[pay_c], 4, labels=["Lowest 25%", "Lower-middle",
+                                                          "Upper-middle", "Highest 25%"])
+                except ValueError:
+                    bands = None
+            elif df[pay_c].nunique() <= 8:
+                bands = df[pay_c]
+        pay_gap = group_exit_gap(bands, left_mask) if bands is not None else None
+        if pay_gap and pay_gap["p"] < 0.05:
+            worst_b, best_b = pay_gap["worst"], pay_gap["best"]
+            worst_r = float(pay_gap["rates"].iloc[0])
+            best_r = float(pay_gap["rates"].iloc[-1])
+            kept = round((worst_r - best_r) / 100 * int(pay_gap["sizes"][worst_b]))
+            insights.append(build_insight(
+                title="'{}' pay band: {:.0f}% attrition, against {:.0f}% in '{}'".format(
+                    worst_b, worst_r, best_r, best_b),
+                problem="Exit rates differ by pay band by more than chance explains.",
+                cause="Pay band also tracks role and seniority, which this data may "
+                      "not separate, so the link does not show that pay causes the exits.",
+                evidence="Exit rate by pay band: {}. Chi-square p={:.3f}.".format(
+                    describe_rates(pay_gap), pay_gap["p"]),
+                action="Compare pay in the '{}' band with the market rate for the same "
+                       "roles, and check whether leavers from it cite pay.".format(worst_b),
+                impact="At the '{}' rate, about {:,} fewer people would have left the "
+                       "'{}' band.".format(best_b, kept, worst_b) if kept > 0 else "",
+                severity="critical" if worst_r > 25 else "warning",
+                category="pay"
+            ))
 
     # ── Satisfaction ───────────────────────────────────────
     if sat_col and sat_col in stats:
@@ -432,26 +507,18 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
         if pct < 55:
             insights.append(build_insight(
                 title="Satisfaction averages {:.0f}% of scale — {:,} employees in the bottom band".format(pct, low_n),
-                problem="{:.0f}% satisfaction (scale-normalised). {:,} employees ({:.0f}%) sit in the bottom band of the scale".format(
-                    pct, low_n, low_pct),
+                problem="The average score sits at {:.0f}% of the scale, and {:,} employees "
+                        "({:.0f}%) are in its bottom band.".format(pct, low_n, low_pct),
                 # The dataset records the score, not why it is low. Naming
                 # culture, workload, recognition or pay as the cause would be
                 # asserting something this data cannot show — the exact kind
                 # of unfounded claim that gets a report dismissed.
-                cause="Not identifiable from this dataset, which records the score "
-                      "but not its drivers. Isolating it requires either free-text "
-                      "exit/survey commentary or a satisfaction breakdown by "
-                      "sub-factor (manager, workload, pay, progression).",
-                evidence=("Mean={:.2f} on a {:.0f}-{:.0f} scale ({:.0f}% of range). "
-                          "{:,} employees ({:.0f}%) score below {:.2f} (bottom 40% of the scale). "
-                          "Internal planning target: 70% of range. ".format(
-                              mean_s, min_s, max_s, pct, low_n, low_pct, low_thresh)
-                          + _segment_attrition_evidence(
-                              df, df[sat_col] < low_thresh,
-                              "employees in the bottom band")),
-                action="1. Find out what lies behind the low scores — survey comments, exit "
-                       "interviews  2. Break satisfaction down by department or manager to "
-                       "see where it is lowest",
+                cause="This dataset records the score, not its drivers.",
+                evidence="Mean {:.2f} on a {:.0f}–{:.0f} scale; the bottom band is "
+                         "below {:.2f}.".format(mean_s, min_s, max_s, low_thresh),
+                action="Find out what lies behind the low scores from survey comments "
+                       "and exit interviews, and break the scores down by department "
+                       "to see where they are lowest.",
                 impact=exit_impact,
                 severity="critical" if (pct < 40 or drives_exits) else "warning",
                 category="satisfaction"
@@ -460,77 +527,71 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
                          "satisfaction scale.".format(low_n, low_pct))
         elif pct < 70:
             insights.append(build_insight(
-                title="Satisfaction Below Target: {:.0f}% (Target: 70%+)".format(pct),
-                problem="{:.0f}% satisfaction with {:,} employees ({:.0f}%) in the bottom-box range".format(pct, low_n, low_pct),
-                cause="Specific fixable issues rather than systemic breakdown",
-                evidence=("Mean={:.2f} on a {:.0f}-{:.0f} scale ({:.0f}% of range). "
-                          "{:,} employees ({:.0f}%) score below {:.2f} (bottom 40% of the scale). "
-                          "Internal planning target: 70% of range. ".format(
-                              mean_s, min_s, max_s, pct, low_n, low_pct, low_thresh)
-                          + _segment_attrition_evidence(
-                              df, df[sat_col] < low_thresh, "low-satisfaction employees")),
-                action="1. Focus groups to identify top 3 issues  "
-                       "2. Manager communication training  "
-                       "3. Career development conversations",
-                impact="Closing the gap to the 70% target directly shrinks the "
-                       "low-satisfaction segment measured above — the group with the "
-                       "highest exit rate in this dataset.",
-                severity="warning", category="satisfaction"
+                title="Satisfaction averages {:.0f}% of the scale".format(pct),
+                problem="The average score sits at {:.0f}% of the scale; {:,} employees "
+                        "({:.0f}%) are in its bottom band.".format(pct, low_n, low_pct),
+                cause="This dataset records the score, not its drivers.",
+                evidence="Mean {:.2f} on a {:.0f}–{:.0f} scale; the bottom band is "
+                         "below {:.2f}.".format(mean_s, min_s, max_s, low_thresh),
+                action="Break the scores down by department to see where they are lowest.",
+                impact=exit_impact,
+                severity="warning" if drives_exits else "info", category="satisfaction"
             ))
         else:
             insights.append(build_insight(
-                title="Strong Satisfaction: {:.0f}% — Above 70% Planning Target".format(pct),
-                problem="N/A — satisfaction is healthy",
-                cause="Effective HR practices and management culture",
-                evidence="Mean={:.2f} on a {:.0f}-{:.0f} scale ({:.0f}% of range). Above the 70%-of-range internal planning target.".format(mean_s, min_s, max_s, pct),
-                action="Maintain programs. Create career paths for high-performers to prevent exits.",
-                impact="Strong satisfaction = lower attrition + higher productivity",
+                title="Satisfaction averages {:.0f}% of the scale".format(pct),
+                problem="The average score sits at {:.0f}% of the scale.".format(pct),
+                cause="",
+                evidence="Mean {:.2f} on a {:.0f}–{:.0f} scale; {:,} employees ({:.0f}%) "
+                         "are in the bottom band.".format(mean_s, min_s, max_s, low_n, low_pct),
+                action="Keep measuring it on the same scale so a fall shows early.",
+                impact=exit_impact,
                 severity="positive", category="satisfaction"
             ))
-            opps.append("Satisfaction {:.0f}% is a competitive advantage — use in recruitment marketing".format(pct))
 
     # ── Overwork ───────────────────────────────────────────
+    # Long hours are a fact; burnout and its causes are not in the data. The
+    # card states the hours and, where the data records exits, whether the
+    # long-hours group actually leaves more.
     if hrs_col and hrs_col in stats:
         st       = stats[hrs_col]
         mean_hrs = st.get("mean",0)
-        high_n   = int((df[hrs_col].dropna()>260).sum()) if hrs_col in df.columns else 0
+        long_mask = df[hrs_col] > 260
+        high_n   = int(long_mask.sum())
         if mean_hrs > 220:
+            exits = _segment_exit_rates(df, long_mask)
+            leaves_more = bool(exits and exits[0] > exits[1] and exits[2] < 0.05)
             insights.append(build_insight(
-                title="Overwork Alert: Avg {:.0f} hrs/Month — {:,} Employees at Burnout Risk".format(
+                title="Employees average {:.0f} hours a month; {:,} work more than 260".format(
                     mean_hrs, high_n),
-                problem="Average {:.0f} monthly hours. {:,} employees working 260+ hours (critical zone)".format(
-                    mean_hrs, high_n),
-                cause="Understaffing, poor task distribution, or culture of overwork",
-                evidence=("Mean={:.0f} hrs. Reference range: 160–200. Overwork zone: 240+. "
-                          "{:,} employees in critical zone. ".format(mean_hrs, high_n)
-                          + _segment_attrition_evidence(
-                              df, df[hrs_col] > 260, "employees working 260+ hrs/month")),
-                action="1. Workload audit by team/department  "
-                       "2. Hiring plan for overloaded teams  "
-                       "3. No-overtime policy for 260+ hour employees",
-                impact="The measured exit rate of the 260+ hour segment (above) is the "
-                       "direct, quantified burnout cost visible in this dataset.",
-                severity="warning" if mean_hrs<240 else "critical",
+                problem="Average monthly hours are {:.0f}, against a typical full-time "
+                        "160–200.".format(mean_hrs),
+                cause="This dataset records the hours, not why they are worked.",
+                evidence=_exit_sentence("Those working more than 260 hours", exits),
+                action="Look at where the long hours are concentrated, by department "
+                       "or role, before deciding whether to rebalance work or hire.",
+                impact=("The long-hours group's higher exit rate is the measured cost here."
+                        if leaves_more else ""),
+                severity="critical" if (mean_hrs >= 240 and leaves_more) else "warning",
                 category="workload"
             ))
-            risks.append("Avg {:.0f} hrs/month — overwork driving burnout and attrition".format(mean_hrs))
+            risks.append("Average {:.0f} hours a month; {:,} employees work more than "
+                         "260.".format(mean_hrs, high_n))
 
     # ── Projects ───────────────────────────────────────────
     if proj_col and proj_col in stats:
         st = stats[proj_col]
         if st.get("mean",0) > 5:
+            exits = _segment_exit_rates(df, df[proj_col] >= 6)
             insights.append(build_insight(
-                title="High Project Load: Avg {:.1f} Projects Per Employee".format(st["mean"]),
-                problem="Employees handling average {:.1f} projects simultaneously".format(st["mean"]),
-                cause="Resource allocation issues or insufficient headcount for demand",
-                evidence=("Mean={:.1f} projects. Range: {:.0f}-{:.0f}. ".format(
-                              st["mean"], st["min"], st["max"])
-                          + _segment_attrition_evidence(
-                              df, df[proj_col] >= 6, "employees with 6+ projects")),
-                action="1. Review project assignment process  "
-                       "2. Cap individual project loads at 4-5  "
-                       "3. Prioritize projects by strategic value",
-                impact="Excessive project loads reduce output quality and increase error rates",
+                title="Employees carry {:.1f} projects on average".format(st["mean"]),
+                problem="The average load is {:.1f} projects, ranging from {:.0f} to "
+                        "{:.0f}.".format(st["mean"], st["min"], st["max"]),
+                cause="This dataset records the count, not how demanding each project is.",
+                evidence=_exit_sentence("Those with 6 or more projects", exits),
+                action="Check how projects are assigned in the teams with the highest "
+                       "loads.",
+                impact="",
                 severity="warning", category="workload"
             ))
 
@@ -548,58 +609,45 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
                     "relationship to investigate, not a lever proven to work.".format(
                         _dir, corr["r"]))
 
-    # Department performance gap
+    # Department performance gap — only when the departments really differ.
     if dept_col and eval_col and eval_col in df.columns:
+        groups = [g[eval_col].dropna() for _, g in df.groupby(dept_col)]
+        groups = [g for g in groups if len(g) >= 20]
         dept_eval = df.groupby(dept_col)[eval_col].mean().sort_values()
-        if len(dept_eval)>=2:
-            gap = dept_eval.iloc[-1]-dept_eval.iloc[0]
-            if gap > 0.1:
+        if len(groups) >= 2 and len(dept_eval) >= 2:
+            try:
+                p_kw = float(scipy_stats.kruskal(*groups).pvalue)
+            except ValueError:
+                p_kw = 1.0
+            if p_kw < 0.05:
                 findings.append(
-                    "Performance gap: '{}' scores {:.2f} vs '{}' at {:.2f} — "
-                    "{:.0f}% difference. Share best practices across departments.".format(
-                        dept_eval.index[0], dept_eval.iloc[0],
-                        dept_eval.index[-1], dept_eval.iloc[-1], gap/dept_eval.iloc[0]*100))
+                    "'{}' scores {:.2f} on '{}' against {:.2f} in '{}' (Kruskal-Wallis "
+                    "p={:.3f}).".format(dept_eval.index[0], dept_eval.iloc[0], eval_col,
+                                        dept_eval.iloc[-1], dept_eval.index[-1], p_kw))
 
-    # FIX-011b: Column-gated HR actions
-    # Only recommend actions for columns that exist in this dataset
-    _hr_cols = [c.lower() for c in df.columns]
-
-    # Always valid — applies to any HR dataset
-    actions.append(
-        "Quarterly satisfaction pulse surveys — track trend monthly not annually"
-    )
-
-    # Only if attrition column exists
-    _atr_present = any(k in _hr_cols for k in ["left", "attrition", "churned", "resigned"])
-    if _atr_present:
-        actions.append(
-            "Identify flight-risk profile: low satisfaction + high tenure + "
-            "no recent promotion — target this segment for retention conversations first"
-        )
-
-    # Only if salary column exists
-    _sal_present = any(k in _hr_cols for k in ["salary", "salary_band", "compensation"])
-    if _sal_present:
-        actions.append(
-            "Benchmark salaries against market within 30 days, then test whether "
-            "below-market pay tracks with exits in your own data before acting"
-        )
-
-    # Only if promotion column exists
-    _promo_present = any(k in _hr_cols for k in ["promotion", "promoted", "promotion_last_5years"])
-    if _promo_present:
-        actions.append(
-            "Review career-development paths — check whether time-since-promotion "
-            "correlates with attrition in this dataset before prioritising it"
-        )
-
-    # Only if satisfaction or evaluation column exists
-    _sat_present = any(k in _hr_cols for k in ["satisfaction", "satisfaction_level", "engagement"])
-    if _sat_present:
-        actions.append(
-            "Break satisfaction down by manager/team to locate the weakest areas, "
-            "then target manager coaching where the data shows the largest gaps"
-        )
+    # Actions follow from what this dataset holds and what was found in it.
+    # The fixed list recommended a promotion profile and a manager breakdown
+    # for files with no promotion or manager column, and "quarterly surveys,
+    # tracked monthly" to everyone.
+    _cols = " ".join(c.lower() for c in df.columns)
+    if attrition is not None and attrition.rate > 15:
+        actions.append("Interview recent leavers to learn why they left; this data "
+                       "records that they left, not why.")
+    if any(i.category == "department" for i in insights):
+        actions.append("Compare the department with the highest attrition against "
+                       "the lowest on tenure mix, pay and role.")
+    if any(i.category == "pay" for i in insights):
+        actions.append("Check pay in the band with the most exits against the market "
+                       "rate for the same roles.")
+    if sat_col is not None and attrition is not None:
+        actions.append("Track exit rates by satisfaction band at each survey, so a "
+                       "change in who leaves shows early.")
+    if "promot" in _cols and attrition is not None:
+        actions.append("Test whether time since last promotion separates leavers from "
+                       "stayers before treating it as a retention lever.")
+    if any(k in _cols for k in ("manager", "supervisor")) and sat_col is not None:
+        actions.append("Break satisfaction down by manager to find where scores are "
+                       "lowest.")
 
     return {"findings":findings, "risks":risks, "opportunities":opps,
             "actions":actions, "insights":insights}

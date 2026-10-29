@@ -412,8 +412,13 @@ def _distribution(df, T, metric) -> Optional[ReportChart]:
             bins = np.arange(s.min() - 0.5, s.max() + 1.5, 1)
         ax.hist(s, bins=bins, color=T["accent"], alpha=0.85, edgecolor="white", linewidth=0.6)
         ax.axvline(med, color=T["primary"], linewidth=1.2, linestyle="--")
-        ax.text(med, ax.get_ylim()[1] * 0.97, " median " + fmt(med), fontsize=8,
-                color=T["primary"], va="top")
+        # Headroom above the tallest bar, so the label sits on white rather
+        # than printed across the bars.
+        top = ax.get_ylim()[1] * 1.18
+        ax.set_ylim(0, top)
+        ax.text(med, top * 0.98, " median " + fmt(med), fontsize=8,
+                color=T["primary"], va="top",
+                bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.5})
         ax.set_xlabel(_label(metric))
         ax.set_ylabel("Records")
         _value_axis(ax, T, horizontal=False)

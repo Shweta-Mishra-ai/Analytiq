@@ -697,10 +697,12 @@ def _no_signal_note(report: MLReport) -> str:
     if report.task == "regression":
         if best.test_score >= 0.05:
             return ""
-        return ("This model predicts '{}' barely better than always guessing its "
+        # A negative R² is worse than guessing the average, not "barely better".
+        how = "worse than" if best.test_score < 0 else "barely better than"
+        return ("This model predicts '{}' {} always guessing its "
                 "average (R²={:.2f} on held-out rows). Its feature ranking reflects "
                 "noise, not influence, and what-if predictions stay near the average "
-                "whatever you change.".format(report.target_col, best.test_score))
+                "whatever you change.".format(report.target_col, how, best.test_score))
     balance = report.class_balance or {}
     if not balance:
         return ""

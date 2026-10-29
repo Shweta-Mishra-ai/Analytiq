@@ -72,7 +72,7 @@ def test_a_significant_but_weak_trend_is_reported_as_no_trend():
     direction is real; acting on it is not supported."""
     out = _run(trend_over_time, _series(0.01, noise=25))
     assert not out["insights"]
-    assert "distinguishable from ordinary variation" in _text(out)
+    assert "no trend over the period beyond ordinary variation" in _text(out)
 
 
 def test_a_falling_trend_is_raised_as_a_risk():

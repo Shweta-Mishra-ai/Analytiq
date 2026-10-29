@@ -877,12 +877,8 @@ def _generate_key_insights(
     brief = ""
     if insights:
         brief += insights[0] + " "
-    if sig_cohorts:
-        brief += "{} significant cohort difference(s) identified. ".format(
-            len(sig_cohorts))
-    if report.root_causes:
-        brief += "Root cause analysis run on {} metric(s).".format(
-            len(report.root_causes))
+    # Counts of analyses run ("Root cause analysis run on 2 metric(s)") are
+    # a log line, not something a reader learns from.
 
     return insights, brief
 
