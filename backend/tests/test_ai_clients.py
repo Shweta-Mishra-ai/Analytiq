@@ -113,6 +113,7 @@ class _FakeModels:
 
     def generate_content(self, model, contents, config):  # noqa: A002
         self.model_used = model
+        self.config_used = config
         class _R:
             text = "fake response"
         return _R()
@@ -183,6 +184,19 @@ def test_generate_text_uses_configured_model(monkeypatch):
     assert fake.models.model_used == "gemini-test-model", (
         "generate_text must send config.gemini_model — a hardcoded model "
         "name is exactly the bug that made every Gemini call 404")
+
+
+def test_generate_text_sends_no_deprecated_sampling_parameters(monkeypatch):
+    # Gemini 3.6 ignores temperature/top_p/top_k and later models reject
+    # them with HTTP 400 — sending one is dead weight now and an outage on
+    # the next model upgrade.
+    fake = _FakeClient()
+    monkeypatch.setattr(config, "gemini_api_key", "fake-key", raising=False)
+    monkeypatch.setattr(gemini_client, "get_client", lambda: fake)
+    gemini_client.generate_text(["hi"], system="s", json_mode=True)
+    cfg = fake.models.config_used
+    for name in ("temperature", "top_p", "top_k"):
+        assert getattr(cfg, name, None) is None, name
 
 
 AI_DIR = Path(__file__).resolve().parent.parent / "app" / "ai"

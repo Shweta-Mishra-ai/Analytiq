@@ -210,12 +210,20 @@ export default function RagPage() {
               </button>
               <button
                 onClick={async () => {
-                  await apiDelete(`/api/rag/kb/${kb.kb_id}`)
-                  if (active?.kb_id === kb.kb_id) setActive(null)
-                  refresh()
+                  // Deleting removes every ingested file and cannot be undone.
+                  if (!confirm(`Delete the knowledge base "${kb.name}" and all ${kb.files} file(s) in it? This cannot be undone.`)) return
+                  try {
+                    await apiDelete(`/api/rag/kb/${kb.kb_id}`)
+                    if (active?.kb_id === kb.kb_id) setActive(null)
+                    refresh()
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e))
+                  }
                 }}
-                className="hidden text-mute group-hover:block hover:text-rose"
+                // Visible without hover so touch and keyboard users can reach it.
+                className="ml-2 text-mute opacity-60 hover:text-rose hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-100"
                 title="Delete"
+                aria-label={`Delete knowledge base ${kb.name}`}
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
@@ -322,7 +330,7 @@ export default function RagPage() {
                 {qa.map((item, i) => (
                   <div key={i} className="rounded-xl border border-edge bg-panel2 p-4">
                     <div className="text-xs font-semibold text-accent">{item.question}</div>
-                    <div className="prose prose-sm prose-invert mt-2 max-w-none text-sm [&_p]:my-1">
+                    <div className="prose prose-sm prose-invert mt-2 max-w-none text-sm [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-accent/50 [&_blockquote]:pl-3 [&_blockquote]:text-ink/90 [&_p]:my-1">
                       <ReactMarkdown>{item.answer}</ReactMarkdown>
                     </div>
                     {item.grounded === false && (

@@ -223,3 +223,50 @@ def test_boolean_column_with_gaps_is_not_median_filled():
     fills = [a for a in report.actions if a.column == "flag" and "median" in a.action]
     assert not fills, "median-filled a boolean column: {}".format(
         [a.action for a in fills])
+
+
+# ── values cleaning must not invent or delete ─────────────
+
+def _dates(n=100):
+    return pd.Series(pd.date_range("2020-01-01", periods=n, freq="D"))
+
+
+def test_missing_dates_are_never_filled_with_an_invented_date():
+    d = _dates()
+    d[:10] = pd.NaT
+    out, report = auto_clean(pd.DataFrame({"hire_date": d, "x": np.arange(100.0)}))
+    assert out["hire_date"].isna().sum() == 10
+    assert out["hire_date"].value_counts().max() == 1    # no mode-date pile-up
+    assert any("not imputed" in a.action for a in report.actions)
+
+
+def test_a_sparse_date_column_stays_a_date_column():
+    # 30% blank previously became the string 'Unknown', turning the column
+    # into text and removing it from every time-based analysis.
+    d = _dates()
+    d[:30] = pd.NaT
+    # x unrelated to which rows are blank, so the missingness is random and
+    # the column reaches the imputation branch.
+    x = np.random.default_rng(3).normal(size=100)
+    out, _ = auto_clean(pd.DataFrame({"left_on": d, "x": x}))
+    assert pd.api.types.is_datetime64_any_dtype(out["left_on"])
+    assert "Unknown" not in out["left_on"].astype(str).tolist()
+
+
+def test_a_one_value_flag_with_blanks_is_kept_and_not_filled():
+    df = pd.DataFrame({"complaint": ["Yes"] * 20 + [None] * 80,
+                       "x": np.arange(100.0)})
+    out, _ = auto_clean(df)
+    assert "complaint" in out.columns
+    assert out["complaint"].isna().sum() == 80
+
+
+def test_a_truly_constant_column_is_still_dropped():
+    out, _ = auto_clean(pd.DataFrame({"currency": ["GBP"] * 50, "x": np.arange(50.0)}))
+    assert "currency" not in out.columns
+
+
+def test_non_string_column_names_survive_cleaning():
+    df = pd.DataFrame({2023: np.arange(20.0), " region ": ["a", "b"] * 10})
+    out, _ = auto_clean(df)
+    assert 2023 in out.columns and "region" in out.columns

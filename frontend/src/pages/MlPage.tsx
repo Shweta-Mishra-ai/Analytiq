@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Brain } from 'lucide-react'
+import { Brain, FlaskConical } from 'lucide-react'
 import { apiGet, apiPost } from '../api/client'
 import { useApp } from '../store/app'
 import { Btn, ErrorBox, NeedData, PageHeader, Panel, Spinner } from '../components/Ui'
@@ -32,6 +32,26 @@ interface FeatureImp {
   explanation: string
 }
 
+interface FeatureInput {
+  name: string
+  kind: 'category' | 'date' | 'number'
+  options?: string[]
+  min?: number | string | null
+  max?: number | string | null
+  default?: number | string | null
+}
+
+interface WhatIfResult {
+  prediction: number
+  prediction_label?: string
+  probabilities?: Record<string, number>
+  confidence?: number | null
+  lower?: number
+  upper?: number
+  confidence_note?: string
+  assumed_at_training_median?: string[]
+}
+
 interface MlReport {
   task: string
   target_col: string
@@ -43,6 +63,149 @@ interface MlReport {
   feature_importance: FeatureImp[]
   warnings: string[]
   insights: string[]
+  /** Set when the best model is no better than a trivial guess. */
+  no_signal?: string
+  feature_inputs?: FeatureInput[]
+}
+
+const field =
+  'w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink'
+
+/**
+ * Score one profile with the trained model. Inputs start at the training
+ * data's typical values, so changing one field shows that field's effect.
+ */
+function WhatIfPanel({ ds, report }: { ds: string; report: MlReport }) {
+  const specs = report.feature_inputs ?? []
+  const rank = new Map(report.feature_importance.map((f) => [f.feature, f.rank]))
+  const ordered = [...specs].sort((a, b) => (rank.get(a.name) ?? 999) - (rank.get(b.name) ?? 999))
+  const defaults = () =>
+    Object.fromEntries(specs.map((f) => [f.name, f.default == null ? '' : String(f.default)]))
+  const [inputs, setInputs] = useState<Record<string, string>>(defaults)
+  const [result, setResult] = useState<WhatIfResult | null>(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  if (!specs.length || !report.best_model) return null
+
+  const run = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      setResult(
+        await apiPost<WhatIfResult>(`/api/ml/${ds}/what-if`, {
+          target: report.target_col,
+          inputs,
+        }),
+      )
+    } catch (e) {
+      setResult(null)
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const num = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 2 })
+
+  return (
+    <Panel title={`What-if: predict ${report.target_col} for one profile`}>
+      <p className="mb-3 text-xs text-mute">
+        Starts from a typical row of the training data. Change any field and run — the result
+        is what this model expects for that profile, a pattern in this data rather than proof
+        that changing the field would change the outcome.
+      </p>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        {ordered.map((f) => (
+          <div key={f.name}>
+            <label className="mb-1 block text-xs text-mute" htmlFor={`wi-${f.name}`}>
+              {f.name}
+            </label>
+            {f.kind === 'category' ? (
+              <select
+                id={`wi-${f.name}`}
+                value={inputs[f.name] ?? ''}
+                onChange={(e) => setInputs({ ...inputs, [f.name]: e.target.value })}
+                className={field}
+              >
+                {(f.options ?? []).map((o) => (
+                  <option key={o}>{o}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                id={`wi-${f.name}`}
+                type={f.kind === 'date' ? 'date' : 'number'}
+                step="any"
+                min={f.min ?? undefined}
+                max={f.max ?? undefined}
+                value={inputs[f.name] ?? ''}
+                onChange={(e) => setInputs({ ...inputs, [f.name]: e.target.value })}
+                className={field}
+              />
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 flex items-center gap-3">
+        <Btn onClick={run} disabled={busy}>
+          <span className="flex items-center gap-1.5">
+            <FlaskConical className="h-4 w-4" /> {busy ? 'Predicting…' : 'Predict'}
+          </span>
+        </Btn>
+        <Btn variant="ghost" onClick={() => { setInputs(defaults()); setResult(null) }} disabled={busy}>
+          Reset to typical
+        </Btn>
+      </div>
+      {error && (
+        <div className="mt-3">
+          <ErrorBox message={error} />
+        </div>
+      )}
+      {result && (
+        <div className="mt-4 rounded-lg border border-edge bg-panel2 p-4" data-testid="what-if-result">
+          {report.no_signal && (
+            <p className="mb-2 text-xs text-amber">⚠ {report.no_signal}</p>
+          )}
+          {report.task === 'classification' ? (
+            <>
+              <div className="text-xs text-mute uppercase">Predicted {report.target_col}</div>
+              <div className="text-2xl font-bold text-accent">
+                {result.prediction_label ?? num(result.prediction)}
+                {result.confidence != null && (
+                  <span className="ml-2 text-sm font-normal text-mute">
+                    {result.confidence}% model probability
+                  </span>
+                )}
+              </div>
+              {result.probabilities && (
+                <div className="mt-2 flex flex-wrap gap-3 text-xs text-mute">
+                  {Object.entries(result.probabilities).map(([k, v]) => (
+                    <span key={k}>{k}: {(v * 100).toFixed(1)}%</span>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="text-xs text-mute uppercase">Predicted {report.target_col}</div>
+              <div className="text-2xl font-bold text-accent">{num(result.prediction)}</div>
+              {result.lower != null && result.upper != null && (
+                <div className="mt-1 text-xs text-mute">
+                  Typical error range {num(result.lower)} – {num(result.upper)} ({result.confidence_note})
+                </div>
+              )}
+            </>
+          )}
+          {result.assumed_at_training_median && result.assumed_at_training_median.length > 0 && (
+            <p className="mt-2 text-xs text-amber">
+              Left blank, so assumed typical: {result.assumed_at_training_median.join(', ')}
+            </p>
+          )}
+        </div>
+      )}
+    </Panel>
+  )
 }
 
 export default function MlPage() {
@@ -195,7 +358,12 @@ export default function MlPage() {
           </Panel>
 
           <Panel title="What drives the prediction">
-            <div className="space-y-1.5">
+            {report.no_signal && (
+              <p className="mb-3 rounded-lg border border-amber/40 bg-amber/5 px-4 py-3 text-sm text-ink">
+                ⚠ {report.no_signal}
+              </p>
+            )}
+            <div className={`space-y-1.5 ${report.no_signal ? 'opacity-50' : ''}`}>
               {report.feature_importance.slice(0, 12).map((f) => (
                 <div key={f.feature} className="flex items-center gap-3 text-xs">
                   <span className="w-40 truncate font-semibold text-ink">{f.feature}</span>
@@ -212,6 +380,8 @@ export default function MlPage() {
               ))}
             </div>
           </Panel>
+
+          {ds && <WhatIfPanel key={`${ds}:${report.target_col}`} ds={ds} report={report} />}
 
           {report.insights.length > 0 && (
             <Panel title="Model insights">

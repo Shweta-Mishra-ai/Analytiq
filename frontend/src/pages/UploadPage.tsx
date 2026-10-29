@@ -233,10 +233,16 @@ export default function UploadPage() {
                 </button>
                 <button
                   title="Delete dataset"
+                  aria-label={`Delete dataset ${m.filename}`}
                   onClick={async () => {
-                    await apiDelete(`/api/datasets/${m.dataset_id}`)
-                    if (dataset?.dataset_id === m.dataset_id) setDataset(null)
-                    refresh()
+                    if (!confirm(`Delete "${m.filename}"? The original upload and its cleaned version are both removed. This cannot be undone.`)) return
+                    try {
+                      await apiDelete(`/api/datasets/${m.dataset_id}`)
+                      if (dataset?.dataset_id === m.dataset_id) setDataset(null)
+                      refresh()
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : String(e))
+                    }
                   }}
                   className="ml-3 text-mute hover:text-rose"
                 >

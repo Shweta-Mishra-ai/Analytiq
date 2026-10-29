@@ -71,6 +71,9 @@ class DatasetStats:
     numeric_cols: List[str]
     categorical_cols: List[str]
     datetime_cols: List[str]
+    # Excluded on purpose, not dropped: identifiers have no meaningful
+    # mean, spread or correlation.
+    identifier_cols: List[str] = field(default_factory=list)
     column_stats: Dict[str, ColumnStats] = field(default_factory=dict)
     correlations: List[CorrelationInsight] = field(default_factory=list)
     top_correlations: List[CorrelationInsight] = field(default_factory=list)
@@ -87,8 +90,14 @@ def analyze(df: pd.DataFrame) -> DatasetStats:
     Full statistical analysis of a DataFrame.
     Runs proper stats — not just describe().
     """
-    num_cols  = df.select_dtypes(include="number").columns.tolist()
-    cat_cols  = text_columns(df)
+    # Measures only — identifiers were correlated with everything ("weak
+    # negative correlation between employee_id and tenure_years"), and a
+    # boolean's "mean" is a proportion, described elsewhere.
+    from app.engines.domains.base import is_id_column
+    id_cols   = [c for c in df.columns if is_id_column(c, df[c])]
+    num_cols  = [c for c in df.select_dtypes(include="number").columns
+                 if not pd.api.types.is_bool_dtype(df[c]) and c not in id_cols]
+    cat_cols  = [c for c in text_columns(df) if c not in id_cols]
     dt_cols   = df.select_dtypes(include="datetime").columns.tolist()
 
     ds = DatasetStats(
@@ -96,6 +105,7 @@ def analyze(df: pd.DataFrame) -> DatasetStats:
         numeric_cols=num_cols,
         categorical_cols=cat_cols,
         datetime_cols=dt_cols,
+        identifier_cols=id_cols,
     )
 
     # ── Per-column stats ───────────────────────────────────

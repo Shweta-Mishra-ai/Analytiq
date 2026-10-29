@@ -12,6 +12,7 @@ import warnings
 warnings.filterwarnings("ignore")
 from scipy import stats as scipy_stats
 
+from app.engines.benchmarking import metric_direction
 from app.services.stat_guards import apply_fdr, chi2_association
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,9 @@ class RootCauseResult:
     top_driver:      str
     interpretation:  str
     recommendations: List[str]
+    # Who the flagged quarter is, in words that match the metric: "low
+    # performers" only when higher is known to be better.
+    group_label:     str = "low performers"
 
 
 @dataclass
@@ -188,10 +192,28 @@ def analyze_root_cause(
     Find what drives low performance on target_col.
     Compares low performers vs high performers on all other columns.
     """
+    # Which quarter is the problem depends on the metric. For cost, churn
+    # or absences the worst rows are the HIGH ones; for salary or age no
+    # quarter is "worse", so it is described, not judged.
+    from app.engines.benchmarking import metric_direction
+    direction = metric_direction(target_col)
     s         = df[target_col].dropna()
-    threshold = float(s.quantile(threshold_pct / 100))
-    low_mask  = df[target_col] <= threshold
-    high_mask = df[target_col] > threshold
+    if direction < 0:
+        threshold = float(s.quantile(1 - threshold_pct / 100))
+        low_mask  = df[target_col] >= threshold
+        high_mask = df[target_col] < threshold
+        group = "the worst {:.0f}% (highest '{}')".format(threshold_pct, target_col)
+        short = "worst performers"
+    else:
+        threshold = float(s.quantile(threshold_pct / 100))
+        low_mask  = df[target_col] <= threshold
+        high_mask = df[target_col] > threshold
+        if direction > 0:
+            group = "low performers (bottom {:.0f}% of '{}')".format(threshold_pct, target_col)
+            short = "low performers"
+        else:
+            group = "the bottom {:.0f}% of '{}'".format(threshold_pct, target_col)
+            short = "rows in the bottom {:.0f}% of '{}'".format(threshold_pct, target_col)
 
     n_low     = int(low_mask.sum())
     low_pct   = round(n_low / max(len(df), 1) * 100, 1)
@@ -202,8 +224,9 @@ def analyze_root_cause(
     drivers = []
 
     # Numeric features — compare means
+    from app.engines.domains.base import is_id_column
     num_cols = [c for c in df.select_dtypes(include="number").columns
-                if c != target_col]
+                if c != target_col and not is_id_column(c, df[c])]
     for col in num_cols[:15]:
         try:
             low_vals  = low_df[col].dropna()
@@ -214,7 +237,9 @@ def analyze_root_cause(
             low_mean  = float(low_vals.mean())
             high_mean = float(high_vals.mean())
             diff      = high_mean - low_mean
-            diff_pct  = abs(diff) / abs(low_mean) * 100 if low_mean != 0 else 0
+            # Measured against the rest, the reference group: "low performers
+            # have X% more absences than everyone else".
+            diff_pct  = abs(diff) / abs(high_mean) * 100 if high_mean != 0 else 0
 
             # Statistical significance
             try:
@@ -227,11 +252,13 @@ def analyze_root_cause(
                 direction = "higher" if diff > 0 else "lower"
                 impact    = min(diff_pct / 100, 1.0)   # normalize to 0-1
 
+                # The old conditional printed "lower" whenever low performers
+                # had MORE of something: "56.3% lower absences (17.30 vs 7.56)".
+                low_vs_rest = "higher" if low_mean > high_mean else "lower"
                 detail = (
-                    "Low performers have {:.1f}% {} '{}' "
+                    "{} have {:.1f}% {} '{}' than the rest "
                     "({:.2f} vs {:.2f}, p={:.4f})".format(
-                        diff_pct, direction if diff < 0 else
-                        "lower" if direction == "higher" else "higher",
+                        short[:1].upper() + short[1:], diff_pct, low_vs_rest,
                         col, low_mean, high_mean, p)
                 )
                 drivers.append({
@@ -284,8 +311,8 @@ def analyze_root_cause(
             diff_pct = abs(low_pct_cat - high_pct_cat)
 
             detail = (
-                "In low performers, '{}' = '{}' in {:.0f}% of cases "
-                "vs {:.0f}% in high performers "
+                "In " + short + ", '{}' = '{}' in {:.0f}% of cases "
+                "vs {:.0f}% in the rest "
                 "(chi-square p={:.4f}, Cramér's V={:.2f} — {} association, "
                 "n={:,})".format(
                     col, worst_cat, low_pct_cat, high_pct_cat, p,
@@ -335,33 +362,32 @@ def analyze_root_cause(
     # Interpretation
     if not drivers:
         interp = (
-            "No statistically significant drivers found for low '{}' performance. "
-            "Consider collecting additional data.".format(target_col)
+            "Nothing in the other columns separates {} from the rest at a "
+            "level that survives a multiple-comparison check.".format(group)
         )
-        recs = ["Collect more granular data to identify root causes."]
+        recs = ["Collect more granular data to identify what distinguishes them."]
     else:
         top = drivers[0]
         interp = (
-            "{:.0f}% of records ({:,}) are in the bottom {:.0f}% of '{}'. "
-            "Top driver: '{}' — {}".format(
-                low_pct, n_low, threshold_pct, target_col,
-                top["factor"], top["detail"])
+            "{:,} records ({:.0f}%) are {}. Strongest difference: "
+            "'{}' — {}".format(n_low, low_pct, group, top["factor"], top["detail"])
         )
+        # Differences, not causes: these columns move with the flagged
+        # quarter in this data, which is where to look, not proof of why.
         recs = []
         for d in drivers[:3]:
             if d["dtype"] == "numeric":
                 recs.append(
-                    "Focus on '{}' — low performers show {:.1f}% difference. "
-                    "Bring to high-performer level ({:.2f}) from current {:.2f}.".format(
-                        d["factor"], d["diff_pct"],
-                        d["high_mean"], d["low_mean"])
+                    "Look at '{}': {:.2f} for {} against {:.2f} for the rest. "
+                    "Check whether it drives '{}' or only travels with it "
+                    "before acting on it.".format(
+                        d["factor"], d["low_mean"], short, d["high_mean"], target_col)
                 )
             else:
                 recs.append(
-                    "Investigate '{}' = '{}' segment — "
-                    "over-represented in low performers ({:.0f}% vs {:.0f}%).".format(
+                    "Look at '{}' = '{}': {:.0f}% of {} against {:.0f}% of the rest.".format(
                         d["factor"], d.get("key_category", ""),
-                        d.get("low_pct", 0), d.get("high_pct", 0))
+                        d.get("low_pct", 0), short, d.get("high_pct", 0))
                 )
 
     return RootCauseResult(
@@ -373,6 +399,7 @@ def analyze_root_cause(
         top_driver=top_driver,
         interpretation=interp,
         recommendations=recs,
+        group_label=group,
     )
 
 
@@ -588,9 +615,9 @@ def analyze_cohort(
             )
     else:
         recs.append(
-            "No significant difference between cohorts — "
-            "'{}' does not meaningfully segment '{}' performance.".format(
-                cohort_col, metric_col)
+            "No statistically significant difference between '{}' groups on "
+            "'{}' at this sample size — the data do not show one, which is not "
+            "the same as showing there is none.".format(cohort_col, metric_col)
         )
 
     return CohortResult(
@@ -639,12 +666,14 @@ def analyze_pareto(
     top_share = round(float(agg.iloc[:top_20_n].sum() / total * 100), 2)
     pareto_holds = top_share >= 60
 
+    # The top group count is rounded up, so with 7 groups "the top 20%" is
+    # 2 of them — 29%. State the real fraction.
     interp = (
-        "Top {:.0f}% of '{}' groups ({} out of {}) account for {:.1f}% "
+        "The top {} of {} '{}' groups ({:.0f}% of groups) account for {:.1f}% "
         "of total '{}'. {}".format(
-            20, group_col, top_20_n, n, top_share, value_col,
-            "Pareto principle HOLDS — concentrate on top performers." if pareto_holds
-            else "Pareto principle does NOT hold — value is distributed evenly.")
+            top_20_n, n, group_col, top_20_n / n * 100, top_share, value_col,
+            "A concentrated, 80/20-like pattern." if pareto_holds
+            else "Value is spread more widely than an 80/20 pattern.")
     )
 
     return ParetoResult(
@@ -691,6 +720,11 @@ def analyze_segment_health(
                 continue
             if not pd.api.types.is_numeric_dtype(df[col]):
                 continue
+            # "Healthy" needs a direction: above-average absences or costs
+            # used to raise a segment's health score.
+            direction = metric_direction(col)
+            if direction == 0:
+                continue
             seg_mean = float(seg_df[col].mean())
             avg      = overall.get(col, seg_mean)
             vs_avg   = ((seg_mean - avg) / abs(avg) * 100
@@ -706,37 +740,46 @@ def analyze_segment_health(
                       else "bottom" if rank > n_seg - max(1, n_seg // 3)
                       else "mid")
 
-            score_val = 50 + vs_avg * 0.5
+            better = vs_avg * direction      # >0: better than average
+            score_val = 50 + better * 0.5
             score_val = max(0, min(100, score_val))
             scores.append(score_val)
 
+            if direction < 0:      # rank 1 = best = lowest
+                rank = n_seg + 1 - rank
+                status = ("top" if rank <= max(1, n_seg // 3)
+                          else "bottom" if rank > n_seg - max(1, n_seg // 3)
+                          else "mid")
             metrics[col] = {
                 "mean":    round(seg_mean, 4),
                 "vs_avg":  round(vs_avg, 2),
+                "better_vs_avg": round(better, 2),
                 "rank":    rank,
                 "n_total": n_seg,
                 "status":  status,
             }
 
-        health_score = round(float(np.mean(scores)), 1) if scores else 50.0
+        if not scores:
+            continue
+        health_score = round(float(np.mean(scores)), 1)
         strengths    = [col for col, m in metrics.items()
-                        if m["vs_avg"] > 10]
+                        if m["better_vs_avg"] > 10]
         weaknesses   = [col for col, m in metrics.items()
-                        if m["vs_avg"] < -10]
+                        if m["better_vs_avg"] < -10]
 
         # Opportunity
         if weaknesses:
             worst_col = min(metrics.items(),
-                            key=lambda x: x[1]["vs_avg"])[0]
-            opp = ("Improve '{}' from {:.2f} to dataset average {:.2f} "
-                   "— {:.1f}% improvement opportunity.".format(
+                            key=lambda x: x[1]["better_vs_avg"])[0]
+            opp = ("'{}' is {:.2f} here against a dataset average of {:.2f} "
+                   "({:.1f}% worse).".format(
                        worst_col,
                        metrics[worst_col]["mean"],
                        overall.get(worst_col, 0),
                        abs(metrics[worst_col]["vs_avg"])))
         elif strengths:
             best_col = max(metrics.items(),
-                           key=lambda x: x[1]["vs_avg"])[0]
+                           key=lambda x: x[1]["better_vs_avg"])[0]
             opp = ("Already leading in '{}' — "
                    "leverage this advantage in other segments.".format(best_col))
         else:
@@ -753,6 +796,8 @@ def analyze_segment_health(
             opportunity=opp,
         ))
 
+    if len(results) < 2:
+        return []
     return sorted(results, key=lambda x: x.health_score, reverse=True)
 
 
@@ -769,25 +814,28 @@ def _generate_key_insights(
     for p in report.pareto:
         if p.pareto_holds:
             insights.append(
-                "Pareto holds for '{}' by '{}': top {:.0f}% of groups "
-                "drive {:.0f}% of value. Focus resources on top performers.".format(
-                    p.value_col, p.group_col,
-                    20, p.top_groups_share)
+                "'{}' is concentrated by '{}': the top {} of {} groups hold "
+                "{:.0f}% of the total.".format(
+                    p.value_col, p.group_col, p.top_20_pct_groups,
+                    len(p.groups), p.top_groups_share)
             )
         else:
             insights.append(
-                "Value in '{}' is evenly distributed across '{}' segments — "
-                "no single group dominates.".format(p.value_col, p.group_col)
+                "The top {} of {} '{}' groups hold {:.0f}% of '{}' — spread "
+                "more widely than an 80/20 pattern.".format(
+                    p.top_20_pct_groups, len(p.groups), p.group_col,
+                    p.top_groups_share, p.value_col)
             )
 
     # Root cause insights
     for rc in report.root_causes:
         if rc.drivers:
+            top = rc.drivers[0]
             insights.append(
-                "Root cause of low '{}': '{}' is the top driver "
-                "({:.0f}% difference between low and high performers).".format(
-                    rc.target_col, rc.top_driver,
-                    rc.drivers[0]["diff_pct"] if rc.drivers[0].get("diff_pct") else 0)
+                "For {}, the strongest difference is in '{}'{}.".format(
+                    rc.group_label, rc.top_driver,
+                    " ({:.0f}% from the rest)".format(top["diff_pct"])
+                    if top.get("diff_pct") else "")
             )
 
     # Cohort insights
@@ -801,7 +849,10 @@ def _generate_key_insights(
         )
 
     # Segment health insights
-    if report.segments:
+    # Only name a best and worst segment when they are meaningfully apart:
+    # a 4-point spread on a 0-100 score is noise, not "needs attention".
+    if report.segments and (report.segments[0].health_score
+                            - report.segments[-1].health_score) >= 10:
         best = report.segments[0]
         worst = report.segments[-1]
         insights.append(
@@ -837,9 +888,13 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
     if len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
 
-    num_cols = df.select_dtypes(include="number").columns.tolist()
+    # Measures only. employee_id was the first numeric column of an HR
+    # file, so the page led with "Root cause of low 'employee_id'".
+    from app.engines.domains.base import is_id_column
+    num_cols = [c for c in df.select_dtypes(include="number").columns
+                if not pd.api.types.is_bool_dtype(df[c]) and not is_id_column(c, df[c])]
     cat_cols = [c for c in text_columns(df)
-                if 2 <= df[c].nunique() <= 25]
+                if 2 <= df[c].nunique() <= 25 and not is_id_column(c, df[c])]
 
     report = BIReport()
 
@@ -851,8 +906,11 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
             logger.debug("run_bi: suppressed exception", exc_info=True)
             continue
 
-    # 2. Root cause — top numeric as target
-    for col in num_cols[:2]:
+    # 2. Root cause — metrics with a known good direction first: "what
+    #    separates low satisfaction" is a question; "the bottom quarter of
+    #    age" rarely is.
+    targets = sorted(num_cols, key=lambda c: metric_direction(c) == 0)
+    for col in targets[:2]:
         try:
             report.root_causes.append(
                 analyze_root_cause(df, col, threshold_pct=25))
@@ -870,12 +928,21 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
                 continue
 
     # 4. Pareto — top cat × top numeric
+    # Shares of a total only exist for additive, non-negative measures and
+    # need enough groups for "the top 20%" to be more than one or two. A sum
+    # of averages (rates, scores) is not a total, so those are skipped
+    # rather than reported as "shares".
     for cat in cat_cols[:1]:
+        if df[cat].nunique() < 5:
+            continue
         for num in num_cols[:2]:
+            words = num.lower()
+            if any(k in words for k in ("rate", "score", "rating", "pct", "percent", "ratio", "avg", "average")):
+                continue
+            if (df[num].dropna() < 0).any():
+                continue
             try:
-                agg = "mean" if "rate" in num.lower() or "score" in num.lower() \
-                      or "rating" in num.lower() else "sum"
-                report.pareto.append(analyze_pareto(df, cat, num, agg))
+                report.pareto.append(analyze_pareto(df, cat, num, "sum"))
             except Exception:
                 logger.debug("run_bi: suppressed exception", exc_info=True)
                 continue

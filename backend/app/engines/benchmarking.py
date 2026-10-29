@@ -47,20 +47,35 @@ _SKIP = (
 )
 
 
+def _matches(words: List[str], keywords) -> bool:
+    """Whole-word match for short keywords, word-prefix for longer ones —
+    so "absences" matches "absence" but "paid" does not match "id", nor
+    "window" "win", "holiday" "day" or "translate" "late"."""
+    for k in keywords:
+        for w in words:
+            if w == k or (len(k) >= 4 and w.startswith(k)):
+                return True
+    return False
+
+
 def metric_direction(col_name: str) -> int:
     """+1 higher-is-better, -1 lower-is-better, 0 unknown (skip)."""
-    cl = col_name.lower()
-    if any(k in cl for k in _SKIP):
+    import re
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(col_name))
+    words = [w for w in re.split(r"[^a-z0-9]+", spaced.lower()) if w]
+    lower = _matches(words, _LOWER_BETTER)
+    higher = _matches(words, _HIGHER_BETTER)
+    if _matches(words, _SKIP):
         # An explicit good/bad word still wins over a generic skip word
         # (e.g. 'cost_score' -> lower better; 'overtime' -> lower better).
-        if any(k in cl for k in _LOWER_BETTER):
+        if lower:
             return -1
-        if any(k in cl for k in _HIGHER_BETTER):
+        if higher:
             return 1
         return 0
-    if any(k in cl for k in _LOWER_BETTER):
+    if lower:
         return -1
-    if any(k in cl for k in _HIGHER_BETTER):
+    if higher:
         return 1
     return 0
 

@@ -214,7 +214,7 @@ def test_a_trivial_segment_gap_is_not_called_underperformance():
     stats = {c: col_stats(df[c]) for c in df.columns
              if pd.api.types.is_numeric_dtype(df[c])}
     out = _insights_general(df, stats, [])
-    assert not any("underperforms" in r for r in out["risks"]), out["risks"]
+    assert not any("statistically significant" in r for r in out["risks"]), out["risks"]
 
 
 def test_a_substantial_segment_gap_is_still_reported():
@@ -230,5 +230,25 @@ def test_a_substantial_segment_gap_is_still_reported():
     stats = {c: col_stats(df[c]) for c in df.columns
              if pd.api.types.is_numeric_dtype(df[c])}
     out = _insights_general(df, stats, [])
-    assert any("underperforms" in r for r in out["risks"]), \
+    assert any("statistically significant" in r for r in out["risks"]), \
         "a two-fold gap was suppressed"
+    # 'reading' says nothing about which end is good, so neither is "weak".
+    assert not any("trails" in r for r in out["risks"]), out["risks"]
+
+
+def test_a_lower_is_better_metric_names_the_high_segment_as_trailing():
+    # "Alpha underperforms on delay_days" for the segment with the shortest
+    # delays had the finding backwards.
+    from app.engines.domains.base import col_stats
+    from app.engines.domains.general import _insights_general
+
+    rng = np.random.default_rng(217)
+    n = 400
+    seg = rng.choice(["Alpha", "Beta"], n)
+    val = np.where(seg == "Alpha", rng.normal(6, 1, n), rng.normal(12, 1, n))
+    df = pd.DataFrame({"branch": seg, "delay_days": val.round(2),
+                       "other": rng.normal(0, 1, n)})
+    stats = {c: col_stats(df[c]) for c in df.columns
+             if pd.api.types.is_numeric_dtype(df[c])}
+    risks = _insights_general(df, stats, [])["risks"]
+    assert any(r.startswith("'Beta' trails on 'delay_days'") for r in risks), risks

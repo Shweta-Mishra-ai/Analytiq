@@ -98,33 +98,10 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     light2      = HexColor("#F8FAFF")
     score_color = HexColor(health["color"])
 
-    # ── Premium fonts — fall back to Helvetica if not found ──────────────
-    import os as _os
-    from reportlab.pdfbase import pdfmetrics as _pm
-    from reportlab.pdfbase.ttfonts import TTFont as _TTF
-
-    # Resolve repo root: health_pdf_builder is at core/, assets/ is at root
-    _REPO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-    _FONT_DIR  = _os.path.join(_REPO_ROOT, "assets", "fonts")
-
-    _BF, _BB, _BI = "Helvetica", "Helvetica-Bold", "Helvetica-Oblique"
-    _FONTS = [
-        ("HDF-Reg",    "Carlito-Regular.ttf",    "_BF"),
-        ("HDF-Bold",   "Carlito-Bold.ttf",        "_BB"),
-        ("HDF-Italic", "Carlito-Italic.ttf",      "_BI"),
-    ]
-    for alias, fname_f, var in _FONTS:
-        font_path = _os.path.join(_FONT_DIR, fname_f)
-        if not _os.path.exists(font_path):
-            logger.warning("Font not found at %s — using Helvetica fallback", font_path)
-            continue
-        try:
-            _pm.registerFont(_TTF(alias, font_path))
-            if alias == "HDF-Reg":    _BF = alias
-            if alias == "HDF-Bold":   _BB = alias
-            if alias == "HDF-Italic": _BI = alias
-        except Exception:
-            logger.warning("Font registration failed for %s", alias, exc_info=True)
+    # Embedded Carlito, Helvetica only if the bundled files are missing
+    # (see engines/pdf_fonts.py). The fonts were never committed, so every
+    # report fell back to Helvetica, which has no rupee sign.
+    from app.engines.pdf_fonts import FONT_BOLD as _BB, FONT_ITALIC as _BI, FONT_REG as _BF
 
     def ps(name, **kw): return ParagraphStyle(name, **kw)
     ST = {
@@ -477,7 +454,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             rows = []
             for item in items[:max_items]:
                 marker = Paragraph(
-                    '<font color="{}">■</font>'.format(bullet_hex),
+                    '<font color="{}">•</font>'.format(bullet_hex),
                     ParagraphStyle("bm", fontName=_BF, fontSize=7.5, leading=13))
                 text = Paragraph(_clean_text(item),
                                  ParagraphStyle("bt", fontName=_BF, fontSize=9.5,
@@ -704,19 +681,19 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         # Status
         miss_f = sc.isna().mean()*100
         if miss_f > 20:
-            status = "⚠ HIGH MISSING"
+            status = "HIGH MISSING"
             st_c   = HexColor("#DC2626")
         elif miss_f > 5:
-            status = "△ REVIEW"
+            status = "REVIEW"
             st_c   = HexColor("#D97706")
         elif sc.nunique() == 1:
-            status = "⚠ CONSTANT"
+            status = "CONSTANT"
             st_c   = HexColor("#DC2626")
         elif sc.nunique() == len(df):
-            status = "ℹ ID COL"
+            status = "ID COLUMN"
             st_c   = HexColor("#2563EB")
         else:
-            status = "✓ OK"
+            status = "OK"
             st_c   = HexColor("#059669")
 
         rows2.append([

@@ -62,16 +62,29 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/api/auth/login")
-async def login(req: LoginRequest):
+def login(req: LoginRequest):
     """Exchange a client's username/password for their scoped bearer
     token. In single-user open mode (no admin key set, no accounts
     created yet) auth is bypassed entirely and this endpoint is unused
-    by the frontend."""
+    by the frontend.
+
+    Deliberately a sync route: PBKDF2 at 200k iterations is tens of
+    milliseconds of CPU, and in an async route it ran on the event loop,
+    stalling every other request for the duration — a login flood was a
+    cheap way to freeze the server."""
     from fastapi import HTTPException
+    from app.services.auth import login_throttle
     from app.services.tokens import issue_token
+    wait = login_throttle.retry_after(req.username)
+    if wait:
+        raise HTTPException(
+            429, f"Too many failed sign-in attempts. Try again in {wait} s.",
+            headers={"Retry-After": str(wait)})
     user = user_store.verify(req.username, req.password)
     if not user:
+        login_throttle.record_failure(req.username)
         raise HTTPException(401, "Wrong username or password")
+    login_throttle.record_success(req.username)
     return {"token": issue_token(user.username), "username": user.username,
             "is_admin": user.is_admin}
 
@@ -113,7 +126,7 @@ class CreateUserRequest(BaseModel):
 
 
 @app.post("/api/admin/users")
-async def create_client_user(req: CreateUserRequest):
+def create_client_user(req: CreateUserRequest):
     """Onboard a new client account. Admin-key protected (see
     services/auth.py) — clients never see or use this endpoint."""
     from fastapi import HTTPException
@@ -140,6 +153,10 @@ async def delete_client_user(username: str):
     from fastapi import HTTPException
     from starlette.concurrency import run_in_threadpool
     from app.services.dataset_store import store as dataset_store
+    # Owner directories are keyed by the stored (lower-case) name; cascading
+    # with the name as typed found nothing, deleted the account anyway and
+    # left all of that client's data on disk with no owner to remove it.
+    username = username.strip().lower()
     if not user_store.exists(username):
         raise HTTPException(404, "No such user")
 
@@ -150,8 +167,11 @@ async def delete_client_user(username: str):
                 removed_ds.append(meta.dataset_id)
         removed_kbs = []
         try:
-            from app.rag.vector_store import RagStore
-            rs = RagStore()
+            # The shared instance, not a fresh RagStore(): the API serves
+            # knowledge bases from that instance's in-memory cache, so
+            # deleting through a second instance left every one of them
+            # readable — and re-savable to disk — until the next restart.
+            from app.rag.vector_store import rag_store as rs
             for kb in rs.list(username):
                 if rs.delete(username, kb["kb_id"]):
                     removed_kbs.append(kb["kb_id"])
@@ -195,7 +215,29 @@ if os.path.isdir(_static):
         if full_path.startswith("api/"):
             from fastapi import HTTPException
             raise HTTPException(404, f"No API route matches /{full_path}")
-        target = os.path.join(_static, full_path)
-        if full_path and os.path.isfile(target):
+        target = _static_file(full_path)
+        if target:
             return FileResponse(target)
-        return FileResponse(os.path.join(_static, "index.html"))
+        return FileResponse(os.path.join(_static_root, "index.html"))
+
+
+_static_root = os.path.realpath(_static)
+
+
+def _static_file(full_path: str) -> str | None:
+    """The file under the static directory that `full_path` names, or None.
+
+    The ASGI server percent-decodes the path before routing, so a request
+    for `/%2Fetc%2Fpasswd` or `/..%2F..%2Fsrv%2Fdata%2F.secret_key` arrives
+    here as an absolute or parent-relative path. `os.path.join` discards
+    the static root for an absolute component and `..` walks out of it, so
+    without a containment check this route served any file the process
+    could read — the token-signing secret included — to anyone, with no
+    authentication (the auth middleware only guards /api).
+    """
+    if not full_path:
+        return None
+    target = os.path.realpath(os.path.join(_static_root, full_path))
+    if os.path.commonpath([target, _static_root]) != _static_root:
+        return None
+    return target if os.path.isfile(target) else None

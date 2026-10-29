@@ -221,3 +221,33 @@ def test_methodology_states_the_tests_actually_used(finance_df):
         assert expected in text, f"methodology omits {expected}"
     assert "does not establish causation" in text.lower() \
         or "not establish causation" in text.lower()
+
+
+def test_no_page_or_report_analyses_an_identifier(client, uploaded_dataset_id):
+    # employee_id turned up as a correlation, a "trend", a category's
+    # "largest total", a non-normal measure and a PDF mean.
+    import io
+    from pypdf import PdfReader
+    ds = uploaded_dataset_id
+
+    def strings(o):
+        if isinstance(o, str):
+            yield o
+        elif isinstance(o, dict):
+            for v in o.values():
+                yield from strings(v)
+        elif isinstance(o, list):
+            for v in o:
+                yield from strings(v)
+
+    for ep in ("stats", "eda", "bi", "story", "insights", "benchmarks", "drivers"):
+        text = [x for x in strings(client.get(f"/api/analytics/{ds}/{ep}").json())
+                if "employee_id" in x and len(x) > 15]
+        assert not text, (ep, text[:3])
+    pdf = client.post(f"/api/reports/{ds}/pdf", json={}).content
+    lines = [l for p in PdfReader(io.BytesIO(pdf)).pages
+             for l in (p.extract_text() or "").splitlines() if "employee_id" in l]
+    # Allowed: the note that tells the reader to exclude it, and the bare
+    # name in a table cell (column inventories). Not allowed: any sentence
+    # or statistic about it.
+    assert all("ID COLUMNS DETECTED" in l or l.strip() == "employee_id" for l in lines), lines

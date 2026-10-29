@@ -10,7 +10,7 @@ from typing import List, Optional
 
 from app.config import config
 from app.rag.extractors import IMAGE_EXTS, VIDEO_EXTS, extract
-from app.rag.vector_store import KnowledgeBase
+from app.rag.vector_store import KnowledgeBase, kb_lock
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +90,12 @@ def ingest_file(kb: KnowledgeBase, filename: str, data: bytes) -> dict:
     if not passages:
         raise ValueError(f"No text could be extracted from {filename}")
     chunks = chunk_passages(passages)
-    check_ingest_limits(kb, len(chunks))
     kind = file_kind(filename)
-    kb.add_chunks(chunks, filename, kind)
+    # Extraction above is the slow part and runs unlocked; the check and the
+    # append must happen together or concurrent uploads race (see kb_lock).
+    with kb_lock(kb):
+        check_ingest_limits(kb, len(chunks))
+        kb.add_chunks(chunks, filename, kind)
     preview = passages[0]["text"][:600]
     return {"filename": filename, "kind": kind,
             "chunks_added": len(chunks), "preview": preview,
@@ -109,7 +112,7 @@ def _gemini_generate(system: str, user: str, max_tokens: int = 2048) -> Optional
         from app.ai import gemini_client
         return gemini_client.generate_text(
             [user], system=system, max_output_tokens=max_tokens,
-            temperature=0.2, timeout_sec=60).strip() or None
+            timeout_sec=60).strip() or None
     except Exception as e:
         logger.warning(f"Gemini generation failed: {e}")
         return None
@@ -132,6 +135,10 @@ def _local_generate(system: str, user: str, max_tokens: int = 2048) -> Optional[
     return local_llm.generate(system, user, max_tokens=max_tokens)
 
 
+class NoModelAvailable(RuntimeError):
+    """No language model could be reached; nothing was sent anywhere."""
+
+
 def _generate(system: str, user: str, max_tokens: int = 2048) -> str:
     """Answer with a local model where one is available or required.
 
@@ -145,7 +152,7 @@ def _generate(system: str, user: str, max_tokens: int = 2048) -> str:
     if local_llm.privacy_mode():
         text = _local_generate(system, user, max_tokens)
         if not text:
-            raise RuntimeError(
+            raise NoModelAvailable(
                 "LLM_PRIVACY_MODE is on and no local model answered. Set "
                 "LOCAL_LLM_URL and LOCAL_LLM_MODEL (any OpenAI-compatible "
                 "server: Ollama, llama.cpp, vLLM, LM Studio). No data was "
@@ -156,7 +163,7 @@ def _generate(system: str, user: str, max_tokens: int = 2048) -> str:
             or _gemini_generate(system, user, max_tokens)
             or _groq_generate(system, user, max_tokens))
     if not text:
-        raise RuntimeError(
+        raise NoModelAvailable(
             "No LLM available — set LOCAL_LLM_URL, GEMINI_API_KEY or "
             "GROQ_API_KEY")
     return text
@@ -200,6 +207,49 @@ def _citation_count(answer: str) -> int:
     return len(set(re.findall(r"\[(\d+)\]", answer or "")))
 
 
+_SENTENCE_END = r"(?<=[.!?])\s+|\n+"
+
+
+def _extractive_answer(question: str, hits: List[dict], why: str,
+                       max_quotes: int = 4) -> str:
+    """Quote the sentences of the retrieved passages that bear on the question.
+
+    Used when no model can write an answer. The search has already found
+    the right material; returning only an error threw that away. Quoting
+    is the honest form of it: the words are the document's own, each with
+    its citation, and nothing is composed or inferred.
+    """
+    import re
+    from app.rag.vector_store import _tokens
+
+    q = set(_tokens(question))
+    scored = []
+    for ref, h in enumerate(hits, 1):
+        for order, sent in enumerate(re.split(_SENTENCE_END, h["text"])):
+            sent = " ".join(sent.split())
+            if len(sent) < 12:
+                continue
+            overlap = len(q & set(_tokens(sent)))
+            if overlap:
+                # Earlier passages ranked higher; within one, keep reading order.
+                scored.append((-overlap, ref, order, sent[:400]))
+    scored.sort()
+    # A sentence sharing one word with the question ("days" in a line about
+    # annual leave) is not evidence; keep those close to the best match.
+    if scored:
+        need = -(-(-scored[0][0]) // 2)          # ceil(best overlap / 2)
+        scored = [t for t in scored if -t[0] >= need]
+    picked = sorted(scored[:max_quotes], key=lambda t: (t[1], t[2]))
+    lines = [f"> {sent} [{ref}]" for _, ref, _, sent in picked]
+    if not lines:      # every hit matched on words split across sentences
+        lines = [f"> {' '.join(hits[0]['text'].split())[:400]} [1]"]
+    return ("**No language model is configured, so this is not a written "
+            "answer** — these are the passages in your documents that match "
+            "the question, quoted word for word. Read them to judge whether "
+            "they answer it.\n\n" + "\n>\n".join(lines)
+            + f"\n\n_{why}_")
+
+
 def answer_question(kb: KnowledgeBase, question: str, k: int = 6) -> dict:
     """Answer from the client's documents, or say that they do not cover it.
 
@@ -215,10 +265,14 @@ def answer_question(kb: KnowledgeBase, question: str, k: int = 6) -> dict:
     if not hits:
         return {"answer": NOT_IN_KB, "sources": [], "grounded": False}
 
-    answer = _generate(
-        QA_SYSTEM,
-        f"CONTEXT:\n{_context_block(hits)}\n\nQUESTION: {question}",
-        max_tokens=1024)
+    extractive = False
+    try:
+        answer = _generate(
+            QA_SYSTEM,
+            f"CONTEXT:\n{_context_block(hits)}\n\nQUESTION: {question}",
+            max_tokens=1024)
+    except NoModelAvailable as e:
+        answer, extractive = _extractive_answer(question, hits, str(e)), True
 
     # An answer citing nothing was not written from the passages supplied,
     # whatever it says. Flagging it is honest; suppressing it would throw
@@ -230,6 +284,7 @@ def answer_question(kb: KnowledgeBase, question: str, k: int = 6) -> dict:
         "grounded": True,
         "cited_sources": cited,
         "uncited": cited == 0,
+        "extractive": extractive,
         "sources": [{"ref": i + 1, "source": h["source"],
                      "locator": h["locator"], "score": round(h["score"], 3),
                      "excerpt": h["text"][:280]}
@@ -293,17 +348,18 @@ def report_pdf(markdown: str, title: str) -> bytes:
     from reportlab.lib.units import mm
     from reportlab.lib.colors import HexColor
     from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer)
+    from app.engines.pdf_fonts import FONT_BOLD, FONT_REG
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm,
                             rightMargin=18 * mm, topMargin=18 * mm,
                             bottomMargin=18 * mm, title=title)
     NAVY, INK = HexColor("#1a2744"), HexColor("#2b2f36")
-    h1 = ParagraphStyle("h1", fontName="Helvetica-Bold", fontSize=20,
+    h1 = ParagraphStyle("h1", fontName=FONT_BOLD, fontSize=20,
                         textColor=NAVY, spaceAfter=8)
-    h2 = ParagraphStyle("h2", fontName="Helvetica-Bold", fontSize=14,
+    h2 = ParagraphStyle("h2", fontName=FONT_BOLD, fontSize=14,
                         textColor=NAVY, spaceBefore=10, spaceAfter=5)
-    body = ParagraphStyle("body", fontName="Helvetica", fontSize=10,
+    body = ParagraphStyle("body", fontName=FONT_REG, fontSize=10,
                           textColor=INK, leading=15, spaceAfter=4)
 
     def esc(s: str) -> str:

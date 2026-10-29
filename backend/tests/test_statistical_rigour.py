@@ -161,3 +161,149 @@ def test_reported_drivers_carry_effect_size_and_n():
     for d in cat_drivers:
         assert "cramers_v" in d and "n" in d
         assert "Cramér's V" in d["detail"] or "Cram" in d["detail"]
+
+
+def test_root_cause_states_the_direction_the_numbers_show():
+    # "56.3% lower absences (17.30 vs 7.56)" — the numbers said higher.
+    from app.engines.bi_engine import analyze_root_cause
+    rng = np.random.default_rng(0)
+    n = 400
+    absences = rng.integers(0, 20, n)
+    score = 100 - 3 * absences + rng.normal(0, 3, n)
+    df = pd.DataFrame({"emp_id": range(n), "score": score, "absences": absences})
+    drivers = {d["factor"]: d for d in analyze_root_cause(df, "score").drivers}
+    d = drivers["absences"]
+    assert d["low_mean"] > d["high_mean"]
+    assert "higher 'absences' than the rest" in d["detail"]
+    assert "emp_id" not in drivers
+
+
+# ── Business Intel page: measures, directions, real shares ─
+
+def test_bi_never_analyses_an_identifier(hr_df):
+    from app.engines.bi_engine import run_bi
+    r = run_bi(hr_df)
+    used = ([b.column for b in r.benchmarks] + [x.target_col for x in r.root_causes]
+            + [c.metric_col for c in r.cohorts] + [p.value_col for p in r.pareto])
+    assert "employee_id" not in used
+    assert not any("employee_id" in i for i in r.key_insights)
+
+
+def test_bi_reads_lower_is_better_metrics_the_right_way_round():
+    from app.engines.bi_engine import analyze_root_cause, analyze_segment_health
+    rng = np.random.default_rng(1)
+    n = 600
+    reg = rng.choice(list("ABCDEFG"), n)
+    df = pd.DataFrame({"region": reg,
+                       "complaints": rng.poisson(np.where(reg == "G", 6, 1)),
+                       "cost": rng.gamma(2, 50, n)})
+    rc = analyze_root_cause(df, "complaints")
+    assert "highest 'complaints'" in rc.group_label        # the worst are the high ones
+    health = {s.segment_name: s for s in analyze_segment_health(df, "region", ["complaints"])}
+    assert min(health.values(), key=lambda s: s.health_score).segment_name == "G"
+
+
+def test_bi_does_not_judge_metrics_with_no_known_direction():
+    from app.engines.bi_engine import analyze_root_cause, analyze_segment_health
+    rng = np.random.default_rng(2)
+    df = pd.DataFrame({"team": rng.choice(list("abc"), 300), "salary": rng.normal(5e4, 9e3, 300),
+                       "age": rng.integers(20, 60, 300)})
+    assert "performers" not in analyze_root_cause(df, "salary").group_label
+    assert analyze_segment_health(df, "team", ["salary", "age"]) == []
+
+
+def test_pareto_only_for_additive_non_negative_totals_with_enough_groups():
+    from app.engines.bi_engine import run_bi
+    rng = np.random.default_rng(3)
+    n = 500
+    reg = rng.choice(list("ABCDEFG"), n)
+    df = pd.DataFrame({"region": reg, "revenue": rng.gamma(2, 100, n),
+                       "satisfaction_score": rng.uniform(1, 5, n),
+                       "profit": rng.normal(0, 50, n)})
+    cols = {p.value_col: p for p in run_bi(df).pareto}
+    assert "satisfaction_score" not in cols and "profit" not in cols
+    p = cols["revenue"]
+    assert f"top {p.top_20_pct_groups} of 7" in p.interpretation
+    four = df[df["region"].isin(list("ABCD"))]
+    assert run_bi(four).pareto == []
+
+
+def test_cohort_absence_of_significance_is_not_called_absence_of_effect():
+    from app.engines.bi_engine import analyze_cohort
+    rng = np.random.default_rng(4)
+    df = pd.DataFrame({"g": rng.choice(list("ab"), 60), "v": rng.normal(0, 1, 60)})
+    c = analyze_cohort(df, "g", "v")
+    if not c.is_significant:
+        assert "not the same as showing there is none" in " ".join(c.recommendations)
+
+
+# ── period comparison ─────────────────────────────────────
+
+def _period(n, shift, seed, cats, noise=25):
+    r = np.random.default_rng(seed)
+    d = {"employee_id": range(seed * 1000, seed * 1000 + n),
+         "revenue": r.normal(100 + shift, 10, n), "channel": r.choice(cats, n)}
+    for i in range(noise):
+        d[f"noise{i}"] = r.normal(0, 1, n)
+    return pd.DataFrame(d)
+
+
+def test_comparison_corrects_for_testing_many_columns():
+    from app.engines.comparison_engine import run_comparison
+    # 40 pure-noise columns: about two would pass p<0.05 uncorrected.
+    false_hits = 0
+    for seed in range(5):
+        r = run_comparison(_period(300, 0, 10 + seed, ["a", "b"], noise=40),
+                           _period(300, 0, 50 + seed, ["a", "b"], noise=40))
+        false_hits += sum(1 for c in r.column_comparisons
+                          if c.is_significant and c.column.startswith("noise"))
+        assert all(c.q_value is not None for c in r.column_comparisons if c.p_value is not None)
+    assert false_hits <= 1
+
+
+def test_comparison_skips_identifiers_and_sees_new_categories():
+    from app.engines.comparison_engine import run_comparison
+    r = run_comparison(_period(400, 0, 1, ["web", "store"]),
+                       _period(400, 8, 2, ["web", "store", "app"]))
+    cols = {c.column: c for c in r.column_comparisons}
+    assert "employee_id" not in cols
+    assert cols["channel"].is_significant and "'app'" in cols["channel"].verdict
+    assert r.most_changed[0].column == "revenue"          # by effect size, not % of ~0
+
+
+# ── Deep EDA ──────────────────────────────────────────────
+
+def test_eda_ignores_identifiers(hr_df):
+    from app.engines.eda_engine import run_eda
+    r = run_eda(hr_df)
+    assert "employee_id" not in r.numeric_cols
+    assert all("employee_id" not in (c.col_a, c.col_b) for c in r.correlations)
+    assert all(t.column != "employee_id" for t in r.time_series)
+
+
+def test_eda_text_agrees_with_the_corrected_significance():
+    from app.engines.eda_engine import run_eda
+    rng = np.random.default_rng(5)
+    df = pd.DataFrame({f"x{i}": rng.normal(size=120) for i in range(8)})
+    df["g"] = rng.choice(list("abc"), 120)
+    r = run_eda(df)
+    for c in r.correlations:
+        assert ("adjusted p=" in c.interpretation)
+        assert c.is_significant == c.recommendation.startswith(("Significant", "Statistically"))
+    for g in r.group_comparisons:
+        assert ("No significant" not in g.interpretation) == g.is_significant
+
+
+def test_eda_heavy_tails_are_called_heavy():
+    # Excess kurtosis ~3 (t with 5 df): the old cut-off of 3 called it normal-like.
+    from app.engines.eda_engine import analyze_univariate
+    s = pd.Series(np.random.default_rng(6).standard_t(5, 5000), name="v")
+    u = analyze_univariate(s)
+    assert u.kurtosis > 1 and u.kurtosis_label.startswith("Leptokurtic")
+
+
+def test_eda_treats_booleans_and_categories_as_categories():
+    from app.engines.eda_engine import analyze_univariate
+    for s in (pd.Series([True, False] * 20, name="b"),
+              pd.Series(pd.Categorical(["x", "y", "z"] * 10), name="c")):
+        assert analyze_univariate(s).top_value is not None

@@ -19,21 +19,54 @@ function onUnauthorized() {
   window.dispatchEvent(new Event('analytiq-unauthorized'))
 }
 
+// FastAPI's validation errors put a list of {loc, msg} objects in
+// `detail`; passed to `new Error` as-is the user saw "[object Object]".
+function describeDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    const parts = detail.map((d) => {
+      if (d && typeof d === 'object' && 'msg' in d) {
+        const loc = Array.isArray((d as { loc?: unknown[] }).loc)
+          ? (d as { loc: unknown[] }).loc.filter((p) => p !== 'body').join('.')
+          : ''
+        return loc ? `${loc}: ${(d as { msg: string }).msg}` : (d as { msg: string }).msg
+      }
+      return String(d)
+    })
+    if (parts.length) return parts.join('; ')
+  }
+  return detail === undefined || detail === null ? fallback : JSON.stringify(detail)
+}
+
+async function errorMessage(res: Response): Promise<string> {
+  try {
+    return describeDetail((await res.json()).detail, res.statusText)
+  } catch {
+    return res.statusText
+  }
+}
+
+/** An HTTP error from the API, with its status for callers that branch on it. */
+export class ApiError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
 async function handle<T>(res: Response): Promise<T> {
   if (res.status === 401) {
-    onUnauthorized()
-    throw new Error('Not authenticated — please log in')
+    // Only a request that carried a token means the session ended. A 401
+    // from the login form is a wrong password, and replacing the server's
+    // "Wrong username or password" with "Not authenticated" told the user
+    // nothing about what they had done wrong.
+    const hadToken = Boolean(getToken())
+    const message = await errorMessage(res)
+    if (hadToken) onUnauthorized()
+    throw new ApiError(401, hadToken ? 'Your session has ended — please sign in again' : message)
   }
-  if (!res.ok) {
-    let detail = res.statusText
-    try {
-      const body = await res.json()
-      detail = body.detail || JSON.stringify(body)
-    } catch {
-      /* keep statusText */
-    }
-    throw new Error(detail)
-  }
+  if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
   return res.json() as Promise<T>
 }
 
@@ -84,17 +117,9 @@ export async function apiBlob(
   })
   if (res.status === 401) {
     onUnauthorized()
-    throw new Error('Not authenticated — please log in')
+    throw new ApiError(401, 'Not authenticated — please log in')
   }
-  if (!res.ok) {
-    let detail = res.statusText
-    try {
-      detail = (await res.json()).detail || detail
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail)
-  }
+  if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
   return res.blob()
 }
 
@@ -103,8 +128,13 @@ export function downloadBlob(blob: Blob, filename: string) {
   const a = document.createElement('a')
   a.href = url
   a.download = filename
+  // Attached and revoked late: revoking in the same tick as click() can
+  // cancel the download in Firefox and Safari, and a detached anchor is
+  // not clickable in every browser.
+  document.body.appendChild(a)
   a.click()
-  URL.revokeObjectURL(url)
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 // ── shared types ─────────────────────────────────────────

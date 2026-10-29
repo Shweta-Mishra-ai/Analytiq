@@ -11,7 +11,7 @@ import time
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import config
 from app.rag import service
@@ -25,12 +25,12 @@ router = APIRouter(prefix="/api/rag", tags=["rag"])
 
 
 class KbCreate(BaseModel):
-    name: str
+    name: str = Field(max_length=200)
 
 
 class QueryRequest(BaseModel):
-    question: str
-    k: int = 6
+    question: str = Field(min_length=1, max_length=4000)
+    k: int = Field(6, ge=1, le=50)
 
 
 class ReportRequest(BaseModel):
@@ -98,10 +98,8 @@ async def upload_file(kb_id: str, file: UploadFile = File(...),
                        owner: str = Depends(current_owner)):
     from starlette.concurrency import run_in_threadpool
     kb = _kb_or_404(owner, kb_id)
-    data = await file.read()
-    limit = config.max_media_mb * 1024 * 1024
-    if len(data) > limit:
-        raise HTTPException(413, f"File exceeds {config.max_media_mb} MB limit")
+    from app.api.datasets import read_capped
+    data = await read_capped(file, config.max_media_mb)
     name = file.filename or f"upload-{int(time.time())}"
     return await run_in_threadpool(_process_kb_upload, kb, name, data)
 

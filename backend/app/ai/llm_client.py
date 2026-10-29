@@ -24,9 +24,10 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
+    retry_if_not_exception_type,
 )
 from app.config import config
-from app.ai import gemini_client
+from app.ai import gemini_client, local_llm
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +61,15 @@ class LLMClient:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type(Exception),
+        # Never retry a privacy-mode refusal: it is a decision, not a fault.
+        retry=retry_if_exception_type(Exception)
+        & retry_if_not_exception_type(local_llm.LocalLLMError),
         reraise=True,
     )
     def chat(self, messages: list, system: str = "") -> str:
-        """Existing Groq chat — unchanged."""
+        """Groq chat. Refuses in privacy mode — this is client data."""
+        from app.ai.local_llm import assert_cloud_allowed
+        assert_cloud_allowed("Groq")
         full = []
         if system:
             full.append({"role": "system", "content": system})
@@ -160,6 +165,8 @@ class LLMClient:
         Uses low temperature to reduce hallucination.
         No tenacity retry — fast fail preferred for reports.
         """
+        from app.ai.local_llm import assert_cloud_allowed
+        assert_cloud_allowed("Groq")
         try:
             resp = self._client.chat.completions.create(
                 messages=[
@@ -182,7 +189,7 @@ class LLMClient:
         try:
             return gemini_client.generate_text(
                 [user], system=system, max_output_tokens=max_tokens,
-                temperature=0.2, timeout_sec=60)
+                timeout_sec=60)
         except Exception as e:
             logger.warning(f"Gemini call failed: {e}")
             return None

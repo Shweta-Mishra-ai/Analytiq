@@ -117,10 +117,11 @@ def _classify_segment(r: int, f: int, m: int) -> Tuple[str, str, str, str]:
     # Loyal Customers
     if r >= 3 and f >= 4:
         return ("Loyal Customers", *_SEGMENT_DEFS[1][3:])
-    # Cannot Lose Them: high F/M, low R
-    if r <= 2 and f >= 4:
+    # Cannot Lose Them: high F and M, low R. The descriptions promise big
+    # spenders; M was never checked, so it is now.
+    if r <= 2 and f >= 4 and m >= 4:
         return ("Cannot Lose Them", *_SEGMENT_DEFS[8][3:])
-    # At Risk: mid-high F/M, low R
+    # At Risk: mid-high F, low R
     if r <= 2 and f >= 3:
         return ("At Risk", *_SEGMENT_DEFS[7][3:])
     # Potential Loyalists
@@ -138,6 +139,10 @@ def _classify_segment(r: int, f: int, m: int) -> Tuple[str, str, str, str]:
     # About to Sleep
     if r == 2 and f == 1:
         return ("About to Sleep", *_SEGMENT_DEFS[6][3:])
+    # Lost: lowest recency and frequency, and low spend (was unreachable —
+    # Hibernating caught every r == 1 customer first).
+    if r == 1 and f == 1 and m <= 2:
+        return ("Lost", *_SEGMENT_DEFS[10][3:])
     # Hibernating
     if r == 1 and f <= 2:
         return ("Hibernating", *_SEGMENT_DEFS[9][3:])
@@ -175,8 +180,11 @@ def detect_rfm_columns(df: pd.DataFrame) -> Optional[RFMColumns]:
                          "clientid", "client_id", "userid", "user_id"])
     if customer_id is None:
         # Fall back to any low-cardinality ID-like categorical column
+        import re as _re
         for c in df.columns:
-            if "id" in c.lower() and df[c].nunique() < len(df) * 0.9 and df[c].nunique() > 1:
+            words = set(_re.split(r"[^a-z0-9]+", _re.sub(
+                r"(?<=[a-z0-9])(?=[A-Z])", " ", str(c)).lower()))
+            if "id" in words and df[c].nunique() < len(df) * 0.9 and df[c].nunique() > 1:
                 customer_id = c
                 break
     if customer_id is None:
@@ -270,9 +278,13 @@ def run_rfm(
     # to the frequency-only approximation.
     effective_monetary_col = columns.monetary_col
     if effective_monetary_col:
-        work[effective_monetary_col] = pd.to_numeric(
-            work[effective_monetary_col], errors="coerce"
-        ).fillna(0)
+        as_num = pd.to_numeric(work[effective_monetary_col], errors="coerce")
+        n_bad = int((as_num.isna() & work[effective_monetary_col].notna()).sum())
+        if n_bad:
+            warnings_list.append(
+                f"{n_bad} '{effective_monetary_col}' value(s) were not numbers and "
+                f"count as 0 spend.")
+        work[effective_monetary_col] = as_num.fillna(0)
         has_monetary = True
     elif need_price_qty:
         price_num = pd.to_numeric(work[columns.price_col], errors="coerce")
@@ -310,27 +322,31 @@ def run_rfm(
 
     # ── Score 1-5 using quantile binning (5 = best) ─────────────────────────
     def _qscore(series: pd.Series, ascending_is_better: bool) -> pd.Series:
-        """Quantile-based 1-5 score. Handles duplicate edges gracefully."""
-        try:
-            ranks = series.rank(method="first")
-            bins = pd.qcut(ranks, 5, labels=False, duplicates="drop") + 1
-            if bins.max() < 5:
-                # Too few unique values for 5 clean bins — pad up
-                bins = bins.astype(float)
-                bins = ((bins - bins.min()) / max(bins.max() - bins.min(), 1) * 4 + 1).round().astype(int)
-            if not ascending_is_better:
-                bins = 6 - bins
-            return bins.astype(int)
-        except Exception:
-            logger.warning("Quantile scoring failed — falling back to rank-based tertiles", exc_info=True)
-            med = series.median()
-            return pd.Series(np.where(series >= med, 3, 2), index=series.index)
+        """1-5 by percentile position, with equal values scored equally.
+
+        This ranked with method="first", which breaks ties by row order: when
+        70% of customers buy exactly once, those identical customers were
+        spread across Frequency scores 1-4 and some one-time buyers were
+        labelled Champions. Here a score is 1 + the share of customers
+        strictly worse, in fifths — so tied customers always share a score
+        and a value nobody beats scores 5.
+        """
+        key = series if ascending_is_better else -series
+        below = key.rank(method="min") - 1          # customers strictly worse
+        scores = 1 + np.floor(5 * below / max(len(key), 1))
+        return scores.clip(1, 5).astype(int)
 
     # Recency: LOWER days = BETTER (so ascending_is_better=False, since raw
     # low values should map to score 5)
     cust["R"] = _qscore(cust["_recency"], ascending_is_better=False)
     cust["F"] = _qscore(cust["_frequency"], ascending_is_better=True)
     cust["M"] = _qscore(cust["_monetary"], ascending_is_better=True)
+    for dim, raw in (("Recency", "_recency"), ("Frequency", "_frequency"),
+                     ("Monetary", "_monetary")):
+        if cust[raw].nunique() <= 1:
+            warnings_list.append(
+                f"Every customer has the same {dim.lower()}, so the {dim[0]} "
+                f"score does not separate them.")
     cust["RFM_Score"] = cust["R"].astype(str) + cust["F"].astype(str) + cust["M"].astype(str)
 
     # ── Segment classification ──────────────────────────────────────────────

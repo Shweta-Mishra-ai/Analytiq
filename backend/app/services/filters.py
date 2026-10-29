@@ -14,7 +14,18 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+class FilterError(ValueError):
+    """A filter that cannot be applied as written."""
+
+
 def apply_filters(df: pd.DataFrame, filters: List[dict] | None) -> pd.DataFrame:
+    """Apply every filter, or raise FilterError naming the one that failed.
+
+    A filter that could not be applied used to be skipped silently, so the
+    dashboard showed unfiltered totals under a filter bar saying otherwise
+    — a stale filter on a column cleaning had dropped, a non-numeric bound,
+    or a "contains" value with a regex metacharacter like "(" all did it.
+    """
     if not filters:
         return df
     out = df
@@ -23,7 +34,9 @@ def apply_filters(df: pd.DataFrame, filters: List[dict] | None) -> pd.DataFrame:
         op = (f.get("op") or "eq").lower()
         val = f.get("value")
         if col not in out.columns:
-            continue
+            raise FilterError(
+                f"The filter on '{col}' no longer applies — that column is not "
+                f"in the dataset (cleaning may have removed it). Remove the filter.")
         s = out[col]
         try:
             if op == "eq":
@@ -34,7 +47,9 @@ def apply_filters(df: pd.DataFrame, filters: List[dict] | None) -> pd.DataFrame:
                 vals = [str(v) for v in (val if isinstance(val, list) else [val])]
                 mask = s.astype(str).isin(vals)
             elif op == "contains":
-                mask = s.astype(str).str.contains(str(val), case=False, na=False)
+                # Literal match: the value is what the user typed, not a regex.
+                mask = s.astype(str).str.contains(str(val), case=False, na=False,
+                                                  regex=False)
             elif op in ("gt", "lt", "gte", "lte"):
                 num = pd.to_numeric(s, errors="coerce")
                 v = float(val)
@@ -43,16 +58,22 @@ def apply_filters(df: pd.DataFrame, filters: List[dict] | None) -> pd.DataFrame:
             elif op == "between":
                 lo, hi = val
                 if pd.api.types.is_datetime64_any_dtype(s):
-                    mask = (s >= pd.to_datetime(lo)) & (s <= pd.to_datetime(hi))
+                    lo_t, hi_t = pd.to_datetime(lo), pd.to_datetime(hi)
+                    if getattr(s.dt, "tz", None) is not None:
+                        lo_t = lo_t.tz_localize(s.dt.tz) if lo_t.tzinfo is None else lo_t
+                        hi_t = hi_t.tz_localize(s.dt.tz) if hi_t.tzinfo is None else hi_t
+                    mask = (s >= lo_t) & (s <= hi_t)
                 else:
                     num = pd.to_numeric(s, errors="coerce")
                     mask = (num >= float(lo)) & (num <= float(hi))
             else:
-                continue
-            out = out[mask]
-        except Exception:
-            logger.debug("apply_filters: suppressed exception", exc_info=True)
-            continue
+                raise FilterError(f"Unknown filter operator '{op}'")
+        except FilterError:
+            raise
+        except Exception as e:
+            raise FilterError(
+                f"The filter {op} {val!r} cannot be applied to '{col}': {e}") from e
+        out = out[mask]
     return out
 
 

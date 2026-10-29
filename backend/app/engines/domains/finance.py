@@ -702,12 +702,19 @@ def _insights_finance(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     _finance_loss_making_segments(df, cols, stats, insights, findings, risks, opps)
     _finance_benford(df, cols, stats, insights, findings, risks, opps)
 
-    actions.extend([
-        "Investigate the top 3 cost drivers — understand fixed vs variable split",
-        "Set KPI targets from internal data: gross margin, OER, budget variance tolerance",
-        "Build rolling 12-month trend dashboard for P&L — one number per period",
-        "Define concentration policy: no single category >40% of revenue or cost",
-    ])
+    # Gated on the columns each action needs; this was a fixed list.
+    if cols.get("cost") and cols.get("cat"):
+        actions.append("Investigate the top 3 cost drivers in '{}' — understand the fixed "
+                       "vs variable split".format(cols["cat"]))
+    if cols.get("rev") and (cols.get("profit") or cols.get("cost")):
+        actions.append("Set KPI targets from internal data: gross margin"
+                       + (", budget variance tolerance" if cols.get("budget") else ""))
+    if cols.get("period"):
+        actions.append("Build a rolling 12-month trend view per '{}' — one number per "
+                       "period".format(cols["period"]))
+    if cols.get("cat") and (cols.get("rev") or cols.get("cost")):
+        actions.append("Define a concentration policy: no single '{}' above 40% of "
+                       "revenue or cost".format(cols["cat"]))
 
     return {"findings": findings[:8], "risks": risks[:5], "opportunities": opps[:4],
             "actions": actions, "insights": insights}

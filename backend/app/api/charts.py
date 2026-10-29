@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 
 import json
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import pandas as pd
 import plotly.io as pio
@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from app.engines import chart_engine
 from app.services.auth import current_owner
 from app.services.dataset_store import store
-from app.services.filters import apply_filters, field_catalog
+from app.services.filters import FilterError, apply_filters, field_catalog
 from app.services.serialize import to_jsonable
 
 logger = logging.getLogger(__name__)
@@ -36,9 +36,11 @@ class ChartRequest(BaseModel):
     x: Optional[str] = None
     y: Optional[str] = None
     color: Optional[str] = None
-    agg: str = "sum"                # sum|mean|count|median|min|max
-    nbins: int = 30
-    top_n: int = 20
+    # A closed set: the value is looked up as a pandas method by name, so an
+    # open string let a request call arbitrary resampler/groupby attributes.
+    agg: Literal["sum", "mean", "count", "median", "min", "max"] = "sum"
+    nbins: int = Field(30, ge=1, le=500)
+    top_n: int = Field(20, ge=1, le=1000)
     title: str = ""
     filters: List[FilterSpec] = Field(default_factory=list)
 
@@ -51,7 +53,10 @@ def _df(owner: str, ds_id: str, filters: List[FilterSpec] | None = None) -> pd.D
     df = store.get_df(owner, ds_id)
     if df is None:
         raise HTTPException(404, "Dataset not found")
-    return apply_filters(df, [f.model_dump() for f in (filters or [])])
+    try:
+        return apply_filters(df, [f.model_dump() for f in (filters or [])])
+    except FilterError as e:
+        raise HTTPException(422, str(e))
 
 
 def _fig_json(fig) -> dict:
@@ -67,7 +72,11 @@ def fields(ds_id: str, owner: str = Depends(current_owner)):
 @router.post("/{ds_id}/kpis")
 def kpis(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
     df = _df(owner, ds_id, body.filters)
-    num_cols = df.select_dtypes(include="number").columns.tolist()
+    # Measures only: summing an identifier ("Σ customer_id 181.5K") is a
+    # number with no meaning, and it took one of the four KPI slots.
+    from app.engines.domains.base import is_id_column
+    num_cols = [c for c in df.select_dtypes(include="number").columns
+                if not pd.api.types.is_bool_dtype(df[c]) and not is_id_column(c, df[c])]
     cards = [
         {"label": "Rows", "value": len(df), "format": "int"},
         {"label": "Columns", "value": df.shape[1], "format": "int"},
@@ -113,7 +122,13 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
         elif t in ("bar", "line", "area", "pie"):
             if not req.x or not req.y:
                 raise HTTPException(422, "x and y are required")
-            grouped = _aggregate(df, req)
+            if t == "pie" and req.agg not in ("sum", "count"):
+                raise HTTPException(
+                    422, f"A pie shows shares of a total, and a {req.agg} is not a "
+                         f"share of anything — use sum or count, or a bar chart")
+            # A pie needs every group: its slices are shares of the whole, so
+            # trimming to the top N first would misstate every percentage.
+            grouped = _aggregate(df, req, limit=(t != "pie"))
             if t == "bar":
                 fig = chart_engine.make_bar(grouped, req.x, req.y, req.title)
             elif t == "pie":
@@ -122,6 +137,10 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
                 fig = chart_engine.make_line(grouped, req.x, req.y, req.title)
                 if t == "area":
                     fig.update_traces(fill="tozeroy")
+                omitted = grouped.attrs.get("omitted") or []
+                if omitted:
+                    fig.update_xaxes(title_text="{} ({} partial {} excluded)".format(
+                        req.x, " and ".join(omitted), grouped.attrs["period"]))
         elif t == "table":
             grouped = _aggregate(df, req) if (req.x and req.y) else df.head(req.top_n)
             from app.services.serialize import df_records
@@ -138,20 +157,69 @@ def build(ds_id: str, req: ChartRequest, owner: str = Depends(current_owner)):
     return {"figure": _fig_json(fig)}
 
 
-def _aggregate(df: pd.DataFrame, req: ChartRequest) -> pd.DataFrame:
+def _drop_partial_periods(out: pd.DataFrame, x: str, rule: str, agg: str,
+                          first: pd.Timestamp, last: pd.Timestamp) -> pd.DataFrame:
+    """Remove a first or last week/month the data only partly covers.
+
+    A sum or count over half a month is about half a month's worth, so a
+    file ending on the 10th drew a final point that looked like revenue
+    collapsing. Means and medians are not biased that way and are left
+    alone, as are daily buckets. What was removed is recorded in
+    `out.attrs["omitted"]` for the caller to state on the chart.
+    """
+    if agg not in ("sum", "count") or rule not in ("W", "ME") or len(out) < 3:
+        return out
+    labels = pd.to_datetime(out[x])
+    if rule == "W":
+        starts = labels - pd.Timedelta(days=6)
+    else:
+        starts = labels - pd.offsets.MonthBegin(1)
+    keep = pd.Series(True, index=out.index)
+    omitted = []
+    first_d, last_d = first.normalize(), last.normalize()
+    if first_d > starts.iloc[0].normalize():
+        keep.iloc[0] = False
+        omitted.append("first")
+    if last_d < labels.iloc[-1].normalize():
+        keep.iloc[-1] = False
+        omitted.append("last")
+    trimmed = out[keep].reset_index(drop=True)
+    trimmed.attrs["omitted"] = omitted
+    trimmed.attrs["period"] = "week" if rule == "W" else "month"
+    return trimmed
+
+
+def _aggregate(df: pd.DataFrame, req: ChartRequest, limit: bool = True) -> pd.DataFrame:
     x, y, agg = req.x, req.y, req.agg
     if x not in df.columns or y not in df.columns:
         raise KeyError(x if x not in df.columns else y)
+    # Both checks used to surface as a 500 from pandas ("cannot insert x,
+    # already exists"; "datetime64 type does not support operation 'sum'").
+    if x == y:
+        raise HTTPException(422, "Pick different columns for x and y")
+    if agg != "count" and not (pd.api.types.is_numeric_dtype(df[y])
+                               and not pd.api.types.is_bool_dtype(df[y])):
+        raise HTTPException(
+            422, f"'{y}' is not numeric, so it cannot be summarised with "
+                 f"{agg} — use count, or pick a numeric column for y")
+    if pd.api.types.is_object_dtype(df[x]):
+        # A mostly-numeric column keeps its non-numeric cells as text
+        # ("Pending"), and grouping on mixed floats and strings fails while
+        # sorting the keys. Group on the values as written.
+        df = df.assign(**{x: df[x].where(df[x].isna(), df[x].astype(str))})
     if pd.api.types.is_datetime64_any_dtype(df[x]):
         # resample by sensible period for time axes
         tmp = df[[x, y]].dropna().set_index(x).sort_index()
+        if tmp.empty:
+            raise HTTPException(422, f"No rows have both '{x}' and '{y}'")
         span_days = (tmp.index.max() - tmp.index.min()).days or 1
         rule = "D" if span_days <= 92 else ("W" if span_days <= 730 else "ME")
         agg_fn = "count" if agg == "count" else agg
         out = getattr(tmp[y].resample(rule), agg_fn)().reset_index()
-        return out
+        return _drop_partial_periods(out, x, rule, agg, tmp.index.min(), tmp.index.max())
     if agg == "count":
         out = df.groupby(x, dropna=True)[y].count().reset_index()
     else:
         out = df.groupby(x, dropna=True)[y].agg(agg).reset_index()
-    return out.sort_values(y, ascending=False).head(req.top_n)
+    out = out.sort_values(y, ascending=False)
+    return out.head(req.top_n) if limit else out

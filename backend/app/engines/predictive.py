@@ -185,6 +185,49 @@ class DriverResult:
     base_rate: float = 0.0
     high_risk_n: int = 0
     model_name: str = "Random Forest"
+    # Which value of the target is modelled as "the outcome", stated so the
+    # reader knows what a "rate" means here.
+    event_label: str = ""
+    # Whether the model beats chance at all. Importances always sum to 100%,
+    # so on an unpredictable outcome they rank noise just as confidently.
+    signal: str = "unknown"          # useful | weak | none | unknown
+    auc_p_value: float = float("nan")
+    verdict: str = ""
+
+
+def _judge_signal(auc: float, n_pos: int, n_neg: int, target: str,
+                  event: str) -> Tuple[str, float, str]:
+    """Is the cross-validated AUC better than a coin toss, and by how much?
+
+    Under "no signal" the AUC is a Mann–Whitney U / (n1·n2) with variance
+    (n1 + n2 + 1) / (12·n1·n2) (Hanley & McNeil). That formula ignores the
+    variance added by refitting on each fold: on 20 pure-noise datasets
+    (600 rows, 10% events) the cross-validated AUC averaged 0.495 with a
+    spread of 0.049, not the 0.039 it assumes, and 2 of 20 passed p < 0.05.
+    An AUC floor of 0.60 is therefore required as well before any signal
+    is claimed; a permutation test would settle it exactly but means
+    refitting the forest dozens of times per request.
+    """
+    from scipy.stats import norm
+    what = f"{target} = “{event}”" if event else target
+    if not np.isfinite(auc) or n_pos == 0 or n_neg == 0:
+        return ("unknown", float("nan"),
+                "The model's accuracy could not be measured, so this ranking is unverified.")
+    se = np.sqrt((n_pos + n_neg + 1) / (12.0 * n_pos * n_neg))
+    p = float(norm.sf((auc - 0.5) / se))
+    if p >= 0.05 or auc < 0.60:
+        return ("none", p,
+                f"These columns do not predict {what} better than chance "
+                f"(cross-validated AUC {auc:.2f}; 0.50 is a coin toss). The ranking "
+                f"shows what the model leaned on, not what drives the outcome — "
+                f"do not act on it.")
+    if auc < 0.70:
+        return ("weak", p,
+                f"These columns predict {what} only weakly (AUC {auc:.2f}; 0.50 is "
+                f"chance, 1.00 perfect). Treat the ranking as leads to check, not causes.")
+    return ("useful", p,
+            f"These columns predict {what} well (AUC {auc:.2f}). The ranking shows "
+            f"what the model relies on — an association, not proof of cause.")
 
 
 def find_binary_target(df: pd.DataFrame) -> Optional[str]:
@@ -202,16 +245,55 @@ def find_binary_target(df: pd.DataFrame) -> Optional[str]:
     return None
 
 
-def _to_binary(s: pd.Series) -> Optional[pd.Series]:
-    """Map a 2-class column to 0/1 with 1 = the 'event' (left/yes/true/1)."""
+def binary_target_candidates(df: pd.DataFrame) -> List[str]:
+    """Every column that can serve as a two-outcome target, flag-like names
+    first. Detection by name alone missed ordinary outcomes such as
+    "returned" or "converted", and the page then said there was none."""
+    from app.engines.domains.base import is_id_column
+    named, flagged, other = [], [], []
+    for col in df.columns:
+        s = df[col].dropna()
+        if len(s) < 40 or s.nunique() != 2 or is_id_column(col, df[col]):
+            continue
+        if s.value_counts(normalize=True).min() < 0.02:
+            continue
+        if any(k in str(col).lower() for k in _BINARY_TARGET_NAMES):
+            named.append(col)
+        elif {str(v).lower().strip() for v in s.unique()} & (_EVENT_WORDS | {"no", "false", "n", "0", "0.0"}):
+            # Yes/No-style values read as an outcome; web/store does not.
+            flagged.append(col)
+        else:
+            other.append(col)
+    return named + flagged + other
+
+
+_EVENT_WORDS = {"yes", "1", "1.0", "true", "left", "churned", "y", "t", "returned",
+                "cancelled", "canceled", "defaulted", "converted", "lost", "failed",
+                "attrited", "resigned", "terminated", "fraud", "won"}
+
+
+def _to_binary(s: pd.Series) -> Optional[Tuple[pd.Series, str]]:
+    """Map a 2-class column to 0/1 and name the value coded as 1.
+
+    Values outside the known event words (e.g. "Kept"/"Lapsed") used to map
+    to all zeros, leaving one class and no model. When neither value is a
+    recognised event, the rarer value is modelled as the outcome — and the
+    result says which.
+    """
     vals = s.dropna().unique()
     if len(vals) != 2:
         return None
-    if pd.api.types.is_numeric_dtype(s):
+    if pd.api.types.is_numeric_dtype(s) and not pd.api.types.is_bool_dtype(s):
         hi = max(vals)
-        return (s == hi).astype(int)
-    truthy = {"yes", "1", "true", "left", "churned", "y", "t"}
-    return s.astype(str).str.lower().str.strip().isin(truthy).astype(int)
+        return (s == hi).astype(int), str(hi)
+    norm = s.astype(str).str.lower().str.strip()
+    lowered = {str(v).lower().strip(): v for v in vals}
+    events = [k for k in lowered if k in _EVENT_WORDS]
+    if len(events) == 1:
+        event = events[0]
+    else:
+        event = norm.value_counts().idxmin()
+    return (norm == event).astype(int), str(lowered.get(event, event))
 
 
 def compute_drivers(df: pd.DataFrame, target_col: str,
@@ -230,8 +312,11 @@ def compute_drivers(df: pd.DataFrame, target_col: str,
         data = df.dropna(subset=[target_col]).copy()
         if len(data) > max_rows:
             data = data.sample(max_rows, random_state=42)
-        y = _to_binary(data[target_col])
-        if y is None or y.nunique() < 2 or len(y) < 40:
+        coded = _to_binary(data[target_col])
+        if coded is None:
+            return None
+        y, event_label = coded
+        if y.nunique() < 2 or len(y) < 40:
             return None
         base_rate = float(y.mean()) * 100
 
@@ -239,9 +324,9 @@ def compute_drivers(df: pd.DataFrame, target_col: str,
         feat = data.drop(columns=[target_col])
         num = feat.select_dtypes(include="number")
         # Drop ID-like / constant numeric columns
+        from app.engines.domains.base import is_id_column
         num = num.loc[:, [c for c in num.columns
-                          if num[c].nunique() > 1
-                          and not any(k in c.lower() for k in ("id", "number", "index"))]]
+                          if num[c].nunique() > 1 and not is_id_column(c, num[c])]]
         cats = [c for c in feat.select_dtypes(include=["object", "string", "category", "bool"]).columns
                 if 2 <= feat[c].nunique() <= 15]
         parts = [num.fillna(num.median(numeric_only=True))]
@@ -284,8 +369,14 @@ def compute_drivers(df: pd.DataFrame, target_col: str,
         # Highest-risk profile: the model's top quintile by predicted
         # probability. proba is positional (row order of X/data), so index
         # positionally with .iloc — not .loc.
+        n_pos = int(y.sum())
+        signal, auc_p, verdict = _judge_signal(auc, n_pos, len(y) - n_pos,
+                                               target_col, event_label)
+
+        # A "highest-risk group" picked by a model with no signal is a random
+        # fifth of the rows, whatever its rate happens to be.
         profile, hr_rate, hr_n = "", 0.0, 0
-        if proba is not None:
+        if proba is not None and signal != "none":
             thr = float(np.quantile(proba, 0.80))
             mask = np.asarray(proba >= thr)
             hr_n = int(mask.sum())
@@ -311,6 +402,8 @@ def compute_drivers(df: pd.DataFrame, target_col: str,
             n_rows=len(data), n_features=X.shape[1],
             top_drivers=ranked, base_rate=base_rate,
             high_risk_profile=profile, high_risk_rate=hr_rate, high_risk_n=hr_n,
+            event_label=event_label, signal=signal, auc_p_value=auc_p,
+            verdict=verdict,
         )
     except Exception:
         logger.warning("compute_drivers failed", exc_info=True)

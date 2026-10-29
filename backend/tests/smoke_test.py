@@ -136,9 +136,9 @@ def main():
     has_llm = bool(os.environ.get("GEMINI_API_KEY")
                    or os.environ.get("GROQ_API_KEY"))
     expect = 200 if has_llm else 503
-    check(f"rag query (expect {expect})", client.post(
-        f"/api/rag/kb/{kb}/query", json={"question": "How did revenue do?"}),
-        expect=expect)
+    # Without a model the query still answers, by quoting the passages found.
+    check("rag query", client.post(
+        f"/api/rag/kb/{kb}/query", json={"question": "How did revenue do?"}))
     check(f"rag report (expect {expect})", client.post(
         f"/api/rag/kb/{kb}/report", json={"title": "Test Report"}),
         expect=expect)

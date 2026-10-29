@@ -11,7 +11,7 @@ from typing import Optional
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services.auth import current_owner
 from app.services.dataset_store import store
@@ -76,7 +76,11 @@ def rfm(
                               monetary_col=monetary_col, quantity_col=quantity_col,
                               price_col=price_col)
 
-    cache_key = f"rfm_{customer_col}_{date_col}_{monetary_col}" if columns else "rfm_auto"
+    # Every parameter that changes the result is in the key — quantity and
+    # price were missing, so a second request with a different price column
+    # was answered with the first request's segments.
+    cache_key = (repr(("rfm", customer_col, date_col, monetary_col,
+                       quantity_col, price_col)) if columns else "rfm_auto")
     try:
         report = _cached(owner, ds_id, cache_key, lambda: run_rfm(df, columns))
     except ValueError as e:
@@ -97,7 +101,7 @@ class ABTestRequest(BaseModel):
     # "conversion" (e.g. "Yes", "1", "Converted"). Auto-detected from a
     # common-token list when omitted.
     success_value: Optional[str] = None
-    confidence_level: float = 0.95
+    confidence_level: float = Field(0.95, gt=0.5, lt=1.0)
 
 
 _POSITIVE_TOKENS = {"1", "1.0", "true", "yes", "y", "converted", "success", "won", "purchased"}
@@ -160,6 +164,8 @@ def ab_test(ds_id: str, req: ABTestRequest, owner: str = Depends(current_owner))
         if len(top2) < 2:
             raise HTTPException(422, f"'{req.group_col}' needs at least 2 distinct groups")
         group_a_value, group_b_value = top2[0], top2[1]
+    if str(group_a_value) == str(group_b_value):
+        raise HTTPException(422, "Group A and group B must be different values")
 
     sub_a = df[df[req.group_col].astype(str) == str(group_a_value)]
     sub_b = df[df[req.group_col].astype(str) == str(group_b_value)]
@@ -168,6 +174,19 @@ def ab_test(ds_id: str, req: ABTestRequest, owner: str = Depends(current_owner))
 
     try:
         if _is_binary_series(df[req.metric_col]):
+            if not req.success_value:
+                tokens = (df[req.metric_col].dropna().astype(str)
+                          .str.strip().str.lower().unique())
+                if not set(tokens) & _POSITIVE_TOKENS:
+                    # Both groups would count zero conversions and the test
+                    # would report "no difference" about a metric it never
+                    # actually read.
+                    raise HTTPException(
+                        422, f"Cannot tell which value of '{req.metric_col}' "
+                             f"counts as a success (values: "
+                             f"{', '.join(sorted(map(str, tokens)))}). Pass "
+                             f"success_value.")
+
             def _positive_count(sub: pd.DataFrame) -> int:
                 s = sub[req.metric_col].dropna().astype(str).str.strip().str.lower()
                 if req.success_value:
@@ -189,7 +208,15 @@ def ab_test(ds_id: str, req: ABTestRequest, owner: str = Depends(current_owner))
     except ValueError as e:
         raise HTTPException(422, str(e))
 
-    return to_jsonable(result)
+    out = to_jsonable(result)
+    # Whatever the groups are, this compares them as recorded. Only random
+    # assignment lets a difference be credited to the grouping itself.
+    out.setdefault("warnings", []).append(
+        f"This compares '{group_a_value}' and '{group_b_value}' as they appear "
+        f"in the data. Unless rows were randomly assigned to '{req.group_col}', "
+        f"a difference may reflect who falls in each group rather than an "
+        f"effect of the group itself.")
+    return out
 
 
 # ══════════════════════════════════════════════════════════
@@ -226,8 +253,12 @@ def survival(ds_id: str, req: SurvivalRequest, owner: str = Depends(current_owne
     for c in (req.duration_col, req.event_col, req.group_col):
         if c and c not in df.columns:
             raise HTTPException(422, f"Column '{c}' not in dataset")
+    picked = [c for c in (req.duration_col, req.event_col, req.group_col) if c]
+    if len(set(picked)) != len(picked):
+        raise HTTPException(
+            422, "Duration, event and group must be three different columns")
 
-    cache_key = f"survival_{req.duration_col}_{req.event_col}_{req.group_col}"
+    cache_key = repr(("survival", req.duration_col, req.event_col, req.group_col))
     try:
         report = _cached(
             owner, ds_id, cache_key,
@@ -318,6 +349,15 @@ def industry_benchmarks(ds_id: str, owner: str = Depends(current_owner)):
 #  Predictive drivers (what predicts churn / attrition)
 # ══════════════════════════════════════════════════════════
 
+@router.get("/{ds_id}/drivers/fields")
+def drivers_fields(ds_id: str, owner: str = Depends(current_owner)):
+    """Two-outcome columns the page can model, and the one to start with."""
+    df = _df_or_404(owner, ds_id)
+    from app.engines.predictive import binary_target_candidates
+    candidates = binary_target_candidates(df)
+    return {"candidates": candidates, "default": candidates[0] if candidates else None}
+
+
 @router.get("/{ds_id}/drivers")
 def drivers(ds_id: str, target: Optional[str] = None,
             owner: str = Depends(current_owner)):
@@ -325,14 +365,18 @@ def drivers(ds_id: str, target: Optional[str] = None,
     churn, default), with model quality and the highest-risk profile.
     Auto-detects a suitable target column when `target` is omitted."""
     df = _df_or_404(owner, ds_id)
-    from app.engines.predictive import compute_drivers, find_binary_target
+    from app.engines.predictive import binary_target_candidates, compute_drivers
 
-    target_col = target or find_binary_target(df)
+    # Candidates list churn-style names first, so this is the column the
+    # name-based detection would have picked, when it qualifies.
+    candidates = [] if target else binary_target_candidates(df)
+    target_col = target or (candidates[0] if candidates else None)
     if not target_col:
         raise HTTPException(
             422,
-            "No binary outcome column detected. Pass ?target=<column> "
-            "naming a two-value column such as churn/attrition/left.")
+            "This dataset has no column with exactly two outcomes (such as "
+            "churned / stayed, returned / kept, yes / no), so there is no "
+            "outcome to predict.")
     if target_col not in df.columns:
         raise HTTPException(422, f"Column '{target_col}' not in dataset")
 

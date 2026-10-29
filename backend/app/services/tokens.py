@@ -57,9 +57,11 @@ def _b64url_decode(s: str) -> bytes:
 
 def issue_token(username: str, ttl_days: Optional[int] = None) -> str:
     ttl = ttl_days if ttl_days is not None else config.token_ttl_days
+    now = time.time()
     payload = json.dumps({
         "u": username,
-        "exp": time.time() + ttl * 86400,
+        "iat": now,
+        "exp": now + ttl * 86400,
     }, separators=(",", ":")).encode("utf-8")
     payload_b64 = _b64url(payload)
     sig = hmac.new(_get_secret(), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
@@ -68,17 +70,50 @@ def issue_token(username: str, ttl_days: Optional[int] = None) -> str:
 
 def verify_token(token: str) -> Optional[str]:
     """Returns the username if the token is valid and unexpired, else None."""
+    claims = verify_token_claims(token)
+    return claims["u"] if claims else None
+
+
+def verify_token_claims(token: str) -> Optional[dict]:
+    """{"u": username, "iat": issued-at, "exp": expiry} for a valid,
+    unexpired token, else None.
+
+    `iat` lets the caller refuse a token issued before the account it
+    names existed — see AuthMiddleware. Tokens issued before `iat` was
+    added carry only `exp`; their issue time is recovered from it with the
+    configured lifetime — exact while TOKEN_TTL_DAYS is unchanged, and
+    approximate (by the size of the change) if it has been changed since.
+
+    The token comes straight from a request header, so anything can be in
+    it — including non-ASCII bytes, which `str.encode("ascii")` and
+    `hmac.compare_digest` on str both raise on. An unhandled raise here is
+    a 500 from the auth middleware for an unauthenticated caller; every
+    malformed token must simply fail to verify.
+    """
     if not token or "." not in token:
         return None
     payload_b64, _, sig = token.partition(".")
-    expected = hmac.new(_get_secret(), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig, expected):
+    try:
+        payload_bytes = payload_b64.encode("ascii")
+        sig_bytes = sig.encode("ascii")
+    except UnicodeEncodeError:
+        return None
+    expected = hmac.new(_get_secret(), payload_bytes, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig_bytes, expected.encode("ascii")):
         return None
     try:
         payload = json.loads(_b64url_decode(payload_b64))
     except Exception:
         return None
-    if payload.get("exp", 0) < time.time():
+    if not isinstance(payload, dict):
+        return None
+    exp = payload.get("exp", 0)
+    if not isinstance(exp, (int, float)) or exp < time.time():
         return None
     username = payload.get("u")
-    return username if isinstance(username, str) and username else None
+    if not (isinstance(username, str) and username):
+        return None
+    iat = payload.get("iat")
+    if not isinstance(iat, (int, float)):
+        iat = exp - config.token_ttl_days * 86400
+    return {"u": username, "iat": float(iat), "exp": float(exp)}

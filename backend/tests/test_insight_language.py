@@ -121,3 +121,43 @@ def test_department_gap_action_is_derived_from_the_data(hr_signal_df):
     for ins in dept_insights:
         assert "Sales" in ins.action or "Sales" in ins.cause, \
             f"action does not reference the department it found: {ins.action!r}"
+
+
+# ── Quick-insight cards (insight_engine) ──────────────────
+
+def test_quick_insights_survive_constant_and_empty_columns():
+    import numpy as np
+    import pandas as pd
+    from app.engines.insight_engine import generate_insights
+    n = 60
+    for df in (pd.DataFrame({"a": np.arange(n, dtype=float), "b": [np.nan] * n}),
+               pd.DataFrame({"a": [5] * n, "c": [1.0] * n})):
+        assert generate_insights(df)
+
+
+def test_quick_insights_claim_no_trend_without_a_time_axis():
+    # First half 100s, second half 200s — in row order only.
+    import numpy as np
+    import pandas as pd
+    from app.engines.insight_engine import generate_insights
+    df = pd.DataFrame({"salary": np.r_[np.full(50, 100.0), np.full(50, 200.0)]})
+    titles = " ".join(i["title"] for i in generate_insights(df))
+    assert "over time" not in titles and "later half" not in titles
+
+
+def test_quick_insights_measure_trend_along_the_date_not_the_row_order():
+    import numpy as np
+    import pandas as pd
+    from app.engines.insight_engine import generate_insights
+    dates = pd.date_range("2024-01-01", periods=100)
+    df = pd.DataFrame({"when": dates, "sales": np.r_[np.full(50, 100.0), np.full(50, 200.0)]})
+    shuffled = df.sample(frac=1, random_state=1)
+    titles = [i["title"] for i in generate_insights(shuffled)]
+    assert "'sales' is higher in the later half of the period" in titles
+
+
+def test_quick_insights_do_not_name_a_leader_on_a_tie():
+    import pandas as pd
+    from app.engines.insight_engine import generate_insights
+    df = pd.DataFrame({"g": ["a", "b"] * 50, "v": [10.0] * 100})
+    assert not any("largest" in i["title"] for i in generate_insights(df))

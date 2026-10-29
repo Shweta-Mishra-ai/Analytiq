@@ -138,8 +138,11 @@ def _pdf_text(df, domain):
         recommendations=story.recommended_actions, top_insights=[],
         attrition=None, domain=domain,
     )
-    return "\n".join((p.extract_text() or "")
+    text = "\n".join((p.extract_text() or "")
                      for p in pypdf.PdfReader(io.BytesIO(pdf)).pages)
+    # Whitespace normalised: where a sentence wraps depends on the font,
+    # and a phrase split across lines is still in the report.
+    return " ".join(text.split())
 
 
 @pytest.fixture()

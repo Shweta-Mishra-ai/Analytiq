@@ -1,7 +1,16 @@
 import { lazy, Suspense } from 'react'
 import type { Figure } from '../types'
 
-const Plot = lazy(() => import('react-plotly.js'))
+// The factory with our own partial Plotly build (see ../plotly.ts), not
+// react-plotly's default entry, which bundles every Plotly trace type.
+// Both load lazily, so pages without charts never fetch Plotly at all.
+const Plot = lazy(async () => {
+  const [{ default: createPlotlyComponent }, { default: Plotly }] = await Promise.all([
+    import('react-plotly.js/factory'),
+    import('../plotly'),
+  ])
+  return { default: createPlotlyComponent(Plotly) }
+})
 
 interface Props {
   figure: Figure

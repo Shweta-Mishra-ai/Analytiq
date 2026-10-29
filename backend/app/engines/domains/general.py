@@ -19,6 +19,16 @@ logger = logging.getLogger(__name__)
 # either the groups differ by a quarter, or by a quarter of the column's own
 # spread. Below both, the difference is real and irrelevant.
 MIN_SEGMENT_RATIO = 1.25
+
+
+def _num(x: float) -> str:
+    """A number as a reader writes it: 320, 1,250, 0.042 — never 3.2e+02."""
+    x = float(x)
+    if abs(x) >= 100:
+        return "{:,.0f}".format(x)
+    if abs(x) >= 1:
+        return "{:,.2f}".format(x).rstrip("0").rstrip(".")
+    return "{:.3g}".format(x)
 MIN_SEGMENT_EFFECT = 0.25
 
 
@@ -94,19 +104,20 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
 
             # Uplift opportunity: large spread between P10 and P90
             if p50 > 0 and p90 / p50 >= 2.0 and cv > 40:
-                uplift_pct = (p90 - p50) / p50 * 100
+                # This called the 10th percentile "the bottom quartile" and
+                # quoted the top-decile gap as the gain from lifting it.
                 opps.append(
-                    f"'{col}': Top decile ({p90:.2g}) is {p90/p50:.1f}× the median "
-                    f"({p50:.2g}). Bringing the bottom quartile (currently {p10:.2g}) "
-                    f"to median would represent a {uplift_pct:.0f}% improvement. "
-                    f"Identify what high performers have in common."
+                    f"'{col}': the top 10% of rows are above {_num(p90)}, "
+                    f"{p90/p50:.1f}× the median ({_num(p50)}); the bottom 10% are "
+                    f"below {_num(p10)}. Worth checking what the highest rows have "
+                    f"in common."
                 )
             # High concentration risk: >50% in one value for numeric col
             top_val_pct = float(s.value_counts(normalize=True).iloc[0]) * 100
             if top_val_pct > 60 and s.nunique() > 3:
                 risks.append(
                     f"'{col}': {top_val_pct:.0f}% of records share the same value "
-                    f"({s.value_counts().index[0]:.3g}). "
+                    f"({_num(s.value_counts().index[0])}). "
                     "Potential data collection bias or limited diversity."
                 )
         except Exception:
@@ -117,11 +128,12 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     # report can say "segment X outperforms Y" with a defensible p-value.
     seg = _best_segment_difference(df, num_cols)
     if seg:
+        seg = {**seg, "lo_txt": _num(seg["lo"]), "hi_txt": _num(seg["hi"])}
         # NOTE: neutral highest/lowest labels — whether high is good or bad
         # depends on the metric (revenue vs delay), which we cannot know here.
         insights.append(build_insight(
             title="'{cat}' Segments Differ Significantly on '{num}'".format(**seg),
-            problem=("Median '{num}' ranges from {lo:.3g} in '{lo_seg}' to {hi:.3g} "
+            problem=("Median '{num}' ranges from {lo_txt} in '{lo_seg}' to {hi_txt} "
                      "in '{hi_seg}' — a {ratio:.1f}× spread across '{cat}' segments."
                      .format(**seg)),
             cause="A gap this size is statistically unlikely to be chance "
@@ -129,8 +141,8 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                   "structural or operational difference between the segments — "
                   "a hypothesis to confirm, not yet a proven cause.",
             evidence=("Kruskal-Wallis H={h:.1f}, {ptxt}, {k} groups, n={n:,}. "
-                      "Highest: '{hi_seg}' (median {hi:.3g}) | Lowest: '{lo_seg}' "
-                      "(median {lo:.3g}).".format(**seg)),
+                      "Highest: '{hi_seg}' (median {hi_txt}) | Lowest: '{lo_seg}' "
+                      "(median {lo_txt}).".format(**seg)),
             action=("1. Determine which end of the '{num}' range is desirable, then "
                     "profile what separates '{hi_seg}' from '{lo_seg}'  "
                     "2. Check the gap persists after controlling for volume/size  "
@@ -144,12 +156,30 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         # A significant segment gap is both a risk (the weak segment) and an
         # opportunity (the gap to close) — count both so the exec summary
         # doesn't read '0 risks, 0 opportunities' next to a real finding.
-        risks.append(
-            "'{lo_seg}' underperforms on '{num}' ({lo:.3g} vs {hi:.3g} in "
-            "'{hi_seg}'), a statistically significant {ratio:.1f}× gap.".format(**seg))
-        opps.append(
-            "Closing the '{cat}' gap on '{num}' — lifting '{lo_seg}' toward the "
-            "'{hi_seg}' level — is a quantified, testable improvement.".format(**seg))
+        # Which end is weak depends on the metric: the lowest-delay segment is
+        # the strong one. Unknown direction gets neutral wording.
+        from app.engines.benchmarking import metric_direction
+        direction = metric_direction(seg["num"])
+        if direction:
+            weak, strong = ((seg["lo_seg"], seg["hi_seg"]) if direction > 0
+                            else (seg["hi_seg"], seg["lo_seg"]))
+            weak_v, strong_v = ((seg["lo_txt"], seg["hi_txt"]) if direction > 0
+                                else (seg["hi_txt"], seg["lo_txt"]))
+            risks.append(
+                "'{}' trails on '{}' ({} vs {} in '{}'), a statistically significant "
+                "{:.1f}× gap.".format(weak, seg["num"], weak_v, strong_v, strong, seg["ratio"]))
+            opps.append(
+                "Closing the '{}' gap on '{}' — moving '{}' toward the '{}' level — is "
+                "a quantified, testable improvement.".format(
+                    seg["cat"], seg["num"], weak, strong))
+        else:
+            risks.append(
+                "'{cat}' segments differ on '{num}' ({lo_txt} in '{lo_seg}' vs {hi_txt} "
+                "in '{hi_seg}'), a statistically significant {ratio:.1f}× gap — decide "
+                "which end is desirable before acting.".format(**seg))
+            opps.append(
+                "Find out what separates '{hi_seg}' from '{lo_seg}' on '{num}' — the "
+                "{ratio:.1f}× gap is real, and testable.".format(**seg))
 
     # ── Concentration (Pareto) risk on categorical columns ───────────────
     for col in df.select_dtypes(include=["object", "string"]).columns[:6]:
@@ -167,11 +197,13 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     # ── Trend, outlier concentration, segment sufficiency ────
     run_general_depth(df, insights, findings, risks, opps)
 
-    actions.extend([
-        "Validate all outliers before analysis or modeling",
-        "Use median for skewed distributions in executive reports",
-        "Segment analysis — subgroups may tell different stories",
-    ])
+    # Each only where the data shows the reason for it.
+    if any(stats.get(c, {}).get("outlier_pct", 0) > 1 for c in analysable):
+        actions.append("Validate the outliers flagged above before analysis or modelling")
+    if any(abs(stats.get(c, {}).get("skew", 0)) > 1 for c in analysable):
+        actions.append("Use the median, not the mean, for the skewed columns in executive reports")
+    if any(2 <= df[c].nunique() <= 30 for c in df.select_dtypes(include=["object", "string"]).columns):
+        actions.append("Segment analysis — subgroups may tell different stories")
     return {"findings": findings, "risks": risks, "opportunities": opps,
             "actions": actions, "insights": insights}
 

@@ -100,11 +100,17 @@ def _run_with_hard_timeout(fn, timeout_sec: float):
 
 def generate_text(contents: list, system: Optional[str] = None,
                    json_mode: bool = False, max_output_tokens: int = 2048,
-                   temperature: float = 0.2, timeout_sec: float = 60) -> str:
+                   timeout_sec: float = 60) -> str:
     """contents: list of str / PIL.Image / uploaded-file objects (the SDK
     auto-converts PIL images and accepts File objects from upload_file()
     directly in this list, same as the old SDK did). Raises on any
-    failure — callers decide how to surface that."""
+    failure — callers decide how to surface that.
+
+    No sampling parameters are sent. From Gemini 3.6 on, temperature,
+    top_p and top_k are deprecated: ignored by gemini-3.6-flash and
+    answered with HTTP 400 by later models. Sending one would have looked
+    like control over the output while doing nothing, and would then break
+    every call on the next model upgrade."""
     client = get_client()
     if client is None:
         raise RuntimeError("GEMINI_API_KEY is not configured")
@@ -112,7 +118,6 @@ def generate_text(contents: list, system: Optional[str] = None,
     from google.genai import types
     cfg_kwargs: dict[str, Any] = {
         "max_output_tokens": max_output_tokens,
-        "temperature": temperature,
     }
     if system:
         cfg_kwargs["system_instruction"] = system

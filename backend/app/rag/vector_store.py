@@ -34,7 +34,11 @@ _LOCAL_DIM = 384
 # ── embedding backends ───────────────────────────────────
 
 def _gemini_embed(texts: List[str], task: str) -> Optional[np.ndarray]:
-    if not config.gemini_api_key:
+    # Embedding sends the text of the client's documents to Google. In
+    # privacy mode the local embedder is used instead; letting
+    # gemini_client's refusal propagate made every upload fail with a 503.
+    from app.ai.local_llm import privacy_mode
+    if not config.gemini_api_key or privacy_mode():
         return None
     from app.ai import gemini_client
     vecs: list = []
@@ -131,6 +135,22 @@ def _filter_by_relevance(hits: List[dict], embedder: str) -> List[dict]:
 
 # ── store ────────────────────────────────────────────────
 
+# One lock per knowledge base, held across the limit check and the append.
+# Two uploads to the same KB run in parallel threadpool workers; without
+# this they interleave `chunks.extend` and `np.vstack`, so a chunk can end
+# up paired with another chunk's vector — retrieval then cites the wrong
+# passage — and both can pass the size limit together. Kept outside the
+# KnowledgeBase because the KB is pickled and a lock cannot be.
+_kb_locks: dict[str, threading.Lock] = {}
+_kb_locks_guard = threading.Lock()
+
+
+def kb_lock(kb: "KnowledgeBase") -> threading.Lock:
+    key = f"{kb.owner}/{kb.kb_id}"
+    with _kb_locks_guard:
+        return _kb_locks.setdefault(key, threading.Lock())
+
+
 class KnowledgeBase:
     def __init__(self, kb_id: str, name: str, path: str):
         self.kb_id = kb_id
@@ -187,8 +207,19 @@ class KnowledgeBase:
             return []
         if self.embedder == "gemini":
             qv, backend = embed([query], "retrieval_query")
-            if backend != "gemini":   # key vanished mid-session
-                return []
+            if backend != "gemini":
+                # The question cannot be embedded in the space the documents
+                # were indexed in. Returning no hits here reported "your
+                # documents do not cover this" for every question, which is
+                # false — say what actually happened.
+                from app.ai.local_llm import privacy_mode
+                raise RuntimeError(
+                    "This knowledge base was indexed with Gemini embeddings, "
+                    "and Gemini cannot be used now ("
+                    + ("LLM_PRIVACY_MODE is on" if privacy_mode()
+                       else "the key is missing or the call failed")
+                    + "). Adding any file re-indexes the whole knowledge base "
+                    "with the embedder available now; or restore Gemini access.")
         else:
             qv = _local_embed([query])
         qv = qv[0]
@@ -197,6 +228,14 @@ class KnowledgeBase:
             (np.linalg.norm(mat, axis=1) * np.linalg.norm(qv)) + 1e-9)
         idx = np.argsort(-sims)[:k]
         hits = [{**self.chunks[i], "score": float(sims[i])} for i in idx]
+        if self.embedder != "gemini":
+            # The hashing embedder puts words in 384 buckets, so unrelated
+            # words collide; one collision against a short passage scores
+            # ~0.14, above the floor — "what is our churn rate" was answered
+            # from an onboarding handbook sharing no word with it. A local
+            # hit must share an actual word with the question.
+            q_words = set(_tokens(query))
+            hits = [h for h in hits if q_words & set(_tokens(h["text"]))]
         return _filter_by_relevance(hits, self.embedder)
 
 
