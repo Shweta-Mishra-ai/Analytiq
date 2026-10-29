@@ -13,7 +13,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.config import config
 from app.engines.data_cleaner import table_name_from_filename
 from app.services.auth import current_owner
 from app.services.dataset_store import store
@@ -131,7 +130,7 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
     from app.engines.data_profiler import profile_dataset
     from app.engines.story_engine import detect_domain, generate_story
     from app.engines.pdf_builder import build_pdf
-    from app.engines.chart_exporter import generate_all_charts
+    from app.engines.chart_exporter import build_report_charts
 
     # 1. profile
     try:
@@ -147,8 +146,7 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
 
     # 3. story
     story_obj = None
-    exec_summary, findings, risks, opportunities, actions = (
-        "Analysis completed by Analytiq.", [], [], [], [])
+    exec_summary, findings, risks, opportunities, actions = ("", [], [], [], [])
     try:
         story_obj = generate_story(df)
         exec_summary = story_obj.executive_summary
@@ -198,23 +196,17 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
     # 7. ML (only if previously trained)
     ml_report = store.cache_get(owner, ds_id, "ml_last") if req.include_ml else None
 
-    # 8. charts + AI narratives
+    # 8. charts, each captioned from the numbers it plots. The text used to
+    # be written separately, by guessing the chart's columns back from its
+    # title, and described identifiers and the wrong measure.
+    from app.engines import report_theme
+    theme_name = report_theme.resolve(req.theme_name, domain_name)
     chart_data = []
-    theme_name = req.theme_name
     try:
-        charts = generate_all_charts(df, theme_name, max_charts=req.max_charts)
-        for title, img_bytes in charts:
-            if not img_bytes:
-                continue
-            try:
-                from app.ai.report_narrator import generate_chart_narrative
-                narrative = generate_chart_narrative(
-                    df, title, config.groq_api_key, domain_name)
-            except Exception:
-                narrative = "Chart generated from dataset analysis."
-            chart_data.append((title, img_bytes, narrative))
-    except Exception as e:
-        logger.warning(f"chart export failed: {e}")
+        chart_data = [(c.title, c.png, c.caption) for c in build_report_charts(
+            df, theme_name, domain_name, max_charts=req.max_charts)]
+    except Exception:
+        logger.warning("chart export failed", exc_info=True)
 
     # 9. build PDF
     pdf_config = {
