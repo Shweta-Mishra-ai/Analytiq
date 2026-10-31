@@ -181,7 +181,7 @@ export default function ReportsPage() {
                 ) : (
                   <FileText className="h-4 w-4" />
                 )}
-                {busy === 'pdf' ? 'Building report… (30–60s)' : 'Generate PDF report'}
+                {busy === 'pdf' ? 'Building report…' : 'Generate PDF report'}
               </span>
             </Btn>
             <p className="text-xs text-mute">

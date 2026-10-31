@@ -100,6 +100,20 @@ body {
   }
 }
 
+/* Grid items and form fields default to min-width:auto, so a row of
+   inputs held its column at their natural width and pushed the Reports
+   form off the right edge of a phone. Let them shrink; wide content
+   (tables) scrolls inside its own overflow wrapper. */
+.grid > * {
+  min-width: 0;
+}
+input,
+select,
+textarea {
+  min-width: 0;
+  max-width: 100%;
+}
+
 /* ── Depth ───────────────────────────────────────────────
    A flat 1px border on a flat fill is what makes a dark UI look like a
    wireframe. Real surfaces get a soft ambient shadow plus a 1px inner
