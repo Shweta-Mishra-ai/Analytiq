@@ -176,5 +176,6 @@ export interface Kpi {
   label: string
   value: number
   format: 'int' | 'pct' | 'num'
-  mean?: number
+  /** One line of context under the figure ("median 59.8K", "98 of 500 are 'Yes'"). */
+  sub?: string
 }

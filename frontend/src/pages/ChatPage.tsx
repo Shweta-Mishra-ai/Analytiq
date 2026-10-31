@@ -68,7 +68,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="flex h-full flex-col p-8">
+    <div className="page flex h-full flex-col">
       <PageHeader
         title="AI Chat"
         subtitle={`Ask anything about ${dataset.filename} — safe tool-calling, no code execution`}

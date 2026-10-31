@@ -86,7 +86,7 @@ export default function SegmentsPage() {
   )
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="Customer Segments"
         subtitle="RFM analysis — who your best customers are, and who you're about to lose"

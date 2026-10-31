@@ -173,6 +173,11 @@ def _fit_distribution(s: pd.Series) -> Tuple[str, Dict]:
     """Try fitting common distributions, return best fit."""
     distributions = ["norm", "lognorm", "expon", "gamma", "uniform"]
     best_dist, best_p, best_params = "norm", 0, {}
+    # Fitted on a fixed sample of 5,000. Maximum-likelihood fits on every
+    # value of a 60,000-row column took 17 s of an 18 s page, and the KS test
+    # on that many values rejects every distribution anyway.
+    if len(s) > 5000:
+        s = s.sample(5000, random_state=42)
     for dist_name in distributions:
         try:
             dist   = getattr(scipy_stats, dist_name)

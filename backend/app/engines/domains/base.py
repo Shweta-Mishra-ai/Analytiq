@@ -57,7 +57,13 @@ def is_id_column(col: str, series=None) -> bool:
     excluded from correlation, benchmarking, Pareto, root-cause and predictive
     features — a 'Pareto of Response ID' is meaningless. Combines a name check
     (whole-word 'id'/'code'/'ref'…) with a value check (all-unique or a
-    monotonic 1-step sequence)."""
+    monotonic 1-step sequence).
+
+    A role the user confirmed for the column decides it outright."""
+    from app.services.column_roles import role_of
+    confirmed = role_of(col, series)
+    if confirmed:
+        return confirmed.get("role") == "identifier"
     import re as _re
     name = _re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', str(col)).lower()
     tokens = set(_re.split(r'[^a-z0-9]+', name))
@@ -78,6 +84,39 @@ def is_id_column(col: str, series=None) -> bool:
         except Exception:
             logger.debug("is_id_column value check failed for %r", col)
     return False
+
+
+def duplicated_key(df) -> "tuple[str, int] | None":
+    """The row key that repeats when it should not: (column, repeats).
+
+    Only a column meant to name each row can be duplicated. In an orders
+    table order_id is that key; customer_id repeats because customers order
+    more than once, and flagging it called an ordinary sales file "not
+    ready to analyse". So: if any identifier is unique, the table has its
+    key and the others are references. Otherwise an identifier is treated
+    as the key when the table records no events (no date column: one row
+    per entity is expected), or when it is nearly unique — a few repeats in
+    a column of distinct values is a duplicate, while systematic repetition
+    alongside a date is the same customer coming back.
+    """
+    ids = []
+    for col in df.columns:
+        try:
+            if not is_id_column(col, df[col]):
+                continue
+            s = df[col].dropna()
+            if len(s) >= 10:
+                ids.append((col, s))
+        except Exception:
+            logger.debug("duplicated_key: skipped %r", col, exc_info=True)
+    if any(s.is_unique for _, s in ids):
+        return None
+    has_events = any(str(t).startswith("datetime") for t in df.dtypes)
+    for col, s in ids:
+        repeats = int(s.duplicated().sum())
+        if repeats and (not has_events or s.nunique() >= 0.9 * len(s)):
+            return str(col), repeats
+    return None
 
 
 def infer_confidence(evidence: str, severity: str = "") -> str:
@@ -125,6 +164,10 @@ class AttritionAnalysis:
     flight_risk_pct:  float
     cost_estimate:    str
     interpretation:   str
+    # Chi-square p for "do departments differ in attrition", None when the
+    # test could not be run. Without it the report labelled departments
+    # HIGH or OK off a fixed threshold, whatever the test said.
+    dept_p:           Optional[float] = None
 
 
 @dataclass
@@ -225,22 +268,58 @@ def col_stats(s: pd.Series) -> Dict:
     }
 
 
+def _corr_entry(a, b, r: float, p: float) -> Dict:
+    strength = ("strong" if abs(r) >= 0.7 else "moderate" if abs(r) >= 0.4 else "weak")
+    return {"col_a": a, "col_b": b,
+            "r": round(r, 4), "p": round(float(p), 6),
+            "r2": round(r ** 2, 4),
+            "strength": strength,
+            "direction": "positive" if r > 0 else "negative",
+            "significant": p < 0.05}
+
+
 def correlations(df: pd.DataFrame, min_r: float = 0.25) -> List[Dict]:
     """
     Spearman correlations — robust to non-normal distributions.
     Returns pairs sorted by |r| descending, filtered to |r| >= min_r.
-    Raises ValueError if df has fewer than 2 numeric columns.
+
+    Columns with no missing values are ranked once and correlated as one
+    matrix, with p-values from the same t-approximation scipy uses. Called
+    pair by pair, 120 columns meant 7,140 calls to spearmanr and 50 s
+    before a report could start. Pairs involving a column with gaps are
+    still computed one at a time on the rows both have.
     """
     # Identifiers must not be correlated (a 'Response ID vs X' correlation is
     # spurious). Exclude them up front.
     num_cols = [c for c in df.select_dtypes(include="number").columns
-                if not is_id_column(c, df[c])]
+                if not is_id_column(c, df[c]) and not pd.api.types.is_bool_dtype(df[c])]
     if len(num_cols) < 2:
         return []
     results = []
-    for i in range(len(num_cols)):
-        for j in range(i + 1, len(num_cols)):
-            a, b = num_cols[i], num_cols[j]
+    complete = [c for c in num_cols if df[c].notna().all() and df[c].nunique() >= 2]
+    gappy = [c for c in num_cols if c not in complete and df[c].nunique(dropna=True) >= 2]
+
+    n = len(df)
+    if len(complete) >= 2 and n >= 10:
+        ranks = df[complete].rank().to_numpy(dtype=float)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            R = np.corrcoef(ranks, rowvar=False)
+        iu, ju = np.triu_indices(len(complete), k=1)
+        rs = R[iu, ju]
+        keep = np.isfinite(rs) & (np.abs(rs) >= min_r)
+        for i, j, r in zip(iu[keep], ju[keep], rs[keep]):
+            r = float(min(max(r, -1.0), 1.0))
+            if abs(r) >= 1.0:
+                p = 0.0
+            else:
+                t = r * np.sqrt((n - 2) / (1 - r * r))
+                p = float(2 * scipy_stats.t.sf(abs(t), n - 2))
+            results.append(_corr_entry(complete[i], complete[j], r, p))
+
+    for a in gappy:
+        for b in complete + gappy:
+            if b == a or (b in gappy and gappy.index(b) < gappy.index(a)):
+                continue
             common = df[[a, b]].dropna()
             if len(common) < 10:
                 continue
@@ -253,19 +332,7 @@ def correlations(df: pd.DataFrame, min_r: float = 0.25) -> List[Dict]:
                 r = float(r)
                 if np.isnan(r) or abs(r) < min_r:
                     continue
-                strength = (
-                    "strong"   if abs(r) >= 0.7 else
-                    "moderate" if abs(r) >= 0.4 else
-                    "weak"
-                )
-                results.append({
-                    "col_a": a, "col_b": b,
-                    "r": round(r, 4), "p": round(float(p), 6),
-                    "r2": round(r ** 2, 4),
-                    "strength": strength,
-                    "direction": "positive" if r > 0 else "negative",
-                    "significant": p < 0.05,
-                })
+                results.append(_corr_entry(a, b, r, float(p)))
             except Exception:
                 logger.warning("Spearman failed for %s/%s", a, b, exc_info=True)
     results.sort(key=lambda x: abs(x["r"]), reverse=True)

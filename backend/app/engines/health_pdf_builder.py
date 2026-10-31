@@ -69,33 +69,29 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     actions       = list(actions or [])
     import io as _io
     from reportlab.lib.colors import white, black
-    from reportlab.lib.enums import TA_JUSTIFY
     from reportlab.platypus import (
-        PageBreak, Image,
+        PageBreak, Image, CondPageBreak,
     )
+    from reportlab.platypus.tableofcontents import TableOfContents
     from reportlab.pdfgen import canvas as CV
     from reportlab.lib import colors as rl_colors
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
 
     W, H = A4
     CW   = W - 36 * mm
     now  = datetime.datetime.now().strftime("%B %d, %Y")
 
-    NICHE_COLORS = {
-        "hr":        "#1565C0",
-        "sales":     "#2E7D32",
-        "ecommerce": "#E64A19",
-        "finance":   "#0D47A1",
-        "general":   "#1B4FD8",
-    }
-    accent_hex  = NICHE_COLORS.get(niche, "#1B4FD8")
+    # The same palette as the main report and its charts (report_theme).
+    from app.engines import report_theme
+    from app.engines.chart_exporter import fmt
+    T = report_theme.get("", niche)
+    accent_hex  = T["accent"]
     accent      = HexColor(accent_hex)
-    dark        = HexColor("#0A1628")
-    gray        = HexColor("#6B7280")
-    light       = HexColor("#F0F4FF")
-    light2      = HexColor("#F8FAFF")
+    dark        = HexColor(T["primary"])
+    ink         = HexColor(T["text"])
+    gray        = HexColor(T["text_muted"])
+    border      = HexColor(T["border"])
+    light       = HexColor(T["bg_light"])
+    light2      = HexColor(T["bg_card"])
     score_color = HexColor(health["color"])
 
     # Embedded Carlito, Helvetica only if the bundled files are missing
@@ -105,14 +101,14 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
 
     def ps(name, **kw): return ParagraphStyle(name, **kw)
     ST = {
-        "h1":   ps("h1",   fontName=_BB, fontSize=17, textColor=accent,
-                   spaceAfter=4, spaceBefore=2, leading=21),
-        "h2":   ps("h2",   fontName=_BB, fontSize=13, textColor=dark,
-                   spaceBefore=10, spaceAfter=4, leading=16),
-        "h3":   ps("h3",   fontName=_BB, fontSize=10.5, textColor=accent,
-                   spaceBefore=8, spaceAfter=3, leading=14),
-        "body": ps("body", fontName=_BF, fontSize=9.5, textColor=dark,
-                   leading=15, spaceAfter=3, alignment=TA_JUSTIFY),
+        "h1":   ps("h1",   fontName=_BB, fontSize=15, textColor=dark,
+                   spaceAfter=3, spaceBefore=2, leading=19, keepWithNext=1),
+        "h2":   ps("h2",   fontName=_BB, fontSize=12, textColor=dark,
+                   spaceBefore=10, spaceAfter=4, leading=15, keepWithNext=1),
+        "h3":   ps("h3",   fontName=_BB, fontSize=10.5, textColor=dark,
+                   spaceBefore=8, spaceAfter=3, leading=14, keepWithNext=1),
+        "body": ps("body", fontName=_BF, fontSize=9.5, textColor=ink,
+                   leading=14.5, spaceAfter=3, alignment=TA_LEFT),
         "sm":   ps("sm",   fontName=_BF, fontSize=8, textColor=gray,
                    leading=11, spaceAfter=2),
         "act":  ps("act",  fontName=_BB, fontSize=9, textColor=accent,
@@ -141,114 +137,93 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                 super().showPage()
             super().save()
         def _draw_cover(self, tot):
-            """Full-bleed cover. Drawn on the canvas rather than as
-            flowables so it can ignore the frame margins and the running
-            header/footer, the way a real report cover does."""
+            """White cover with one band of the report colour, the grade,
+            and who it is for — drawn on the canvas, outside the frame."""
             self.setFillColor(dark)
-            self.rect(0, 0, W, H, fill=1, stroke=0)
-            # accent bar down the left edge
+            self.rect(0, 0, 14 * mm, H, fill=1, stroke=0)
             self.setFillColor(accent)
-            self.rect(0, 0, 6 * mm, H, fill=1, stroke=0)
-
-            self.setFillColor(white)
-            self.setFont(_BB, 11)
-            self.drawString(22 * mm, H - 28 * mm, agency_name.upper())
+            self.rect(14 * mm, 0, 1.2 * mm, H, fill=1, stroke=0)
+            x0 = 30 * mm
+            self.setFillColor(dark)
+            self.setFont(_BB, 12)
+            self.drawString(x0, H - 30 * mm, agency_name)
             self.setFillColor(accent)
-            self.rect(22 * mm, H - 32 * mm, 24 * mm, 0.8 * mm, fill=1, stroke=0)
-
-            # Title
-            self.setFillColor(white)
+            self.setFont(_BB, 8.5)
+            self.drawString(x0, H - 92 * mm, T.get("domain_label", "ANALYTICS"))
+            self.setFillColor(dark)
             self.setFont(_BB, 30)
-            self.drawString(22 * mm, H - 92 * mm, "Data Health &")
-            self.drawString(22 * mm, H - 106 * mm, "Business Insights")
-            self.setFillColor(HexColor("#8FB8F0"))
-            self.setFont(_BF, 13)
-            self.drawString(22 * mm, H - 120 * mm, "Analysis Report")
+            self.drawString(x0, H - 106 * mm, "Data Health &")
+            self.drawString(x0, H - 120 * mm, "Business Insights")
+            self.setFillColor(gray)
+            self.setFont(_BF, 11)
+            self.drawString(x0, H - 131 * mm, fname[:70])
+            self.setStrokeColor(accent)
+            self.setLineWidth(1.2)
+            self.line(x0, H - 138 * mm, x0 + 40 * mm, H - 138 * mm)
 
-            # Grade badge
-            badge_y = H - 165 * mm
+            badge_y = H - 175 * mm
             self.setFillColor(score_color)
-            self.circle(34 * mm, badge_y, 17 * mm, fill=1, stroke=0)
+            self.circle(x0 + 14 * mm, badge_y, 14 * mm, fill=1, stroke=0)
             self.setFillColor(white)
-            self.setFont(_BB, 21)
-            self.drawCentredString(34 * mm, badge_y - 3 * mm, str(health["score"]))
+            self.setFont(_BB, 19)
+            self.drawCentredString(x0 + 14 * mm, badge_y - 2 * mm, str(health["score"]))
             self.setFont(_BF, 7)
-            self.drawCentredString(34 * mm, badge_y - 11 * mm, "/ 100")
-
-            self.setFillColor(white)
-            self.setFont(_BB, 14)
-            self.drawString(58 * mm, badge_y + 4 * mm,
+            self.drawCentredString(x0 + 14 * mm, badge_y - 8 * mm, "/ 100")
+            self.setFillColor(dark)
+            self.setFont(_BB, 13)
+            self.drawString(x0 + 34 * mm, badge_y + 3 * mm,
                             "Grade {} — {}".format(health["grade"], health["label"]))
-            self.setFillColor(HexColor("#9FB3CC"))
+            self.setFillColor(gray)
             self.setFont(_BF, 9)
-            self.drawString(58 * mm, badge_y - 4 * mm,
-                            "{:,} rows  ·  {} columns  ·  {} domain".format(
-                                health["rows"], health["cols"], niche))
+            self.drawString(x0 + 34 * mm, badge_y - 4 * mm,
+                            "{:,} rows · {} columns".format(health["rows"], health["cols"]))
 
-            # Meta block
-            self.setFillColor(HexColor("#9FB3CC"))
-            self.setFont(_BF, 8.5)
-            meta_y = 52 * mm
-            for label, value in (("DATASET", fname[:52]),
-                                 ("PREPARED", now),
-                                 ("PREPARED BY", agency_name)):
-                self.setFillColor(HexColor("#6B85A6"))
-                self.setFont(_BF, 6.5)
-                self.drawString(22 * mm, meta_y, label)
-                self.setFillColor(white)
-                self.setFont(_BB, 9)
-                self.drawString(22 * mm, meta_y - 5 * mm, value)
-                meta_y -= 13 * mm
-
-            self.setFillColor(HexColor("#4A5D75"))
-            self.setFont(_BF, 6.5)
-            self.drawString(22 * mm, 14 * mm,
-                            "CONFIDENTIAL  ·  Findings derive solely from the supplied dataset "
-                            "and the period it covers")
+            mx = x0
+            for label, value in (("Dataset", fname[:34]), ("Date", now),
+                                 ("Prepared by", agency_name)):
+                self.setFillColor(gray)
+                self.setFont(_BF, 8)
+                self.drawString(mx, 30 * mm, label)
+                self.setFillColor(ink)
+                self.setFont(_BB, 10)
+                self.drawString(mx, 24 * mm, value)
+                mx += (W - x0 - 22 * mm) / 3
+            self.setFillColor(gray)
+            self.setFont(_BF, 7.5)
+            self.drawString(x0, 14 * mm, "Confidential — prepared for the named client only.")
 
         def _draw_hf(self, tot):
-            # The cover carries no running header/footer or page number.
+            # The cover carries no running header/footer or page number,
+            # and is not counted.
             if self._pageNumber == 1:
                 self._draw_cover(tot)
                 return
-            # Header
+            self.setStrokeColor(border)
+            self.setLineWidth(0.6)
+            self.line(18*mm, H - 16*mm, W - 18*mm, H - 16*mm)
+            self.setFont(_BB, 8)
             self.setFillColor(dark)
-            self.rect(0, H - 20*mm, W, 20*mm, fill=1, stroke=0)
-            self.setFillColor(accent)
-            self.rect(0, H - 21*mm, W, 1*mm, fill=1, stroke=0)
-            self.setFillColor(accent)
-            self.rect(0, H - 20*mm, 3*mm, 20*mm, fill=1, stroke=0)
-            self.setFillColor(white)
-            self.setFont(_BB, 9.5)
-            self.drawString(8*mm, H - 11*mm, f"{agency_name}  ·  Data Health & Business Insights")
+            self.drawString(18*mm, H - 13*mm, "Data Health & Business Insights")
             self.setFont(_BF, 7.5)
-            self.setFillColor(HexColor("#BBDEFB"))
-            self.drawString(8*mm, H - 17.5*mm, fname[:60])
-            self.setFillColor(white)
-            self.drawRightString(W - 8*mm, H - 11*mm, now)
-            self.setFont(_BF, 7)
-            self.drawRightString(W - 8*mm, H - 17.5*mm, "CONFIDENTIAL")
-            # Footer
-            self.setFillColor(dark)
-            self.rect(0, 0, W, 11*mm, fill=1, stroke=0)
-            self.setFillColor(accent)
-            self.rect(0, 11*mm, W, 0.8*mm, fill=1, stroke=0)
-            self.setFillColor(white)
-            self.setFont(_BF, 6.5)
-            self.drawString(8*mm, 4*mm, f"{agency_name}  ·  Confidential  ·  Prepared for the named recipient")
-            # Page circle
-            self.setFillColor(accent)
-            self.circle(W - 13*mm, 5.5*mm, 4.5*mm, fill=1, stroke=0)
-            self.setFillColor(white)
-            self.setFont(_BB, 6.5)
-            self.drawCentredString(W - 13*mm, 3.8*mm, "{}/{}".format(self._pageNumber, tot))
+            self.setFillColor(gray)
+            self.drawRightString(W - 18*mm, H - 13*mm, "{} · {}".format(fname[:40], now))
+            self.line(18*mm, 13*mm, W - 18*mm, 13*mm)
+            self.drawString(18*mm, 9*mm, "{} · Confidential".format(agency_name))
+            self.drawRightString(W - 18*mm, 9*mm,
+                                 "Page {} of {}".format(self._pageNumber - 1, tot - 1))
 
-    doc = BaseDocTemplate(
+    class _Doc(BaseDocTemplate):
+        def afterFlowable(self, flowable):
+            if isinstance(flowable, Paragraph) and flowable.style.name == "sec":
+                self.notify("TOCEntry", (0, flowable.getPlainText(), self.page - 1))
+
+    doc = _Doc(
         buf, pagesize=A4,
         leftMargin=18*mm, rightMargin=18*mm,
-        topMargin=26*mm, bottomMargin=17*mm,
+        topMargin=22*mm, bottomMargin=18*mm,
+        title="Data Health & Business Insights", author=agency_name,
     )
-    frame = Frame(18*mm, 17*mm, CW, H - 43*mm, id="main")
+    frame = Frame(18*mm, 18*mm, CW, H - 40*mm, id="main")
     doc.addPageTemplates([PageTemplate(id="main", frames=[frame],
                                        onPage=lambda c, d: None)])
     story = []
@@ -275,9 +250,8 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # when a dataset has no real measures.
     _charts = []
     try:
-        from app.engines.chart_exporter import generate_all_charts
-        _charts = generate_all_charts(df, theme_name="Corporate Light",
-                                       max_charts=4)
+        from app.engines.chart_exporter import build_report_charts
+        _charts = build_report_charts(df, domain=niche, max_charts=4)
     except Exception:
         logger.warning("chart generation failed for the health report",
                        exc_info=True)
@@ -300,41 +274,50 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     if _charts:
         _toc_entries.append("Visual Analysis")
     _toc_entries += ["Descriptive Statistics", "Column Quality Analysis"]
-    if len(df.select_dtypes(include="number").columns) >= 2:
+    # The same columns decide whether the section exists and whether the
+    # contents page lists it; they used to be two different tests, so a
+    # dataset could be numbered for a section it never printed.
+    _corr_cols = [c for c in df.select_dtypes(include="number").columns
+                  if df[c].nunique() > 2 and not is_id_col(c, df[c])
+                  and not pd.api.types.is_bool_dtype(df[c])][:8]
+    if len(_corr_cols) >= 2:
         _toc_entries.append("Correlation Analysis")
     if actions:
         _toc_entries.append("Recommended Actions")
 
-    def _section(name: str):
-        """Numbered section heading that stays in step with the contents
-        page, because both read from the same list."""
-        try:
-            num = _toc_entries.index(name) + 1
-        except ValueError:
-            return Paragraph(name, ST["h1"])
-        return Paragraph(
-            '<font color="{}">{:02d}</font>&nbsp;&nbsp;{}'.format(accent_hex, num, name),
-            ST["h1"])
+    _sec_style = ParagraphStyle("sec", parent=ST["h1"])
 
-    story.append(Paragraph("Contents", ST["h1"]))
-    story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=8))
-    _toc_rows = []
-    for _i, _name in enumerate(_toc_entries, 1):
-        _toc_rows.append([
-            Paragraph('<font color="{}"><b>{:02d}</b></font>'.format(accent_hex, _i),
-                      ParagraphStyle("tn", fontName=_BB, fontSize=9.5, leading=15)),
-            Paragraph(_name, ParagraphStyle("tt", fontName=_BF, fontSize=10.5,
-                                            textColor=dark, leading=15)),
-        ])
-    _toc_tbl = Table(_toc_rows, colWidths=[12 * mm, CW - 12 * mm])
-    _toc_tbl.setStyle(TableStyle([
-        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
-        ("TOPPADDING",    (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 0),
-        ("LINEBELOW",     (0, 0), (-1, -2), 0.4, HexColor("#E5E7EB")),
-    ]))
-    story.append(_toc_tbl)
+    def _section(name: str):
+        """A section heading: starts a new page only when little room is
+        left, and is listed with its page number on the contents page."""
+        try:
+            num = "{:02d}&nbsp;&nbsp;".format(_toc_entries.index(name) + 1)
+        except ValueError:
+            num = ""
+        story.append(CondPageBreak(50 * mm))
+        return Paragraph('<font color="{}">{}</font>{}'.format(accent_hex, num, name),
+                         _sec_style)
+
+    story.append(Paragraph("Contents", ParagraphStyle("toc_t", parent=ST["h1"],
+                                                      keepWithNext=0)))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=accent, spaceAfter=8))
+    _toc = TableOfContents()
+    _toc.dotsMinLevel = 0
+    _toc.levelStyles = [ParagraphStyle("toc0", fontName=_BF, fontSize=10.5, leading=20,
+                                       textColor=ink)]
+    story.append(_toc)
+    # The basis of preparation sits under the contents. At the end it was
+    # pushed onto a page of its own: three lines on an otherwise blank page.
+    story.append(Spacer(1, 10*mm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=gray, spaceAfter=4))
+    story.append(Paragraph(
+        "<b>Basis of preparation.</b> Prepared by {} on {}. Source: {}. "
+        "All figures derive solely from the supplied dataset and describe the "
+        "period it covers. Statistical association is reported where present; "
+        "it does not establish causation. Recommendations assume the data is "
+        "complete and accurate as supplied.".format(
+            _clean_text(agency_name), now, _clean_text(fname[:40])),
+        ST["sm"]))
     story.append(PageBreak())
 
     # ══════════════════════════════════════════════════════
@@ -342,7 +325,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # ══════════════════════════════════════════════════════
     story.append(Spacer(1, 6*mm))
     story.append(_section("Data Health Overview"))
-    story.append(Paragraph(fname[:70], ST["sm"]))
+    story.append(Paragraph(_clean_text(fname[:70]), ST["sm"]))
     story.append(HRFlowable(width="100%", thickness=2.5, color=accent, spaceAfter=6))
     story.append(Paragraph(
         "Generated: {}  ·  {:,} rows  ·  {} columns  ·  Domain: <b>{}</b>".format(
@@ -399,16 +382,19 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     missing_total = df.isna().sum().sum()
     dup_count     = df.duplicated().sum()
 
+    # Header text in white: it was the dark body style on the dark band, so
+    # the header row printed as an empty bar.
+    _hdr = ParagraphStyle("sumh", fontName=_BB, fontSize=8, textColor=white)
     summary_data = [
-        [Paragraph("<b>Metric</b>", ST["ctr"]), Paragraph("<b>Value</b>", ST["ctr"])],
-        ["Total Rows",       "{:,}".format(health["rows"])],
-        ["Total Columns",    str(health["cols"])],
-        ["Numeric Columns",  str(len(num_cols_list))],
-        ["Categorical Cols", str(len(cat_cols_list))],
-        ["DateTime Columns", str(len(date_cols_list))],
-        ["Missing Values",   "{:,} ({:.1f}%)".format(int(missing_total), health["missing_pct"])],
-        ["Duplicate Rows",   "{:,} ({:.1f}%)".format(int(dup_count), health["dup_pct"])],
-        ["Memory Usage",     "{:.1f} MB".format(df.memory_usage(deep=True).sum() / 1e6)],
+        [Paragraph("Measure", _hdr),
+         Paragraph("Value", ParagraphStyle("sumhr", parent=_hdr, alignment=TA_RIGHT))],
+        ["Rows",             "{:,}".format(health["rows"])],
+        ["Columns",          str(health["cols"])],
+        ["Numeric columns",  str(len(num_cols_list))],
+        ["Text columns",     str(len(cat_cols_list))],
+        ["Date columns",     str(len(date_cols_list))],
+        ["Missing values",   "{:,} ({:.1f}%)".format(int(missing_total), health["missing_pct"])],
+        ["Duplicate rows",   "{:,} ({:.1f}%)".format(int(dup_count), health["dup_pct"])],
     ]
     for i in range(1, len(summary_data)):
         summary_data[i] = [
@@ -438,7 +424,6 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # Skipped entirely when no narrative was supplied, so the report never
     # shows an empty heading.
     if executive_summary or key_findings or risks or opportunities:
-        story.append(PageBreak())
         story.append(_section("Executive Summary"))
         story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=6))
 
@@ -470,59 +455,55 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             story.append(tbl)
             story.append(Spacer(1, 4 * mm))
 
-        _bullet_section("Key Findings", key_findings, "#2563EB")
-        _bullet_section("Risks Identified", risks, "#DC2626")
-        _bullet_section("Opportunities", opportunities, "#059669")
+        _bullet_section("Key Findings", key_findings, accent_hex)
+        _bullet_section("Risks Identified", risks, T["negative"])
+        _bullet_section("Opportunities", opportunities, T["positive"])
 
     # ══════════════════════════════════════════════════════
     # PAGE 2: BUSINESS INSIGHTS
     # ══════════════════════════════════════════════════════
-    story.append(PageBreak())
-    story.append(_section(_insights_heading))
-    story.append(Paragraph(
-        "Each insight follows the format: <b>What → Why it matters → What to do.</b> "
-        "All figures are computed directly from the uploaded dataset.",
-        ST["body"]))
-    story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=6))
+    if insights:
+        story.append(_section(_insights_heading))
+        story.append(Paragraph(
+            "What the data shows, why it matters, and what to check next. Every "
+            "figure is computed from the uploaded dataset.", ST["body"]))
+        story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=6))
 
-    SEV_COLORS = {
-        "critical": ("#DC2626", "#FEF2F2"),
-        "warning":  ("#D97706", "#FFFBEB"),
-        "positive": ("#059669", "#ECFDF5"),
-        "info":     ("#2563EB", "#EFF6FF"),
-    }
-
+    # Severity shows in the label and a narrow rule only. Body and action
+    # text were set in the severity colour on a tinted fill — red on pink
+    # for a whole card — which read as alarm rather than analysis.
+    SEV = {"critical": (T["negative"], "High priority"),
+           "warning":  (T["warning"],  "Watch"),
+           "positive": (T["positive"], "Strength"),
+           "info":     (T["info"],     "Context")}
+    lbl_st  = ParagraphStyle("it", fontName=_BB, fontSize=7.5, leading=10, spaceAfter=2)
+    ttl_st  = ParagraphStyle("itl", fontName=_BB, fontSize=10.5, textColor=dark,
+                             spaceAfter=3, leading=14)
+    body_st = ParagraphStyle("ib", fontName=_BF, fontSize=9.3, textColor=ink,
+                             leading=13.8, spaceAfter=4)
+    act_st  = ParagraphStyle("ia", parent=body_st, spaceAfter=0)
+    from app.engines.pdf_builder import _steps
     for i, ins in enumerate(insights, 1):
-        border_c, bg_c = SEV_COLORS.get(ins["severity"], ("#2563EB", "#EFF6FF"))
-        bg_hex  = HexColor(bg_c)
-        bdr_hex = HexColor(border_c)
-        tag_c   = HexColor(border_c)
+        sev_hex, sev_word = SEV.get(ins["severity"], SEV["info"])
+        tag_p = Paragraph('<font color="{}">{}</font>&nbsp;&nbsp;<font color="{}">{}</font>'.format(
+            sev_hex, sev_word.upper(), T["text_muted"], _clean_text(ins["tag"].title())), lbl_st)
+        title_p = Paragraph("{}. {}".format(i, _clean_text(ins["title"])), ttl_st)
+        body_p = Paragraph(_clean_text(ins["body"].replace("**", "")), body_st)
+        action_p = Paragraph("<b>Next step:</b> {}".format(
+            _steps(str(ins["action"]).replace("**", ""))), act_st)
 
-        tag_p    = Paragraph(ins["tag"],
-            ParagraphStyle("it", fontName=_BB, fontSize=7.5,
-                           textColor=tag_c, spaceAfter=2))
-        title_p  = Paragraph("<b>{}. {}</b>".format(i, ins["title"]),
-            ParagraphStyle("itl", fontName=_BB, fontSize=10.5,
-                           textColor=dark, spaceAfter=3, leading=14))
-        body_p   = Paragraph(ins["body"].replace("**","").replace("*",""),
-            ParagraphStyle("ib", fontName=_BF, fontSize=9.5,
-                           textColor=dark, leading=14.5, spaceAfter=4,
-                           alignment=TA_JUSTIFY))
-        action_p = Paragraph(ins["action"],
-            ParagraphStyle("ia", fontName=_BB, fontSize=9,
-                           textColor=HexColor(border_c), leading=13))
-
-        card = Table([[tag_p],[title_p],[body_p],[action_p]], colWidths=[CW])
+        card = Table([[tag_p], [title_p], [body_p], [action_p]], colWidths=[CW])
         card.setStyle(TableStyle([
-            ("BACKGROUND",    (0,0),(-1,-1), bg_hex),
-            ("LINEBEFORE",    (0,0),(0,-1),  6, bdr_hex),
-            ("TOPPADDING",    (0,0),(-1,-1), 9),
-            ("BOTTOMPADDING", (0,0),(-1,-1), 8),
-            ("LEFTPADDING",   (0,0),(-1,-1), 16),
-            ("RIGHTPADDING",  (0,0),(-1,-1), 12),
-            ("BOX",           (0,0),(-1,-1), 0.5, HexColor("#E5E7EB")),
+            ("LINEBEFORE",    (0, 0), (0, -1), 2.5, HexColor(sev_hex)),
+            ("TOPPADDING",    (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING",    (0, 0), (-1, 0), 7),
+            ("BOTTOMPADDING", (0, -1), (-1, -1), 8),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+            ("BACKGROUND",    (0, 0), (-1, -1), light2),
         ]))
-        story.append(KeepTogether([card, Spacer(1, 5*mm)]))
+        story.append(KeepTogether([card, Spacer(1, 4*mm)]))
 
     # ══════════════════════════════════════════════════════
     # VISUAL ANALYSIS
@@ -532,124 +513,86 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # reads. These are the same charts as the main report, each captioned
     # with what it shows rather than left to speak for itself.
     if _charts:
-        story.append(PageBreak())
         story.append(_section("Visual Analysis"))
-        story.append(Paragraph(
-            "Charts are built from measure columns only; identifiers and "
-            "columns with no variation are excluded, since neither carries "
-            "business meaning.", ST["body"]))
-        story.append(HRFlowable(width="100%", thickness=1.5, color=accent,
+        story.append(Paragraph("Each caption is computed from the figures plotted.",
+                               ST["sm"]))
+        story.append(HRFlowable(width="100%", thickness=0.8, color=accent,
                                  spaceAfter=6))
 
-        for idx, (chart_title, img_bytes) in enumerate(_charts, 1):
-            if not img_bytes:
-                continue
+        from PIL import Image as _PIL
+        for idx, chart in enumerate(_charts, 1):
             try:
-                block = [
-                    Paragraph("{}. {}".format(idx, _clean_text(chart_title)),
-                              ST["h3"]),
-                    Image(_io.BytesIO(img_bytes), width=CW, height=CW * 0.46),
-                    Spacer(1, 6 * mm),
-                ]
-                story.append(KeepTogether(block))
+                w_px, h_px = _PIL.open(_io.BytesIO(chart.png)).size
+                width, height = CW, CW * h_px / w_px
+                if height > 105 * mm:
+                    height, width = 105 * mm, 105 * mm * w_px / h_px
+                img = Image(_io.BytesIO(chart.png), width=width, height=height)
+                img.hAlign = "LEFT"
+                story.append(KeepTogether([
+                    Paragraph("{}. {}".format(idx, _clean_text(chart.title)), ST["h3"]),
+                    img,
+                    Paragraph(_clean_text(chart.caption), ST["body"]),
+                    Spacer(1, 5 * mm),
+                ]))
             except Exception:
                 logger.warning("could not place chart %r in the health report",
-                               chart_title, exc_info=True)
+                               chart.title, exc_info=True)
 
     # ══════════════════════════════════════════════════════
     # PAGE 3: DESCRIPTIVE STATISTICS
     # ══════════════════════════════════════════════════════
-    story.append(PageBreak())
-    story.append(_section("Descriptive Statistics"))
+        story.append(_section("Descriptive Statistics"))
     story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=5))
 
-    if len(num_cols_list) > 0:
-        story.append(Paragraph("Numeric Columns Summary", ST["h2"]))
-        _desc_cols = [c for c in num_cols_list if not is_id_col(c, df[c])] or num_cols_list
-        desc = df[_desc_cols[:8]].describe().round(3)
-        hdr_vals = ["Stat"] + [truncate_label(c, 12) for c in desc.columns]
-        stat_hdr = [Paragraph("<b>{}</b>".format(h),
-                    ParagraphStyle("sh", fontName=_BB, fontSize=7.5,
-                                   textColor=white, alignment=TA_CENTER))
-                    for h in hdr_vals]
-        stat_rows = [stat_hdr]
-        for idx in desc.index:
-            row = [Paragraph("<b>{}</b>".format(idx),
-                             ParagraphStyle("si", fontName=_BB, fontSize=7.5, textColor=dark))]
-            for val in desc.loc[idx]:
-                row.append(Paragraph(str(val),
-                    ParagraphStyle("sv2", fontName=_BF, fontSize=7.5,
-                                   textColor=dark, alignment=TA_CENTER)))
-            stat_rows.append(row)
-
-        n_stat_cols = len(hdr_vals)
-        stat_tbl = Table(stat_rows,
-                         colWidths=[CW*0.1] + [CW*0.9/max(n_stat_cols-1,1)]*(n_stat_cols-1))
+    # One row per measure, figures formatted as a reader writes them. The
+    # old table printed 59333.386, and the histograms under it included
+    # employee_id.
+    _measures = [c for c in num_cols_list if not is_id_col(c, df[c])
+                 and not pd.api.types.is_bool_dtype(df[c])]
+    if _measures:
+        th = ParagraphStyle("dth", fontName=_BB, fontSize=8, textColor=white,
+                            alignment=TA_RIGHT)
+        hdr = [Paragraph("Measure", ParagraphStyle("dth0", parent=th, alignment=TA_LEFT))] + \
+              [Paragraph(h, th) for h in ("Count", "Mean", "Median", "Min", "25th pct",
+                                          "75th pct", "Max")]
+        rows = [hdr]
+        num_r = ParagraphStyle("dtr", fontName=_BF, fontSize=8.2, textColor=ink,
+                               alignment=TA_RIGHT)
+        for c in _measures[:10]:
+            v = pd.to_numeric(df[c], errors="coerce").dropna()
+            if v.empty:
+                continue
+            q = v.quantile([0.25, 0.5, 0.75])
+            rows.append([Paragraph(_clean_text(c), ParagraphStyle(
+                             "dtl", fontName=_BF, fontSize=8.2, textColor=ink))] +
+                        [Paragraph(x, num_r) for x in (
+                            fmt(len(v)), fmt(v.mean()), fmt(q[0.5]), fmt(v.min()),
+                            fmt(q[0.25]), fmt(q[0.75]), fmt(v.max()))])
+        stat_tbl = Table(rows, colWidths=[CW * x for x in
+                                          (0.24, 0.10, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11)],
+                         repeatRows=1)
         stat_tbl.setStyle(TableStyle([
             ("BACKGROUND",    (0,0),(-1,0),  dark),
             ("ROWBACKGROUNDS",(0,1),(-1,-1), [white, light2]),
-            ("ALIGN",         (1,0),(-1,-1), "CENTER"),
-            ("TOPPADDING",    (0,0),(-1,-1), 5),
+            ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+            ("TOPPADDING",    (0,0),(-1,-1), 4),
             ("BOTTOMPADDING", (0,0),(-1,-1), 4),
             ("LEFTPADDING",   (0,0),(-1,-1), 6),
-            ("BOX",           (0,0),(-1,-1), 0.5, HexColor("#E5E7EB")),
-            ("INNERGRID",     (0,0),(-1,-1), 0.3, HexColor("#E5E7EB")),
+            ("RIGHTPADDING",  (0,0),(-1,-1), 6),
+            ("LINEBELOW",     (0,0),(-1,-1), 0.3, border),
         ]))
         story.append(stat_tbl)
         story.append(Spacer(1, 6*mm))
 
-    # ── Distribution mini-charts ──────────────────────────
-    if len(num_cols_list) >= 2:
-        story.append(Paragraph("Distribution Overview", ST["h3"]))
-        story.append(Paragraph(
-            "Histograms below show the data distribution for the top numeric columns. "
-            "Dashed line = mean, dotted = median. Skewed distributions require median for reporting.",
-            ST["note"]))
-        story.append(Spacer(1, 3*mm))
-
-        try:
-            n_charts = min(4, len(num_cols_list))
-            fig, axes = plt.subplots(1, n_charts, figsize=(10, 2.8))
-            if n_charts == 1:
-                axes = [axes]
-            fig.patch.set_facecolor("#ffffff")
-            palette = ["#1565C0","#0D47A1","#1B5E20","#4527A0"]
-            for idx2, (ax2, col) in enumerate(zip(axes, num_cols_list[:n_charts])):
-                s2 = df[col].dropna()
-                s2 = pd.to_numeric(s2, errors="coerce").dropna()
-                if len(s2) == 0:
-                    continue
-                ax2.hist(s2, bins=20, color=palette[idx2 % len(palette)],
-                         alpha=0.8, edgecolor="#d0d8f0", linewidth=0.4)
-                ax2.axvline(s2.mean(), color="#E53935", linestyle="--",
-                            linewidth=1.5, alpha=0.8)
-                ax2.axvline(s2.median(), color="#43A047", linestyle=":",
-                            linewidth=1.5, alpha=0.8)
-                ax2.set_title(col[:14].replace("_"," "), fontsize=8,
-                              fontweight="bold", color="#0A1628", pad=6)
-                ax2.set_facecolor("#f8faff")
-                ax2.spines["top"].set_visible(False)
-                ax2.spines["right"].set_visible(False)
-                ax2.tick_params(labelsize=6, colors="#0F172A")
-            fig.tight_layout(pad=1.2)
-            buf2 = _io.BytesIO()
-            fig.savefig(buf2, format="png", dpi=160, bbox_inches="tight")
-            buf2.seek(0)
-            plt.close(fig)
-            story.append(Image(buf2, width=CW, height=CW*0.3))
-        except Exception:
-            logger.warning("Health Report section failure", exc_info=True)
-
     # ══════════════════════════════════════════════════════
     # PAGE 4: COLUMN QUALITY TABLE
     # ══════════════════════════════════════════════════════
-    story.append(PageBreak())
-    story.append(_section("Column Quality Analysis"))
+        story.append(_section("Column Quality Analysis"))
     story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=5))
     story.append(Paragraph(
-        "Each column is assessed for completeness, uniqueness, data type, "
-        "and potential issues. Columns with <b>Missing > 5%</b> or "
-        "<b>Unique = 1</b> (constant) need attention before analysis.",
+        "Completeness, distinct values and range for each column. Columns more "
+        "than 5% empty, or holding a single value, need attention before "
+        "analysis.",
         ST["body"]))
     story.append(Spacer(1, 4*mm))
 
@@ -672,8 +615,14 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             mn = str(bool(sc.dropna().min())) if len(sc.dropna()) > 0 else "—"
             mx = str(bool(sc.dropna().max())) if len(sc.dropna()) > 0 else "—"
         elif pd.api.types.is_numeric_dtype(sc):
-            mn = "{:.2f}".format(float(sc.dropna().min())) if len(sc.dropna()) > 0 else "—"
-            mx = "{:.2f}".format(float(sc.dropna().max())) if len(sc.dropna()) > 0 else "—"
+            mn = fmt(float(sc.dropna().min())) if len(sc.dropna()) > 0 else "—"
+            mx = fmt(float(sc.dropna().max())) if len(sc.dropna()) > 0 else "—"
+            if len(sc.dropna()) > 0 and not is_id_col(col, sc):
+                sample_val = fmt(float(sc.dropna().iloc[0]))
+        elif pd.api.types.is_datetime64_any_dtype(sc):
+            mn = sc.dropna().min().strftime("%Y-%m-%d") if len(sc.dropna()) > 0 else "—"
+            mx = sc.dropna().max().strftime("%Y-%m-%d") if len(sc.dropna()) > 0 else "—"
+            sample_val = str(sc.dropna().iloc[0])[:10] if len(sc.dropna()) > 0 else "—"
         else:
             mn = "—"
             mx = "—"
@@ -689,23 +638,27 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         elif sc.nunique() == 1:
             status = "CONSTANT"
             st_c   = HexColor("#DC2626")
-        elif sc.nunique() == len(df):
-            status = "ID COLUMN"
+        elif is_id_col(col, sc):
+            # The shared identifier test. "Every value different" also
+            # described hire_date and every continuous measure.
+            status = "IDENTIFIER"
             st_c   = HexColor("#2563EB")
         else:
             status = "OK"
             st_c   = HexColor("#059669")
 
         rows2.append([
-            Paragraph(truncate_label(col, 20), td_st2),
-            Paragraph(str(sc.dtype)[:8], td_c2),
+            # Every cell is data, so every cell is escaped: a value such as
+            # "<b>&amp;" crashed the whole report as unbalanced markup.
+            Paragraph(_clean_text(truncate_label(col, 20)), td_st2),
+            Paragraph(_clean_text(str(sc.dtype)[:8]), td_c2),
             Paragraph(miss, ParagraphStyle("mv", fontName=_BB, fontSize=8,
                            textColor=HexColor("#DC2626") if miss_f > 5 else dark,
                            alignment=TA_CENTER)),
             Paragraph(uniq, td_c2),
-            Paragraph(mn, td_c2),
-            Paragraph(mx, td_c2),
-            Paragraph(sample_val, td_st2),
+            Paragraph(_clean_text(mn), td_c2),
+            Paragraph(_clean_text(mx), td_c2),
+            Paragraph(_clean_text(sample_val), td_st2),
             Paragraph(status, ParagraphStyle("sv3", fontName=_BB, fontSize=7.5,
                                              textColor=st_c, alignment=TA_CENTER)),
         ])
@@ -713,7 +666,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # "Unique" needs 0.09 width minimum — at 0.07 the header wrapped
     # mid-word ("Uniqu / e") in the rendered PDF.
     col_tbl2 = Table([hdr2] + rows2,
-                     colWidths=[CW*x for x in [0.20,0.09,0.09,0.09,0.08,0.08,0.22,0.15]])
+                     colWidths=[CW*x for x in [0.19,0.08,0.08,0.08,0.12,0.12,0.18,0.15]])
     col_tbl2.setStyle(TableStyle([
         ("BACKGROUND",    (0,0),(-1,0),  dark),
         ("ROWBACKGROUNDS",(0,1),(-1,-1), [white, light2]),
@@ -725,108 +678,65 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         ("INNERGRID",     (0,0),(-1,-1), 0.3, HexColor("#E5E7EB")),
     ]))
     story.append(col_tbl2)
+    if len(df.columns) > 25:
+        story.append(Paragraph(
+            "The first 25 of {} columns are listed.".format(len(df.columns)), ST["sm"]))
 
     # ══════════════════════════════════════════════════════
     # PAGE 5: CORRELATION + DISCLAIMER
     # ══════════════════════════════════════════════════════
-    if len(num_cols_list) >= 3:
-        story.append(PageBreak())
+    if len(_corr_cols) >= 2:
         story.append(_section("Correlation Analysis"))
         story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=5))
         story.append(Paragraph(
-            "<b>Important:</b> Correlation measures association, NOT causation. "
-            "r² tells you what % of variance is shared between two variables. "
-            "Strong correlation alone is never sufficient reason to act.",
-            ST["body"]))
-        story.append(Spacer(1, 4*mm))
-
+            "Pairs of measures that move together (Spearman rank correlation). "
+            "Moving together is association; it does not show that one drives "
+            "the other.", ST["body"]))
+        story.append(Spacer(1, 3*mm))
         try:
-            corr_cols = [c for c in num_cols_list
-                         if df[c].nunique() > 2 and not is_id_col(c, df[c])][:8]
+            corr_cols = _corr_cols
             if len(corr_cols) >= 2:
-                corr = df[corr_cols].corr().round(2)
-                n3   = len(corr)
-                sz   = max(5, n3)
-                fig3, ax3 = plt.subplots(figsize=(sz, sz * 0.8))
-                fig3.patch.set_facecolor("#ffffff")
-                ax3.set_facecolor("#f8faff")
-                im3  = ax3.imshow(corr.values, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
-                for ri in range(n3):
-                    for ci in range(n3):
-                        val3 = corr.values[ri, ci]
-                        ax3.text(ci, ri, "{:.2f}".format(val3),
-                                 ha="center", va="center", fontsize=8.5,
-                                 color="white" if abs(val3) > 0.5 else "#0A1628",
-                                 fontweight="bold" if abs(val3) > 0.3 else "normal")
-                ax3.set_xticks(range(n3))
-                ax3.set_yticks(range(n3))
-                labels3 = [truncate_label(c, 12).replace("_"," ") for c in corr.columns]
-                ax3.set_xticklabels(labels3, rotation=40, ha="right", fontsize=8.5, color="#0A1628")
-                ax3.set_yticklabels(labels3, fontsize=8.5, color="#0A1628")
-                ax3.set_title("Correlation Matrix", fontsize=12, fontweight="bold",
-                              color="#0A1628", pad=10)
-                ax3.spines[:].set_edgecolor("#d0d8f0")
-                plt.colorbar(im3, ax=ax3, shrink=0.8)
-                fig3.tight_layout()
-                buf3 = _io.BytesIO()
-                fig3.savefig(buf3, format="png", dpi=160, bbox_inches="tight")
-                buf3.seek(0)
-                plt.close(fig3)
-                story.append(Image(buf3, width=CW, height=CW * 0.75))
-                story.append(Spacer(1, 4*mm))
-
-                # Top correlations table
-                story.append(Paragraph("Top Correlations (|r| > 0.2)", ST["h3"]))
+                corr = df[corr_cols].corr(method="spearman")
                 pairs = []
-                for ri in range(n3):
-                    for ci in range(ri+1, n3):
-                        r_val = corr.values[ri, ci]
+                for ri in range(len(corr_cols)):
+                    for ci in range(ri + 1, len(corr_cols)):
+                        r_val = float(corr.iloc[ri, ci])
                         if abs(r_val) > 0.2:
-                            pairs.append((corr.index[ri], corr.columns[ci], r_val))
+                            pairs.append((corr_cols[ri], corr_cols[ci], r_val))
                 pairs.sort(key=lambda x: abs(x[2]), reverse=True)
-
                 if pairs:
-                    corr_hdr = [Paragraph("<b>{}</b>".format(h), th_st2)
-                                for h in ["Column A", "Column B", "r", "r²", "Strength", "Interpretation"]]
-                    corr_rows = [corr_hdr]
+                    thl = ParagraphStyle("cth", fontName=_BB, fontSize=8, textColor=white)
+                    thr = ParagraphStyle("cthr", parent=thl, alignment=TA_RIGHT)
+                    tdl = ParagraphStyle("ctd", fontName=_BF, fontSize=8.2, textColor=ink)
+                    tdr = ParagraphStyle("ctdr", parent=tdl, alignment=TA_RIGHT)
+                    corr_rows = [[Paragraph("Measure", thl), Paragraph("With", thl),
+                                  Paragraph("r", thr), Paragraph("Variance shared", thr),
+                                  Paragraph("Strength", thl)]]
                     for ca, cb, rv in pairs[:8]:
-                        r2 = rv ** 2
-                        strength = "Strong" if abs(rv) > 0.6 else "Moderate" if abs(rv) > 0.4 else "Weak"
-                        direction = "positive" if rv > 0 else "negative"
-                        interp = "{}% variance shared — {} {}.".format(
-                            round(r2*100, 1), strength.lower(), direction)
+                        strength = ("Strong" if abs(rv) > 0.6 else "Moderate"
+                                    if abs(rv) > 0.4 else "Weak")
                         corr_rows.append([
-                            Paragraph(truncate_label(ca, 16).replace("_"," "), td_st2),
-                            Paragraph(truncate_label(cb, 16).replace("_"," "), td_st2),
-                            Paragraph("<b>{:.3f}</b>".format(rv),
-                                      ParagraphStyle("rv", fontName=_BB, fontSize=8,
-                                      textColor=HexColor("#059669") if rv > 0 else HexColor("#DC2626"),
-                                      alignment=TA_CENTER)),
-                            Paragraph("{:.3f}".format(r2), td_c2),
-                            Paragraph(strength, td_c2),
-                            Paragraph(interp, td_st2),
-                        ])
-                    corr_tbl = Table(corr_rows,
-                                     colWidths=[CW*x for x in [0.18,0.18,0.08,0.08,0.12,0.36]])
+                            Paragraph(_clean_text(ca), tdl), Paragraph(_clean_text(cb), tdl),
+                            Paragraph("{:+.2f}".format(rv), tdr),
+                            Paragraph("{:.0f}%".format(rv * rv * 100), tdr),
+                            Paragraph("{} {}".format(strength, "positive" if rv > 0
+                                                     else "negative"), tdl)])
+                    corr_tbl = Table(corr_rows, colWidths=[CW * x for x in
+                                                          (0.26, 0.26, 0.12, 0.16, 0.20)])
                     corr_tbl.setStyle(TableStyle([
                         ("BACKGROUND",    (0,0),(-1,0),  dark),
                         ("ROWBACKGROUNDS",(0,1),(-1,-1), [white, light2]),
-                        ("TOPPADDING",    (0,0),(-1,-1), 5),
+                        ("TOPPADDING",    (0,0),(-1,-1), 4),
                         ("BOTTOMPADDING", (0,0),(-1,-1), 4),
                         ("LEFTPADDING",   (0,0),(-1,-1), 6),
-                        ("BOX",           (0,0),(-1,-1), 0.5, HexColor("#E5E7EB")),
-                        ("INNERGRID",     (0,0),(-1,-1), 0.3, HexColor("#E5E7EB")),
+                        ("RIGHTPADDING",  (0,0),(-1,-1), 6),
+                        ("LINEBELOW",     (0,0),(-1,-1), 0.3, border),
                     ]))
                     story.append(corr_tbl)
                 else:
-                    # Never leave a promised section blank in a client
-                    # deliverable — an absent finding is itself a finding.
                     story.append(Paragraph(
-                        "No column pairs exceed |r| &gt; 0.2 — the numeric variables "
-                        "in this dataset move independently of each other. This is a "
-                        "meaningful result: no single metric can be used as a proxy "
-                        "for another, and multivariate analysis (segmentation, ML) "
-                        "is required to find drivers.", ST["body"]))
+                        "No pair of measures is correlated beyond |r| = 0.2: each "
+                        "varies independently of the others.", ST["body"]))
         except Exception:
             logger.warning("Health Report section failure", exc_info=True)
 
@@ -836,11 +746,10 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # Closing a client report on what to DO — not on a correlation table —
     # is what separates a deliverable from a data dump.
     if actions:
-        story.append(PageBreak())
         story.append(_section("Recommended Actions"))
         story.append(Paragraph(
-            "Prioritised from the findings above. Sequence reflects urgency "
-            "and expected impact, not effort.", ST["body"]))
+            "Follow-ups the findings support. Each rests on this dataset alone; "
+            "check it against what the data cannot show before acting.", ST["body"]))
         story.append(HRFlowable(width="100%", thickness=1.5, color=accent, spaceAfter=6))
 
         rows = []
@@ -866,19 +775,17 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
         ]))
         story.append(act_tbl)
 
-    # ── Disclaimer ────────────────────────────────────────
-    story.append(Spacer(1, 8*mm))
-    story.append(HRFlowable(width="100%", thickness=1, color=gray, spaceAfter=4))
-    story.append(Paragraph(
-        "<b>BASIS OF PREPARATION</b>  —  Prepared by {} on {}. Source: {}. "
-        "All figures derive solely from the supplied dataset and describe the "
-        "period it covers. Statistical association is reported where present; "
-        "it does not establish causation. Recommendations assume the data is "
-        "complete and accurate as supplied.".format(
-            agency_name, now, fname[:40]),
-        ST["sm"]))
+    # A section heading's subtitle and rule belong with what follows them;
+    # without this "Visual Analysis" and its subtitle sat at the foot of a
+    # page with every chart overleaf.
+    for i, f in enumerate(story):
+        if isinstance(f, Paragraph) and f.style.name == "sec":
+            for g in story[i + 1:i + 3]:
+                if isinstance(g, (Paragraph, HRFlowable)):
+                    g.keepWithNext = 1
 
-    doc.build(story, canvasmaker=_Canvas)
+    from app.engines.pdf_builder import _bind_headings
+    doc.multiBuild(_bind_headings(story), canvasmaker=_Canvas)
     buf.seek(0)
     return buf.read()
 

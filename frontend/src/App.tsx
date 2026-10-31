@@ -9,6 +9,7 @@ import Layout from './components/Layout'
 // PlotlyChart.tsx.)
 const UploadPage = lazy(() => import('./pages/UploadPage'))
 const QualityPage = lazy(() => import('./pages/QualityPage'))
+const ColumnsPage = lazy(() => import('./pages/ColumnsPage'))
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const EdaPage = lazy(() => import('./pages/EdaPage'))
 const InsightsPage = lazy(() => import('./pages/InsightsPage'))
@@ -39,6 +40,7 @@ export default function App() {
           <Routes>
             <Route element={<Layout />}>
               <Route path="/" element={<UploadPage />} />
+              <Route path="/columns" element={<ColumnsPage />} />
               <Route path="/quality" element={<QualityPage />} />
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/eda" element={<EdaPage />} />

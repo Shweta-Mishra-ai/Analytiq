@@ -73,17 +73,13 @@ def _repeat_purchase_insights(df: pd.DataFrame, insights: List, findings: List,
             title="Repeat Purchase Rate: {:.1f}% of Customers".format(repeat_rate),
             problem="{:.1f}% of {:,} customers have placed more than one order.".format(
                 repeat_rate, n_customers),
-            cause="Repeat-purchase behavior reflects product satisfaction, price "
-                  "positioning, and retention/re-engagement efforts — not measured "
-                  "directly here.",
+            cause="The data shows who came back, not why.",
             evidence="{:,} customers analyzed, {:,} ({:.1f}%) repeat buyers, "
                      "{:.1f} orders/customer on average.{}".format(
                          n_customers, repeat_customers, repeat_rate, avg_orders, bm_text),
-            action="1. Segment repeat vs one-time buyers — what differs in their first "
-                   "order?  2. Test a post-purchase re-engagement campaign for one-time "
-                   "buyers  3. Track this rate as a trend over time, not just a snapshot",
-            impact="Repeat customers are typically the cheapest revenue to generate — "
-                   "moving this rate up compounds over time.",
+            action="Compare the first orders of repeat and one-time buyers to see "
+                   "what differs.",
+            impact="",
             severity="warning" if bm and repeat_rate < bm.low * 0.5 else "info",
             category="repeat_purchase"
         ))
@@ -102,33 +98,34 @@ def _repeat_purchase_insights(df: pd.DataFrame, insights: List, findings: List,
 
 
 def _rating_revenue_evidence(df: pd.DataFrame, rating_col, rev_col,
-                             low_thr: float, high_thr: float) -> str:
-    """
-    Measured revenue comparison of low-rated (<low_thr) vs well-rated
-    (>=high_thr) products in THIS catalog. Thresholds are scale-aware (passed
-    in), so the comparison is valid on 1-5, 1-10 or 0-100 rating scales.
-    Replaces invented conversion claims with a checkable number, or says
-    nothing when the dataset can't support the comparison.
+                             low_thr: float, high_thr: float):
+    """(sentence, holds) comparing revenue of low-rated (<low_thr) and
+    well-rated (>=high_thr) products in this catalog.
+
+    ``holds`` is True only when well-rated products earn more and a
+    Mann-Whitney test says the difference is larger than chance. The card
+    used to say "low ratings are associated with lower revenue (see the
+    comparison above)" whether or not any comparison had been made.
     """
     if not rating_col or not rev_col or rev_col not in df.columns:
-        return ""
+        return "", False
     try:
+        from scipy import stats as _sc
         pair = df[[rating_col, rev_col]].apply(pd.to_numeric, errors="coerce").dropna()
         low  = pair[pair[rating_col] < low_thr][rev_col]
         high = pair[pair[rating_col] >= high_thr][rev_col]
         if len(low) < 10 or len(high) < 10:
-            return ""
+            return "", False
         med_low, med_high = float(low.median()), float(high.median())
-        if med_low <= 0 or med_high <= 0:
-            return ""
-        return ("In this catalog, median revenue for top-rated products is "
-                "{:.2g} vs {:.2g} for low-rated ones ({:.1f}× difference, "
-                "n={:,}/{:,}) — an association in this data, not a proven "
-                "cause.".format(med_high, med_low, med_high / med_low,
-                                 len(high), len(low)))
+        p = float(_sc.mannwhitneyu(high, low, alternative="two-sided").pvalue)
+        holds = med_high > med_low and p < 0.05
+        return ("Median '{}' is {:,.0f} for well-rated products against {:,.0f} for "
+                "low-rated ones (n={:,}/{:,}, Mann-Whitney p={:.3f}){}.".format(
+                    rev_col, med_high, med_low, len(high), len(low), p,
+                    "" if holds else "; the difference is within chance"), holds)
     except Exception:
         logger.warning("rating-revenue evidence failed", exc_info=True)
-        return ""
+        return "", False
 
 
 def _category_revenue_share(df: pd.DataFrame, cat_col, rev_col, category) -> str:
@@ -188,69 +185,59 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         weak   = lo + 0.625 * rng  # ≈ 3.5 on 1-5 — emergency mean threshold
         good   = lo + 0.75 * rng   # ≈ 4.0 on 1-5 — "strong" target
         low_n  = int((df[rating_col].dropna() < poor).sum()) if rating_col in df.columns else 0
-        rev_ev = _rating_revenue_evidence(df, rating_col, rev_col, weak, good)
+        rev_ev, rev_holds = _rating_revenue_evidence(df, rating_col, rev_col, weak, good)
         scale  = "{:.2f}/{:.0f}".format(mean_r, hi)
-        pt     = "{:.1f}".format(good)   # target, in scale units
+        n_rated = int(df[rating_col].notna().sum())
+        low_pct = low_n / max(n_rated, 1) * 100
+        evidence = "Mean {:.2f} on a {:.0f}–{:.0f} scale; a quarter of products are rated " \
+                   "below {:.1f}. {}".format(mean_r, lo, hi, q1, rev_ev).strip()
+        impact = ("Well-rated products earn more here, so the low-rated ones are where a "
+                  "fix would show in revenue." if rev_holds else "")
 
         if mean_r < weak:
             insights.append(build_insight(
-                title="Average rating {} — {:,} products below {:.1f}".format(
-                    scale, low_n, poor),
-                problem="Average {} with {:,} products rated below {:.1f} on this "
-                        "{:.0f}-point scale.".format(scale, low_n, poor, hi),
-                cause="Bottom-rated products are pulling the catalogue average down — "
-                      "quality, description, or delivery mismatch worth investigating",
-                evidence=("Mean={:.2f} on a {:.0f}-{:.0f} scale. Planning target: {}+. "
-                          "Bottom 25% rated below {:.1f}. {:,} critically low-rated "
-                          "products. ".format(mean_r, lo, hi, pt, q1, low_n) + rev_ev),
-                action="1. Immediate audit of the lowest-rated products  "
-                       "2. Customer feedback analysis for bottom-rated items  "
-                       "3. Supplier quality review for failing products  "
-                       "4. Remove or improve within 14 days",
-                impact="Low ratings are associated with lower revenue in this catalog "
-                       "(see the comparison above); lifting them is a retention lever "
-                       "to test, not a guaranteed gain.",
-                severity="critical", category="rating"
+                title="Average rating {}; {:,} products below {:.1f}".format(scale, low_n, poor),
+                problem="{:,} of {:,} products ({:.0f}%) are rated below {:.1f} on this "
+                        "{:.0f}-point scale.".format(low_n, n_rated, low_pct, poor, hi),
+                cause="The data holds the scores, not the reasons; the reviews do.",
+                evidence=evidence,
+                action="Read the reviews of the lowest-rated products for a common "
+                       "complaint, and check whether one supplier or category recurs.",
+                impact=impact,
+                severity="critical" if (mean_r < poor or rev_holds) else "warning",
+                category="rating"
             ))
-            risks.append("Rating {} — {:,} products below {:.1f}; low-rated items show "
-                         "lower median revenue in this catalog".format(scale, low_n, poor))
+            risks.append("{:,} products ({:.0f}%) are rated below {:.1f}.".format(
+                low_n, low_pct, poor))
         elif mean_r < good:
             insights.append(build_insight(
-                title="Rating Below Target: {} (Target {}+)".format(scale, pt),
-                problem="{} average. Bottom 25% rated below {:.1f}. {:,} products below "
-                        "{:.1f}.".format(scale, q1, low_n, poor),
-                cause="Bottom-quartile products dragging overall performance",
-                evidence=("Mean={:.2f} on a {:.0f}-{:.0f} scale. 25th percentile={:.1f}. "
-                          "Target: {}+. ".format(mean_r, lo, hi, q1, pt) + rev_ev),
-                action="1. Fix or remove bottom-quartile products  "
-                       "2. Improve product descriptions and images  "
-                       "3. Category-level quality audit",
-                impact="Lifting the bottom quartile toward the catalog median raises the "
-                       "average rating shoppers see at first glance.",
-                severity="warning", category="rating"
+                title="Average rating {}".format(scale),
+                problem="{:,} of {:,} products ({:.0f}%) are rated below {:.1f}.".format(
+                    low_n, n_rated, low_pct, poor),
+                cause="",
+                evidence=evidence,
+                action="Read the reviews of the lowest-rated products for a common complaint.",
+                impact=impact,
+                severity="warning" if rev_holds else "info", category="rating"
             ))
         else:
             insights.append(build_insight(
-                title="Strong Ratings: {} — Competitive Advantage".format(scale),
-                problem="N/A — ratings are strong",
-                cause="Quality products meeting customer expectations",
-                evidence="Mean={:.2f} on a {:.0f}-{:.0f} scale. Above the {}+ planning "
-                         "target. Only {:,} products below {:.1f}.".format(
-                             mean_r, lo, hi, pt, low_n, poor),
-                action="Leverage high ratings in all marketing. "
-                       "Use as social proof in product listings.",
-                impact="Strong ratings support premium-pricing experiments — A/B test "
-                       "small increases on top-rated items and measure conversion.",
+                title="Average rating {}".format(scale),
+                problem="Only {:,} of {:,} products are rated below {:.1f}.".format(
+                    low_n, n_rated, poor),
+                cause="",
+                evidence=evidence,
+                action="Keep tracking the share of products below {:.1f} so a fall shows "
+                       "early.".format(poor),
+                impact="",
                 severity="positive", category="rating"
             ))
-            opps.append("Rating {} is strong — test a 5-10% price increase on top-rated "
-                        "items and measure conversion".format(scale))
 
         if out_ct > 0:
             pct = st.get("outlier_pct",0)
             findings.append(
-                "{:,} products have outlier ratings ({:.1f}% of catalog) — "
-                "investigate immediately for quality or fraud issues".format(out_ct, pct))
+                "{:,} products ({:.1f}%) have ratings far from the rest of the "
+                "catalogue.".format(out_ct, pct))
 
     # ── Category Performance (significance-tested, scale-aware) ──────
     if cat_col and rating_col and rating_col in df.columns and rating_col in stats:
@@ -315,13 +302,9 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         skew = st.get("skew",0)
         if skew > 1.5:
             findings.append(
-                "Price distribution right-skewed (skew={:.1f}) — median {:.0f} vs mean {:.0f}. "
-                "Most products are budget-range with few premium items. "
-                "Consider expanding mid-market range.".format(
+                "Prices are right-skewed (skewness {:.1f}): median {:,.2f}, mean {:,.2f}; "
+                "a few high-priced products pull the average up.".format(
                     skew, st["median"], st["mean"]))
-            opps.append("Mid-market price gap detected — products between median ({:.0f}) "
-                        "and 75th percentile ({:.0f}) are underrepresented".format(
-                            st["median"], st["q3"]))
 
     # ── Discount Analysis ──────────────────────────────────
     if disc_col and disc_col in stats:
@@ -330,19 +313,17 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         max_disc = st.get("max",0)
         if avg_disc > 40:
             insights.append(build_insight(
-                title="High Avg Discount {:.0f}% — Potential Margin Erosion".format(avg_disc),
-                problem="Average discount {:.0f}% with some products at {:.0f}% — profitability at risk".format(
-                    avg_disc, max_disc),
+                title="Average discount is {:.0f}%".format(avg_disc),
+                problem="Products are discounted by {:.0f}% on average and up to "
+                        "{:.0f}%.".format(avg_disc, max_disc),
                 cause="Possible drivers to check: competitive pressure, or broad "
                       "discounting applied without per-product margin analysis.",
                 evidence="Mean discount={:.0f}%, max={:.0f}%. "
                          "Reference band: 15–25% (indicative planning range — validate "
                          "against your category economics).".format(avg_disc, max_disc),
-                action="1. Margin analysis per category — identify below-cost discounts  "
-                       "2. Reduce discounts on 4.0+ rated products (they sell without discounts)  "
-                       "3. Strategic discounting only: new launch, clearance, seasonal",
-                impact="Every 10% unnecessary discount = direct margin loss. "
-                       "High discounts also train customers to wait for sales.",
+                action="Compare discount with margin product by product to find any "
+                       "sold below cost.",
+                impact="",
                 severity="warning" if avg_disc<55 else "critical",
                 category="pricing"
             ))
@@ -355,41 +336,34 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         has_price  = any("price" in c.lower() for c in cols)
         if has_rating and has_price and abs(corr["r"])>=0.3:
             if corr["r"] < 0:
-                risks.append(
-                    "Higher-priced products tend to have LOWER ratings (r={:.2f}, "
-                    "association not causation) — worth checking whether premium pricing "
-                    "matches perceived value.".format(corr["r"]))
+                findings.append(
+                    "Higher-priced products tend to have lower ratings (r={:.2f}); an "
+                    "association, not a cause.".format(corr["r"]))
             else:
-                opps.append(
-                    "Higher-priced products tend to have HIGHER ratings (r={:.2f}, "
-                    "association not causation) — a premium-pricing test on top-rated "
-                    "items is worth trying, measuring conversion.".format(corr["r"]))
-
-    # FIX-011: Column-gated actions — only recommend for columns that exist in dataset
-    # Never generate recommendations for columns that are not present
-    _ec_cols = [c.lower() for c in df.columns]
-
-    if rating_col:
-        actions.append("Weekly rating monitoring — alert when any product's rating "
-                       "falls into the bottom quartile of your catalogue")
-        actions.append("Review products that are both low-rated and thinly reviewed "
-                       "(<50 reviews) — small samples move averages and are worth "
-                       "fixing or de-listing first")
-        if price_col:
-            actions.append("A/B test a small price increase on your highest-rated "
-                           "products and measure the effect on conversion before rolling out")
-    if rev_col or any(k in _ec_cols for k in ["amount","sales","revenue"]):
-        actions.append("Customer feedback loop — auto-survey buyers 7 days post-delivery to track satisfaction vs revenue")
-    if cat_col:
-        actions.append("Category manager review — monthly revenue and rating performance vs category target")
-    else:
-        actions.append("Segment your data by product type or channel — subgroup performance often tells a different story than averages")
+                findings.append(
+                    "Higher-priced products tend to have higher ratings (r={:.2f}); an "
+                    "association, not a cause.".format(corr["r"]))
 
     # ── Repeat Purchase Rate (derived from customer identifier) ─
     _repeat_purchase_insights(df, insights, findings, risks, opps)
 
     # ── Customer-level analysis: cohorts, RFM, concentration ───
     run_customer_analytics(df, insights, findings, risks, opps)
+
+    # Actions follow from what was found; the fixed list (weekly rating
+    # alerts, a price-increase A/B test, post-delivery surveys) was printed
+    # for every catalogue.
+    cats = {getattr(i, "category", "") for i in insights}
+    if any(getattr(i, "category", "") == "rating" and i.severity in ("critical", "warning")
+           for i in insights):
+        actions.append("Read the reviews of the lowest-rated products for a common complaint.")
+    if "category_performance" in cats:
+        actions.append("Compare the lowest-rated category with the highest on supplier "
+                       "and product mix.")
+    if "pricing" in cats:
+        actions.append("Check discounts against margin product by product.")
+    if "repeat_purchase" in cats:
+        actions.append("Compare the first orders of repeat and one-time buyers.")
 
     return {"findings":findings, "risks":risks, "opportunities":opps,
             "actions":actions, "insights":insights}

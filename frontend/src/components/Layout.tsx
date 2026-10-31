@@ -1,8 +1,11 @@
-import { useEffect } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
+  Menu,
+  X,
   Upload,
   ShieldCheck,
+  Columns3,
   LayoutDashboard,
   FlaskConical,
   FlaskRound,
@@ -22,13 +25,15 @@ import {
 import { useApp } from '../store/app'
 import { ApiError, apiGet, getToken, setToken } from '../api/client'
 
-// Grouped so the sidebar stays readable as the analysis surface grows —
-// a flat list of 15 links makes it hard to find anything.
+// Grouped by the order work is done in: load and check the data, explore
+// it, analyse and model it, then deliver. "Advanced" mixed statistical
+// tests, segmentation and machine learning under one vague label.
 const navGroups = [
   {
     label: 'Data',
     items: [
       { to: '/', label: 'Upload', icon: Upload },
+      { to: '/columns', label: 'Columns', icon: Columns3 },
       { to: '/quality', label: 'Data Quality', icon: ShieldCheck },
     ],
   },
@@ -36,31 +41,50 @@ const navGroups = [
     label: 'Explore',
     items: [
       { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { to: '/eda', label: 'Deep EDA', icon: FlaskConical },
       { to: '/insights', label: 'Insights', icon: Lightbulb },
       { to: '/bi', label: 'Business Intel', icon: Briefcase },
+      { to: '/eda', label: 'Deep EDA', icon: FlaskConical },
     ],
   },
   {
-    label: 'Advanced',
+    label: 'Analyse',
     items: [
       { to: '/deep-analysis', label: 'Deep Analysis', icon: Gauge },
       { to: '/segments', label: 'Customer Segments', icon: Users },
+      { to: '/compare', label: 'Compare', icon: GitCompare },
+    ],
+  },
+  {
+    label: 'Test & predict',
+    items: [
+      { to: '/ml', label: 'ML Predictions', icon: Brain },
       { to: '/ab-test', label: 'A/B Test', icon: FlaskRound },
       { to: '/survival', label: 'Survival', icon: Activity },
-      { to: '/compare', label: 'Compare', icon: GitCompare },
-      { to: '/ml', label: 'ML Predictions', icon: Brain },
     ],
   },
   {
     label: 'Deliver',
     items: [
+      { to: '/reports', label: 'Reports', icon: FileText },
       { to: '/chat', label: 'AI Chat', icon: MessageSquare },
       { to: '/rag', label: 'RAG Studio', icon: Layers },
-      { to: '/reports', label: 'Reports', icon: FileText },
     ],
   },
 ]
+
+function Brand() {
+  return (
+    <div className="flex items-center gap-2.5">
+      <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-accent/25 bg-accent/12">
+        <Database className="h-4 w-4 text-accent" />
+      </div>
+      <div className="min-w-0">
+        <div className="text-sm font-bold tracking-tight text-ink">Analytiq</div>
+        <div className="text-[10px] tracking-wide text-faint">Data Analysis Workbench</div>
+      </div>
+    </div>
+  )
+}
 
 export default function Layout() {
   const dataset = useApp((s) => s.dataset)
@@ -78,21 +102,46 @@ export default function Layout() {
     })
   }, [datasetId, setDataset])
 
+  // On a phone the sidebar is a drawer; it closes whenever the page changes.
+  const [open, setOpen] = useState(false)
+  const location = useLocation()
+  useEffect(() => setOpen(false), [location.pathname])
+
   return (
-    <div className="flex h-full">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-edge bg-panel">
-        <div className="flex items-center gap-2.5 px-5 py-5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-accent/25 bg-accent/12">
-            <Database className="h-4 w-4 text-accent" />
-          </div>
-          <div className="min-w-0">
-            <div className="text-sm font-bold tracking-tight text-ink">
-              Analytiq
-            </div>
-            <div className="text-[10px] tracking-wide text-faint">
-              Data Analysis Workbench
-            </div>
-          </div>
+    <div className="flex h-full flex-col md:flex-row">
+      {/* Phone top bar. The fixed 240px sidebar left a 150px strip for
+          the page on a 390px screen. */}
+      <header className="flex items-center justify-between border-b border-edge bg-panel px-4 py-3 md:hidden">
+        <Brand />
+        <button
+          onClick={() => setOpen(true)}
+          className="rounded-lg border border-edge p-2 text-ink2"
+          aria-label="Open navigation"
+        >
+          <Menu className="h-4 w-4" />
+        </button>
+      </header>
+      {open && (
+        <div
+          className="fixed inset-0 z-40 bg-black/60 md:hidden"
+          onClick={() => setOpen(false)}
+          aria-hidden
+        />
+      )}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 flex w-64 shrink-0 flex-col border-r border-edge bg-panel transition-transform duration-200 md:static md:w-60 md:translate-x-0 ${
+          open ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        <div className="flex items-center justify-between px-5 py-5">
+          <Brand />
+          <button
+            onClick={() => setOpen(false)}
+            className="rounded p-1 text-faint hover:text-ink md:hidden"
+            aria-label="Close navigation"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
         <nav className="flex-1 overflow-y-auto px-3 pb-2">
           {navGroups.map((group) => (
@@ -137,12 +186,17 @@ export default function Layout() {
             <>
               <div className="flex items-center gap-1.5">
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-teal" />
-                <span className="truncate text-[12px] font-medium text-ink2">
+                <span className="truncate text-[12px] font-medium text-ink2" title={dataset.filename}>
                   {dataset.filename}
                 </span>
               </div>
-              <div className="mt-0.5 pl-3 font-data text-[11px] text-faint">
-                {dataset.rows.toLocaleString()} × {dataset.cols}
+              <div className="mt-0.5 flex items-center justify-between pl-3">
+                <span className="font-data text-[11px] text-faint">
+                  {dataset.rows.toLocaleString()} × {dataset.cols}
+                </span>
+                <Link to="/" className="text-[11px] font-medium text-accent hover:underline">
+                  Change
+                </Link>
               </div>
             </>
           ) : (

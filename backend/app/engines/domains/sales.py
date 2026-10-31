@@ -95,6 +95,11 @@ def _sales_cycle_insights(df: pd.DataFrame, insights: List, findings: List,
         logger.warning("sales cycle length analysis failed", exc_info=True)
 
 
+def _fmt_money(x: float) -> str:
+    from app.engines.chart_exporter import fmt
+    return fmt(float(x))
+
+
 def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     findings, risks, opps, actions = [], [], [], []
     insights = []
@@ -139,29 +144,24 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         revenue_concentrated = concentrated
 
         insights.append(build_insight(
-            title="Revenue Overview: Mean {:.0f} | Median {:.0f} | Range {:.0f}-{:.0f}".format(
-                mean, med, st["min"], st["max"]),
-            problem="Revenue distribution" + (
-                " — concentrated in the largest transactions" if concentrated else
-                " — skewed, but not concentrated" if skew > 1 else ""),
+            title="Revenue per transaction: median {}, mean {}".format(
+                _fmt_money(med), _fmt_money(mean)),
+            problem=("Half of all transactions are below {}; the mean, {}, is pulled "
+                     "up by the largest. ".format(_fmt_money(med), _fmt_money(mean))
+                     if skew > 1 else
+                     "Mean and median are close, so transaction sizes are fairly even. ")
+                    + ("Revenue is concentrated in the largest transactions."
+                       if concentrated else
+                       "Revenue is not concentrated in a few of them."),
             cause="The top 20% of transactions bring {:.0f}% of revenue{}.".format(
-                top_share,
-                " — a minority of large transactions carries most of it" if concentrated
-                else "; large transactions lift the mean above the median, but revenue "
-                     "is spread across many of them"),
-            evidence="Mean={:.0f}, Median={:.0f} ({:.0f}% difference). Skewness={:.1f}. "
-                     "Top 25% of transactions above {:.0f}.".format(
-                mean, med, abs(mean-med)/max(med,1)*100, skew, st["q3"]),
-            action=("1. Find which customers or products the largest transactions belong to  "
-                    "2. Check how exposed revenue is if they stop  "
-                    "3. Report the median beside the mean" if concentrated else
-                    "Report the median ({:,.0f}) beside the mean — the mean is pulled up by "
-                    "large transactions.".format(med)),
+                top_share, ", most of it" if concentrated else ""),
+            evidence="Skewness {:.1f}; a quarter of transactions are above {}.".format(
+                skew, _fmt_money(st["q3"])),
+            action=("Find which customers or products the largest transactions belong "
+                    "to, and how exposed revenue is if they stop." if concentrated else
+                    "Report the median ({}) beside the mean.".format(_fmt_money(med))),
             impact=("Losing a handful of large transactions would move total revenue "
-                    "materially — quantify that exposure before planning on it."
-                    if concentrated else
-                    "No single-deal concentration risk: revenue is spread across many "
-                    "transactions."),
+                    "materially." if concentrated else ""),
             severity="warning" if concentrated else "info",
             category="revenue"
         ))
@@ -308,15 +308,16 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
 
         if neg_n > 0:
             insights.append(build_insight(
-                title="{:,} Loss-Making Transactions ({:.0f}%) — Immediate Review".format(neg_n, neg_pct),
+                title="{:,} loss-making transactions ({:.0f}%)".format(neg_n, neg_pct),
                 problem="{:,} transactions ({:.0f}%) generating negative profit/margin".format(neg_n, neg_pct),
-                cause="Below-cost pricing, excessive discounts, high returns, or incorrect cost allocation",
+                cause="Not identifiable from this data. Common causes are below-cost "
+                      "pricing, discounts, returns or how costs are allocated.",
                 evidence="{:,} negative profit transactions. Mean margin={:.2f}. "
                          "Loss transactions erode overall profitability.".format(neg_n, mean_profit),
-                action="1. Identify all loss-making transactions this week  "
-                       "2. Root cause: pricing error, returns, or discounts?  "
-                       "3. Reprice or discontinue unprofitable products",
-                impact="Eliminating {:.0f}% loss transactions = direct profitability improvement".format(neg_pct),
+                action="1. List the loss-making transactions and look for what they share  "
+                       "2. Check pricing, discounts and returns for those lines",
+                impact="Losses on {:.0f}% of transactions reduce overall margin by the "
+                       "amount they lose.".format(neg_pct),
                 severity="critical" if neg_pct>10 else "warning",
                 category="profitability"
             ))

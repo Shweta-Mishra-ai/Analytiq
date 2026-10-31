@@ -1,24 +1,21 @@
 """
-core/pdf_builder.py — Analytiq
-Senior Analyst Edition v4 — DROP-IN REPLACEMENT
+engines/pdf_builder.py — the main client report.
 
-UPGRADED from basic to:
-  ✅ Premium dark-navy cover with domain badge + KPI strip
-  ✅ Running header / footer on every page
-  ✅ Insight cards: Problem → Cause → Evidence → Action → Impact
-  ✅ SHRM/Gallup/Mercer industry benchmarks (HR domain)
-  ✅ Correlation warning box (r ≠ causation)
-  ✅ Scenario modelling table
-  ✅ Risk register with severity colouring
-  ✅ Deduplication transparency note
-  ✅ All chart analyses properly domain-aware
+    build_pdf(df, config, profile, cleaning_summary, stats_report,
+              bi_report, ml_report, chart_data, executive_summary,
+              findings, risks, opportunities, recommendations,
+              top_insights, attrition, domain) -> bytes
 
-SAME public API — zero changes needed in 8_Reports.py:
-  build_pdf(df, config, profile, cleaning_summary,
-            stats_report, bi_report, ml_report,
-            chart_data, executive_summary,
-            findings, risks, opportunities, recommendations,
-            top_insights, attrition, domain) → bytes
+Layout rules, because each was broken before:
+- Sections flow on from one another and start a new page only when too
+  little room is left; a heading always travels with what follows it. A
+  page break after every section left most pages two-thirds empty, and a
+  findings heading alone on its own page.
+- The contents page lists real page numbers.
+- One palette per report (engines/report_theme), shared with its charts;
+  status colours are used for status only.
+- Charts keep their own proportions and carry the caption computed from
+  their data.
 """
 
 import logging
@@ -37,8 +34,9 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import (
     BaseDocTemplate, Frame, PageTemplate,
     Paragraph, Spacer, Table, TableStyle,
-    Image, HRFlowable, PageBreak, KeepTogether,
+    Image, HRFlowable, PageBreak, KeepTogether, CondPageBreak,
 )
+from reportlab.platypus.tableofcontents import TableOfContents
 from reportlab.pdfgen import canvas as CV
 from app.engines.report_blueprints import blueprint_for
 from app.services.dtypes import is_text_dtype, text_columns
@@ -50,91 +48,8 @@ W, H = A4
 CW_DEFAULT = W - 36 * mm   # content width (18mm each side)
 
 
-# ══════════════════════════════════════════════════════════
-#  DOMAIN COLOUR THEMES  (matches your existing THEMES keys)
-# ══════════════════════════════════════════════════════════
-
-THEMES = {
-    "Corporate Light": {
-        "cover_bg":    "#0A1628", "cover_accent": "#1B4FD8",
-        "header_bg":   "#0A1628", "header_text":  "#FFFFFF",
-        "accent":      "#1B4FD8", "accent2":      "#60A5FA",
-        "text":        "#1F2937", "text_muted":   "#6B7280",
-        "bg_light":    "#EFF6FF", "bg_card":      "#F8FAFF",
-        "border":      "#E5E7EB",
-        "positive":    "#10B981", "negative":     "#EF4444",
-        "warning":     "#F59E0B", "info":         "#3B82F6",
-        "critical_bg": "#FEE2E2", "warning_bg":   "#FEF3C7",
-        "positive_bg": "#D1FAE5", "info_bg":      "#DBEAFE",
-        "domain_label":"BUSINESS ANALYTICS",
-        "domain_badge":"#1B4FD8",
-    },
-    "HR Blue": {
-        "cover_bg":    "#0A1F4E", "cover_accent": "#1976D2",
-        "header_bg":   "#0A1F4E", "header_text":  "#FFFFFF",
-        "accent":      "#1976D2", "accent2":      "#90CAF9",
-        "text":        "#1A2035", "text_muted":   "#5A6482",
-        "bg_light":    "#E8F0FE", "bg_card":      "#F5F8FF",
-        "border":      "#C5D3F0",
-        "positive":    "#2E7D32", "negative":     "#C62828",
-        "warning":     "#E65100", "info":         "#1565C0",
-        "critical_bg": "#FFEBEE", "warning_bg":   "#FFF3E0",
-        "positive_bg": "#E8F5E9", "info_bg":      "#E3F2FD",
-        "domain_label":"HR & PEOPLE ANALYTICS",
-        "domain_badge":"#1976D2",
-    },
-    "Ecommerce Orange": {
-        "cover_bg":    "#3E1500", "cover_accent": "#F4511E",
-        "header_bg":   "#BF360C", "header_text":  "#FFFFFF",
-        "accent":      "#F4511E", "accent2":      "#FFAB91",
-        "text":        "#1A1A1A", "text_muted":   "#5A5A5A",
-        "bg_light":    "#FBE9E7", "bg_card":      "#FFF8F6",
-        "border":      "#FFCCBC",
-        "positive":    "#2E7D32", "negative":     "#B71C1C",
-        "warning":     "#E65100", "info":         "#1565C0",
-        "critical_bg": "#FFEBEE", "warning_bg":   "#FFF3E0",
-        "positive_bg": "#E8F5E9", "info_bg":      "#E8F0FE",
-        "domain_label":"E-COMMERCE ANALYTICS",
-        "domain_badge":"#F4511E",
-    },
-    "Sales Green": {
-        "cover_bg":    "#0A2710", "cover_accent": "#2E7D32",
-        "header_bg":   "#1B5E20", "header_text":  "#FFFFFF",
-        "accent":      "#2E7D32", "accent2":      "#A5D6A7",
-        "text":        "#1A2A1A", "text_muted":   "#4A6A4A",
-        "bg_light":    "#E8F5E9", "bg_card":      "#F5FBF5",
-        "border":      "#C8E6C9",
-        "positive":    "#1B5E20", "negative":     "#B71C1C",
-        "warning":     "#E65100", "info":         "#1565C0",
-        "critical_bg": "#FFEBEE", "warning_bg":   "#FFF3E0",
-        "positive_bg": "#E8F5E9", "info_bg":      "#E8F0FE",
-        "domain_label":"SALES PERFORMANCE ANALYTICS",
-        "domain_badge":"#2E7D32",
-    },
-    "Dark Tech": {
-        "cover_bg":    "#0D1117", "cover_accent": "#58A6FF",
-        "header_bg":   "#0D1117", "header_text":  "#E6EDF3",
-        "accent":      "#58A6FF", "accent2":      "#3FB950",
-        "text":        "#E6EDF3", "text_muted":   "#8B949E",
-        "bg_light":    "#161B22", "bg_card":      "#1C2128",
-        "border":      "#30363D",
-        "positive":    "#3FB950", "negative":     "#F85149",
-        "warning":     "#D29922", "info":         "#58A6FF",
-        "critical_bg": "#1C1010", "warning_bg":   "#1C1800",
-        "positive_bg": "#0D1A0F", "info_bg":      "#0D1421",
-        "domain_label":"TECHNICAL ANALYTICS",
-        "domain_badge":"#58A6FF",
-    },
-}
-
-# Auto-select theme by domain
-DOMAIN_THEMES = {
-    "hr":        "HR Blue",
-    "ecommerce": "Ecommerce Orange",
-    "sales":     "Sales Green",
-    "finance":   "Corporate Light",
-    "general":   "Corporate Light",
-}
+# Colours are shared with the charts so a report reads as one document.
+from app.engines.report_theme import DOMAIN_THEMES, THEMES  # noqa: E402,F401
 
 # SHRM/Gallup/Mercer benchmarks for HR domain
 HR_BENCHMARKS = [
@@ -164,14 +79,23 @@ def _styles(T: dict) -> dict:
 
     return {
         "h1":    ps("h1",   fontName=FONT_BOLD, fontSize=17,
-                    textColor=_c(T["accent"]),     spaceAfter=4),
-        "h2":    ps("h2",   fontName=FONT_BOLD, fontSize=13,
-                    textColor=_c(T["text"]),       spaceBefore=8, spaceAfter=3),
-        "h3":    ps("h3",   fontName=FONT_BOLD, fontSize=10,
-                    textColor=_c(T["accent"]),     spaceBefore=6, spaceAfter=3),
-        "body":  ps("body", fontName=FONT_REG,      fontSize=9,
-                    textColor=_c(T["text"]),       leading=14,  spaceAfter=3,
-                    alignment=TA_JUSTIFY),
+                    textColor=_c(T["primary"]),    spaceAfter=4),
+        # Headings travel with what follows them, so none is left at the
+        # foot of a page with its content overleaf.
+        "h2":    ps("h2",   fontName=FONT_BOLD, fontSize=15, leading=19,
+                    textColor=_c(T["primary"]),    spaceBefore=4, spaceAfter=2,
+                    keepWithNext=1),
+        "h3":    ps("h3",   fontName=FONT_BOLD, fontSize=10.5, leading=14,
+                    textColor=_c(T["primary"]),    spaceBefore=8, spaceAfter=3,
+                    keepWithNext=1),
+        "sub":   ps("sub",  fontName=FONT_REG,      fontSize=8.5, leading=12,
+                    textColor=_c(T["text_muted"]), spaceAfter=2, keepWithNext=1),
+        "body":  ps("body", fontName=FONT_REG,      fontSize=9.5,
+                    textColor=_c(T["text"]),       leading=14,  spaceAfter=4,
+                    alignment=TA_LEFT),
+        "caption": ps("caption", fontName=FONT_REG, fontSize=8.8,
+                    textColor=_c(T["text"]),       leading=13, spaceBefore=2,
+                    spaceAfter=2),
         "sm":    ps("sm",   fontName=FONT_REG,      fontSize=7.5,
                     textColor=_c(T["text_muted"]), leading=11,  spaceAfter=2),
         "bl":    ps("bl",   fontName=FONT_REG,      fontSize=9,
@@ -224,42 +148,24 @@ class _ReportCanvas(CV.Canvas):
         super().save()
 
     def _draw(self, tot):
+        # A thin rule and small type: the old full-width coloured bars on
+        # every page outweighed the content between them.
         T = self.T
-        # ── Header ────────────────────────────────────────
-        self.setFillColor(_c(T["header_bg"]))
-        self.rect(0, H - 24*mm, W, 24*mm, fill=1, stroke=0)
-        self.setFillColor(_c(T["accent"]))
-        self.rect(0, H - 25.5*mm, W, 1.5*mm, fill=1, stroke=0)
-        self.setFillColor(HexColor("#FFFFFF"))
-        self.setFont(FONT_BOLD, 10)
-        self.drawString(18*mm, H - 14*mm, "Analytiq")
+        self.setStrokeColor(_c(T["border"]))
+        self.setLineWidth(0.6)
+        self.line(18*mm, H - 16*mm, W - 18*mm, H - 16*mm)
+        self.setFont(FONT_BOLD, 8)
+        self.setFillColor(_c(T["primary"]))
+        self.drawString(18*mm, H - 13*mm, self.report_title)
         self.setFont(FONT_REG, 7.5)
-        self.setFillColor(HexColor(T["accent2"]))
-        self.drawString(18*mm, H - 20*mm, self.report_title)
-        self.setFillColor(HexColor("#FFFFFF"))
-        self.setFont(FONT_REG, 7)
-        self.drawRightString(W - 18*mm, H - 14*mm, self.report_date)
-        self.drawRightString(W - 18*mm, H - 20*mm,
-                             "CONFIDENTIAL — " + self.client_name)
-        # ── Footer ────────────────────────────────────────
-        self.setFillColor(_c(T["header_bg"]))
-        self.rect(0, 0, W, 12*mm, fill=1, stroke=0)
-        self.setFillColor(_c(T["accent"]))
-        self.rect(0, 12*mm, W, 1.2*mm, fill=1, stroke=0)
-        self.setFillColor(HexColor("#FFFFFF"))
-        self.setFont(FONT_REG, 6.5)
-        # The footer previously named a fixed set of HR benchmark bodies
-        # (SHRM · Gallup · Mercer · Deloitte) on EVERY page of EVERY report,
-        # so a finance or e-commerce deliverable cited HR attrition sources
-        # 15 times over. Sources belong in the appendix, keyed to the
-        # detected domain; the footer carries the client and confidentiality
-        # marking, which is what a footer is for.
-        self.drawString(18*mm, 4.5*mm,
-            "{} · Confidential · Prepared for {}".format(
-                getattr(self, "agency_name", "Analytiq"),
-                self.client_name))
-        self.drawRightString(W - 18*mm, 4.5*mm,
-            "Page {} of {}".format(self._pageNumber, tot))
+        self.setFillColor(_c(T["text_muted"]))
+        self.drawRightString(W - 18*mm, H - 13*mm,
+                             "{} · {}".format(self.client_name, self.report_date))
+        self.line(18*mm, 13*mm, W - 18*mm, 13*mm)
+        self.drawString(18*mm, 9*mm, "Confidential · Prepared for {}".format(
+            self.client_name))
+        self.drawRightString(W - 18*mm, 9*mm,
+                             "Page {} of {}".format(self._pageNumber, tot))
 
 
 # ══════════════════════════════════════════════════════════
@@ -267,130 +173,101 @@ class _ReportCanvas(CV.Canvas):
 # ══════════════════════════════════════════════════════════
 
 def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
+    """A white cover with one band of the report's colour: the title, who
+    it is for, and a few facts about the data. The decorative circles,
+    stripes and multi-coloured tiles it replaced competed with the title."""
     buf = io.BytesIO()
     cv  = CV.Canvas(buf, pagesize=A4)
     title       = config.get("title", "Data Analysis Report")
     client_name = config.get("client_name", "Client")
     report_date = datetime.now().strftime("%B %d, %Y")
     domain_lbl  = T.get("domain_label", "BUSINESS ANALYTICS")
+    x0 = 30*mm
 
-    # BG
-    cv.setFillColor(_c(T["cover_bg"]))
-    cv.rect(0, 0, W, H, fill=1, stroke=0)
-    # Top stripe
-    cv.setFillColor(_c(T["cover_accent"]))
-    cv.rect(0, H - 5*mm, W, 5*mm, fill=1, stroke=0)
-    # Right panel
-    cv.setFillColor(HexColor("#0D1F3C"))
-    cv.rect(W - 17*mm, 0, 17*mm, H, fill=1, stroke=0)
-    cv.setFillColor(_c(T["cover_accent"]))
-    cv.rect(W - 17*mm, 0, 1.8*mm, H, fill=1, stroke=0)
-    # Decorative circles
-    cv.setFillColor(HexColor("#112240"))
-    cv.circle(W * 0.73, H * 0.53, 190, fill=1, stroke=0)
-    cv.setFillColor(HexColor("#0D1A35"))
-    cv.circle(W * 0.73, H * 0.53, 135, fill=1, stroke=0)
+    cv.setFillColor(_c(T["primary"]))
+    cv.rect(0, 0, 14*mm, H, fill=1, stroke=0)
+    cv.setFillColor(_c(T["accent"]))
+    cv.rect(14*mm, 0, 1.2*mm, H, fill=1, stroke=0)
 
-    # Brand
-    cv.setFillColor(HexColor("#FFFFFF"))
-    cv.setFont(FONT_BOLD, 15)
-    cv.drawString(20*mm, H - 32*mm, "Analytiq")
-    cv.setFillColor(HexColor(T["accent2"]))
-    cv.setFont(FONT_REG, 9.5)
-    cv.drawString(20*mm, H - 40*mm, "Advanced Analytics Platform")
-    cv.setFillColor(_c(T["cover_accent"]))
-    cv.rect(20*mm, H - 44*mm, 55*mm, 1.2*mm, fill=1, stroke=0)
+    cv.setFillColor(_c(T["primary"]))
+    cv.setFont(FONT_BOLD, 12)
+    cv.drawString(x0, H - 30*mm, "Analytiq")
 
-    # ── Client / Company Logo (top-right of cover) ────────
     logo_path = config.get("logo_path", "")
     if logo_path and os.path.exists(logo_path):
         try:
-            cv.drawImage(
-                logo_path,
-                W - 68*mm, H - 45*mm,
-                width=48*mm, height=20*mm,
-                preserveAspectRatio=True,
-                mask="auto",
-            )
+            cv.drawImage(logo_path, W - 68*mm, H - 40*mm, width=48*mm, height=20*mm,
+                         preserveAspectRatio=True, mask="auto")
         except Exception:
-            pass  # logo fails gracefully — PDF still builds
+            logger.debug("cover logo could not be drawn", exc_info=True)
 
-    # Domain badge
-    cv.setFillColor(_c(T["domain_badge"]))
-    cv.roundRect(20*mm, H - 60*mm, 85*mm, 11*mm, 3, fill=1, stroke=0)
-    cv.setFillColor(HexColor("#FFFFFF"))
-    cv.setFont(FONT_BOLD, 8)
-    cv.drawString(25*mm, H - 56*mm, domain_lbl)
+    cv.setFillColor(_c(T["accent"]))
+    cv.setFont(FONT_BOLD, 8.5)
+    cv.drawString(x0, H * 0.62 + 24*mm, domain_lbl)
 
-    # Title (word wrap at ~28 chars)
+    # Title, wrapped to the cover's width by measured text width.
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    size = 30 if len(title) <= 40 else 24
+    max_w = W - x0 - 22*mm
     words, lines, line = title.split(), [], ""
     for w in words:
         test = (line + " " + w).strip()
-        if len(test) <= 28:
+        if stringWidth(test, FONT_BOLD, size) <= max_w:
             line = test
         else:
-            if line: lines.append(line)
+            if line:
+                lines.append(line)
             line = w
-    if line: lines.append(line)
+    if line:
+        lines.append(line)
+    cv.setFillColor(_c(T["primary"]))
+    y = H * 0.62 + 12*mm
+    for ln in lines[:3]:
+        cv.setFont(FONT_BOLD, size)
+        cv.drawString(x0, y, ln)
+        y -= size * 1.2
+    subtitle = config.get("subtitle", "")
+    if subtitle:
+        cv.setFillColor(_c(T["text_muted"]))
+        cv.setFont(FONT_REG, 11)
+        cv.drawString(x0, y - 2*mm, subtitle[:90])
+        y -= 8*mm
+    cv.setStrokeColor(_c(T["accent"]))
+    cv.setLineWidth(1.2)
+    cv.line(x0, y - 4*mm, x0 + 40*mm, y - 4*mm)
 
-    cv.setFillColor(HexColor("#FFFFFF"))
-    y_title = H / 2 + 36*mm
-    for ln in lines:
-        cv.setFont(FONT_BOLD, 30 if len(ln) <= 20 else 24)
-        cv.drawString(20*mm, y_title, ln)
-        y_title -= 11*mm
-
-    cv.setFillColor(HexColor(T["accent2"]))
-    cv.setFont(FONT_REG, 10)
-    cv.drawString(20*mm, H / 2 + 12*mm,
-                  config.get("subtitle", "Powered by Analytiq"))
-    cv.setFillColor(_c(T["cover_accent"]))
-    cv.rect(20*mm, H / 2 + 6*mm, W - 37*mm, 1.5*mm, fill=1, stroke=0)
-
-    # KPI strip (up to 4)
+    # A few facts about the data, in one colour.
     kpis = kpis_preview[:4]
-    bw   = (W - 37*mm) / max(len(kpis), 1)
-    for i, kpi in enumerate(kpis):
-        x = 20*mm + i * bw
-        cv.setFillColor(HexColor("#1A3A5C"))
-        cv.roundRect(x + 1.5, H / 2 - 14*mm, bw - 3, 18*mm, 3, fill=1, stroke=0)
-        cv.setFillColor(HexColor(kpi.get("color", T["accent2"])))
-        cv.setFont(FONT_BOLD, 16)
-        cv.drawCentredString(x + bw / 2, H / 2 - 2*mm,
-                             str(kpi.get("value", ""))[:9])
-        cv.setFillColor(HexColor("#FFFFFF"))
-        cv.setFont(FONT_BOLD, 7)
-        cv.drawCentredString(x + bw / 2, H / 2 - 8*mm,
-                             str(kpi.get("label", ""))[:18])
-        cv.setFillColor(HexColor(T["accent2"]))
-        cv.setFont(FONT_REG, 6.5)
-        cv.drawCentredString(x + bw / 2, H / 2 - 13*mm,
-                             str(kpi.get("sub", ""))[:20])
+    if kpis:
+        bw = (W - x0 - 22*mm) / len(kpis)
+        ky = H * 0.30
+        for i, kpi in enumerate(kpis):
+            kx = x0 + i * bw
+            value = str(kpi.get("value", ""))
+            vsize = 18
+            while vsize > 10 and stringWidth(value, FONT_BOLD, vsize) > bw - 4*mm:
+                vsize -= 1
+            cv.setFillColor(_c(T["primary"]))
+            cv.setFont(FONT_BOLD, vsize)
+            cv.drawString(kx, ky, value)
+            cv.setFillColor(_c(T["text_muted"]))
+            cv.setFont(FONT_REG, 8)
+            cv.drawString(kx, ky - 6*mm, str(kpi.get("label", ""))[:24])
+        cv.setStrokeColor(_c(T["border"]))
+        cv.setLineWidth(0.6)
+        cv.line(x0, ky + 10*mm, W - 22*mm, ky + 10*mm)
 
-    # Bottom meta
-    cv.setFillColor(HexColor("#0D1F3C"))
-    cv.rect(0, 0, W - 17*mm, 30*mm, fill=1, stroke=0)
-    cv.setFillColor(_c(T["cover_accent"]))
-    cv.rect(0, 30*mm, W - 17*mm, 1.2*mm, fill=1, stroke=0)
-    meta = [("PREPARED FOR", client_name),
-            ("DATE", report_date),
-            ("CLASSIFICATION", "CONFIDENTIAL")]
-    mw = (W - 37*mm) / 3
+    meta = [("Prepared for", client_name), ("Date", report_date),
+            ("Classification", "Confidential")]
+    mw = (W - x0 - 22*mm) / 3
     for i, (k, v) in enumerate(meta):
-        x = 20*mm + i * mw
-        cv.setFillColor(HexColor(T["accent2"]))
-        cv.setFont(FONT_REG, 6.5); cv.drawString(x, 21*mm, k)
-        cv.setFillColor(HexColor("#FFFFFF"))
-        cv.setFont(FONT_BOLD, 8); cv.drawString(x, 13*mm, v[:22])
-
-    # The cover previously carried "Powered by Groq Llama 3.3 70B". Naming
-    # the model on the front page of a client deliverable invites the
-    # reader to discount everything behind it, and says nothing about
-    # whether the analysis is sound. Confidentiality marking belongs here
-    # instead.
-    cv.setFillColor(HexColor(T["accent2"]))
-    cv.setFont(FONT_REG, 6.5)
-    cv.drawRightString(W - 21*mm, 5*mm, "Confidential")
+        mx = x0 + i * mw
+        cv.setFillColor(_c(T["text_muted"]))
+        cv.setFont(FONT_REG, 8)
+        cv.drawString(mx, 30*mm, k)
+        cv.setFillColor(_c(T["text"]))
+        cv.setFont(FONT_BOLD, 10)
+        cv.drawString(mx, 24*mm, v[:30])
     cv.save()
     buf.seek(0)
     return buf.read()
@@ -401,36 +278,40 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
 # ══════════════════════════════════════════════════════════
 
 def _sec(story: list, s: dict, T: dict, title: str, sub: str = ""):
-    story.append(Spacer(1, 3*mm))
-    story.append(HRFlowable(width="100%", thickness=3,
-                             color=_c(T["accent"]), spaceAfter=3))
-    story.append(Paragraph(title, s["h2"]))
+    """A section heading; it is listed on the contents page and kept on
+    the same page as the start of its section."""
+    story.append(CondPageBreak(50*mm))
+    story.append(Paragraph(_clean(title), s["h2"]))
     if sub:
-        story.append(Paragraph(sub, s["sm"]))
+        story.append(Paragraph(_clean(sub), s["sub"]))
+    rule = HRFlowable(width="100%", thickness=0.8, color=_c(T["accent"]),
+                      spaceBefore=2, spaceAfter=6)
+    rule.keepWithNext = 1
+    story.append(rule)
 
 
 def _kpi_row(story: list, s: dict, T: dict, kpis: list, CW: float):
     cols = min(4, len(kpis))
     cw   = CW / cols
     vals = [Paragraph(
-                "<b>{}</b>".format(k.get("value", "")),
-                ParagraphStyle("kv", fontName=FONT_BOLD, fontSize=18,
-                               textColor=HexColor(k.get("color", T["accent"])),
+                "<b>{}</b>".format(_clean(k.get("value", ""))),
+                ParagraphStyle("kv", fontName=FONT_BOLD, fontSize=17,
+                               textColor=HexColor(k.get("color", T["primary"])),
                                alignment=TA_CENTER))
             for k in kpis[:cols]]
     lbls = [Paragraph(
-                k.get("label", ""),
+                _clean(k.get("label", "")),
                 ParagraphStyle("kl", fontName=FONT_BOLD, fontSize=7.5,
-                               textColor=_c(T["text"]), alignment=TA_CENTER))
+                               textColor=_c(T["text_muted"]), alignment=TA_CENTER))
             for k in kpis[:cols]]
     subs = [Paragraph(
-                k.get("sub", ""),
+                _clean(k.get("sub", "")),
                 ParagraphStyle("ks", fontName=FONT_REG, fontSize=7,
                                textColor=_c(T["text_muted"]), alignment=TA_CENTER))
             for k in kpis[:cols]]
     t = Table([vals, lbls, subs], colWidths=[cw]*cols)
     t.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0), (-1,-1), _c(T["bg_light"])),
+        ("BACKGROUND",    (0,0), (-1,-1), _c(T["bg_card"])),
         ("ALIGN",         (0,0), (-1,-1), "CENTER"),
         ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
         ("TOPPADDING",    (0,0), (-1,-1), 6),
@@ -444,7 +325,9 @@ def _kpi_row(story: list, s: dict, T: dict, kpis: list, CW: float):
 
 def _narrative_box(story: list, s: dict, T: dict, text: str):
     if not text: return
-    t = Table([[Paragraph(text, s["body"])]], colWidths=["100%"])
+    # Engine text quotes data values ("'R&D <i>' rates 0.65 below …"), so
+    # it is escaped here, where it is drawn, and nowhere earlier.
+    t = Table([[Paragraph(_clean(text), s["body"])]], colWidths=["100%"])
     t.setStyle(TableStyle([
         ("BACKGROUND",    (0,0), (-1,-1), _c(T["bg_light"])),
         ("LINEBEFORE",    (0,0), (0,-1),  4, _c(T["accent"])),
@@ -457,50 +340,60 @@ def _narrative_box(story: list, s: dict, T: dict, text: str):
     story.append(Spacer(1, 2*mm))
 
 
+import re as _re  # noqa: E402
+_FIGURE_RE = _re.compile(r"^[-+−]?[\d.,]+\s?(%|[KMB]|x|pp)?$|^—$")
+
+
 def _gtable(story: list, T: dict, headers: list,
             rows_data: list, col_widths: list,
             severity_col: int = -1):
     """Generic styled table."""
-    hrow = [Paragraph(h, ParagraphStyle(
-                "th", fontName=FONT_BOLD, fontSize=8,
-                textColor=HexColor("#FFFFFF"), alignment=TA_CENTER))
-            for h in headers]
-    body = []
-    for row in rows_data:
-        body.append([Paragraph(str(c), ParagraphStyle(
-                "td", fontName=FONT_REG, fontSize=8,
-                textColor=_c(T["text"]), leading=12))
-                     for c in row])
-    tbl = Table([hrow] + body, colWidths=col_widths)
+    # Figures right-aligned, text left: centring both made columns of
+    # numbers impossible to compare.
+    def _is_figure(v) -> bool:
+        return bool(_FIGURE_RE.match(str(v).strip()))
+
+    def _cell(v, header=False, right=False):
+        return Paragraph(_clean(str(v)), ParagraphStyle(
+            "th" if header else "td",
+            fontName=FONT_BOLD if header else FONT_REG, fontSize=8.2,
+            leading=11, textColor=HexColor("#FFFFFF") if header else _c(T["text"]),
+            alignment=TA_RIGHT if right else TA_LEFT))
+
+    numeric_cols = [i for i in range(len(headers))
+                    if i > 0 and rows_data and all(_is_figure(r[i]) for r in rows_data)]
+    hrow = [_cell(h, header=True, right=i in numeric_cols) for i, h in enumerate(headers)]
+    body = [[_cell(c, right=i in numeric_cols) for i, c in enumerate(row)]
+            for row in rows_data]
+    tbl = Table([hrow] + body, colWidths=col_widths, repeatRows=1)
     sty = [
-        ("BACKGROUND",    (0,0), (-1,0),  _c(T["header_bg"])),
-        ("ROWBACKGROUNDS",(0,1), (-1,-1), [HexColor("#FFFFFF"), _c(T["bg_light"])]),
-        ("ALIGN",         (0,0), (-1,-1), "CENTER"),
+        ("BACKGROUND",    (0,0), (-1,0),  _c(T["primary"])),
+        ("ROWBACKGROUNDS",(0,1), (-1,-1), [HexColor("#FFFFFF"), _c(T["bg_card"])]),
         ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-        ("TOPPADDING",    (0,0), (-1,-1), 5),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 5),
-        ("LEFTPADDING",   (0,0), (-1,-1), 5),
-        ("RIGHTPADDING",  (0,0), (-1,-1), 5),
-        ("BOX",           (0,0), (-1,-1), 0.5, _c(T["border"])),
-        ("INNERGRID",     (0,0), (-1,-1), 0.3, _c(T["border"])),
+        ("TOPPADDING",    (0,0), (-1,-1), 4),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+        ("LEFTPADDING",   (0,0), (-1,-1), 6),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 6),
+        ("LINEBELOW",     (0,0), (-1,-1), 0.3, _c(T["border"])),
     ]
     if severity_col >= 0:
-        _sev = {"CRITICAL": "#EF4444", "HIGH": "#F59E0B",
-                "MEDIUM":   "#06B6D4", "LOW":  "#10B981",
-                "IMMEDIATE":"#EF4444", "SHORT TERM": "#F59E0B",
-                "LONG TERM":"#3B82F6", "WARNING": "#3B82F6",
-                "NONE":     "#10B981"}
+        # Status shown as a tinted cell with coloured text, not a solid
+        # block of orange in the middle of a table.
+        _sev = {"CRITICAL": ("negative", "critical_bg"), "HIGH": ("warning", "warning_bg"),
+                "ABOVE": ("warning", "warning_bg"), "OK": ("positive", "positive_bg"),
+                "WITHIN": ("positive", "positive_bg"), "BELOW": ("info", "info_bg")}
         for i, row in enumerate(rows_data, 1):
             val = str(row[severity_col]).upper()
-            for k, col in _sev.items():
+            for k, (fg, bg) in _sev.items():
                 if k in val:
-                    sty += [
-                        ("BACKGROUND", (severity_col, i), (severity_col, i), HexColor(col)),
-                        ("TEXTCOLOR",  (severity_col, i), (severity_col, i), HexColor("#FFFFFF")),
-                        ("FONTNAME",   (severity_col, i), (severity_col, i), FONT_BOLD),
-                        ("FONTSIZE",   (severity_col, i), (severity_col, i), 7),
-                    ]
+                    body[i - 1][severity_col] = Paragraph(
+                        "<b>{}</b>".format(_clean(row[severity_col])), ParagraphStyle(
+                            "sev", fontName=FONT_BOLD, fontSize=8, leading=11,
+                            textColor=_c(T[fg])))
+                    sty.append(("BACKGROUND", (severity_col, i), (severity_col, i),
+                                _c(T[bg])))
                     break
+        tbl = Table([hrow] + body, colWidths=col_widths, repeatRows=1)
     tbl.setStyle(TableStyle(sty))
     story.append(tbl)
     story.append(Spacer(1, 2*mm))
@@ -528,19 +421,21 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
                         textColor=HexColor("#FFFFFF"), alignment=TA_CENTER)
     ts = ParagraphStyle("bi_title", fontName=FONT_BOLD, fontSize=9.5,
                         textColor=_c(T["text"]))
-    rl = ParagraphStyle("bi_lbl",   fontName=FONT_BOLD, fontSize=8,
-                        textColor=HexColor("#FFFFFF"), alignment=TA_CENTER)
+    rl = ParagraphStyle("bi_lbl",   fontName=FONT_BOLD, fontSize=7.5,
+                        textColor=_c(T["primary"]), alignment=TA_LEFT)
     rv = ParagraphStyle("bi_val",   fontName=FONT_REG,      fontSize=8.5,
                         textColor=_c(T["text"]),  leading=12.5)
 
     num_str = "{}. ".format(num) if num else ""
+    bs = ParagraphStyle("bi_badge", fontName=FONT_BOLD, fontSize=7.5,
+                        textColor=HexColor(col), alignment=TA_CENTER)
     hdr = Table([[
         Paragraph(_get(ins, "severity", "INFO").upper(), bs),
-        Paragraph("{}{}".format(num_str, _get(ins, "title", "")), ts),
+        Paragraph("{}{}".format(num_str, _clean(_get(ins, "title", ""))), ts),
     ]], colWidths=[20*mm, CW - 20*mm])
     hdr.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (0,0), HexColor(col)),
-        ("BACKGROUND", (1,0), (1,0), _c(T["bg_light"])),
+        ("BACKGROUND", (0,0), (0,0), HexColor(bg)),
+        ("BACKGROUND", (1,0), (1,0), _c(T["bg_card"])),
         ("VALIGN",     (0,0), (-1,-1), "MIDDLE"),
         ("ALIGN",      (0,0), (0,0),  "CENTER"),
         ("TOPPADDING", (0,0), (-1,-1), 7),
@@ -550,26 +445,22 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
         ("BOX",        (0,0), (-1,-1), 0.5, _c(T["border"])),
     ]))
 
-    lw, vw = 26*mm, CW - 26*mm
+    lw, vw = 22*mm, CW - 22*mm
     rows = [
-        [Paragraph(k, rl), Paragraph(_get(ins, fk, ""), rv)]
-        for k, fk in [("PROBLEM", "problem"), ("CAUSE",  "cause"),
-                      ("EVIDENCE","evidence"),("ACTION", "action"),
-                      ("IMPACT",  "impact")]
+        [Paragraph(k, rl), Paragraph(_steps(_get(ins, fk, "")), rv)]
+        for k, fk in [("Finding", "problem"), ("Why",  "cause"),
+                      ("Evidence","evidence"),("Next step", "action"),
+                      ("Impact",  "impact")]
         if _get(ins, fk, "").strip()
     ]
     if not rows:
         rows = [[Paragraph("DETAIL", rl),
-                 Paragraph(str(ins)[:200], rv)]]
+                 Paragraph(_clean(str(ins)[:200]), rv)]]
 
     body = Table(rows, colWidths=[lw, vw])
     body.setStyle(TableStyle([
-        ("BACKGROUND",  (0,0), (0,-1), _c(T["header_bg"])),
-        ("ROWBACKGROUNDS",(1,0),(1,-1),
-         [HexColor("#FFFFFF"), _c(T["bg_light"]),
-          HexColor("#FFFFFF"), _c(T["bg_light"]), HexColor("#FFFFFF")]),
+        ("BACKGROUND",  (0,0), (0,-1), _c(T["bg_light"])),
         ("VALIGN",  (0,0), (-1,-1), "TOP"),
-        ("ALIGN",   (0,0), (0,-1),  "CENTER"),
         ("TOPPADDING",    (0,0), (-1,-1), 6),
         ("BOTTOMPADDING", (0,0), (-1,-1), 6),
         ("LEFTPADDING",   (0,0), (-1,-1), 8),
@@ -584,22 +475,83 @@ def _insight_card(story: list, s: dict, T: dict, ins, CW: float, num=None):
 #  TOC PAGE
 # ══════════════════════════════════════════════════════════
 
-def _toc(story, s, T, entries, CW):
-    _sec(story, s, T, "Table of Contents")
-    for num, title in entries:
-        row = Table([[
-            Paragraph(str(num), ParagraphStyle(
-                "tn", fontName=FONT_BOLD, fontSize=10,
-                textColor=_c(T["accent"]), alignment=TA_CENTER)),
-            Paragraph(title, s["toc"]),
-        ]], colWidths=[9*mm, CW - 9*mm])
-        row.setStyle(TableStyle([
-            ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
-            ("LINEBELOW",   (0,0), (-1,-1), 0.3, _c(T["border"])),
-            ("TOPPADDING",  (0,0), (-1,-1), 3),
-            ("BOTTOMPADDING",(0,0),(-1,-1), 3),
-        ]))
-        story.append(row)
+def _toc(story, s, T, CW):
+    """Contents with the page each section starts on. The old list had
+    no page numbers at all."""
+    story.append(Paragraph("Contents", ParagraphStyle(
+        "toc_title", parent=s["h2"], keepWithNext=0)))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=_c(T["accent"]),
+                            spaceBefore=2, spaceAfter=8))
+    toc = TableOfContents()
+    toc.dotsMinLevel = 0
+    toc.levelStyles = [ParagraphStyle(
+        "toc0", fontName=FONT_REG, fontSize=10.5, leading=20,
+        textColor=_c(T["text"]), leftIndent=0, firstLineIndent=0)]
+    story.append(toc)
+
+
+def _basis_box(story, s, T, config):
+    """The basis of preparation, under the contents. As the last item of the
+    appendix it was pushed onto a page of its own whenever the appendix ran
+    a few lines long."""
+    story.append(Spacer(1, 10*mm))
+    disc = Table([[Paragraph(
+        "<b>Basis of preparation</b><br/>"
+        "Prepared for {} on {}. All figures derive solely from the dataset "
+        "supplied for this engagement and describe the period it covers. "
+        "Statistical association is reported where present; it does not "
+        "establish causation. Any external reference range cited is "
+        "indicative and should be validated against the organisation's own "
+        "sector and prior periods before it informs a decision. "
+        "Recommendations assume the data is complete and accurate as "
+        "supplied.{}".format(
+            config.get("client_name", "Client"),
+            datetime.now().strftime("%B %d, %Y"),
+            _prepared_by_line(config)),
+        s["body"])]],
+        colWidths=["100%"])
+    disc.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0), (-1,-1), _c(T["bg_light"])),
+        ("TOPPADDING",    (0,0), (-1,-1), 10),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 10),
+        ("LEFTPADDING",   (0,0), (-1,-1), 12),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 12),
+        ("LINEBEFORE",    (0,0), (0,-1), 2.5, _c(T["accent"])),
+    ]))
+    story.append(disc)
+
+
+def _bind_headings(story: list) -> list:
+    """Join each run of headings to the block that follows it.
+
+    ReportLab keeps a heading (keepWithNext) with the next flowable only if
+    that flowable is not itself a KeepTogether — and every finding card and
+    chart is one. The heading was kept with nothing, so "Findings" could sit
+    alone at the foot or top of a page with all its cards overleaf.
+    """
+    out, run = [], []
+    for f in story:
+        if getattr(f, "keepWithNext", 0) or (
+                isinstance(f, Paragraph) and getattr(f.style, "keepWithNext", 0)):
+            run.append(f)
+            continue
+        if run and isinstance(f, KeepTogether):
+            out.append(KeepTogether(run + list(f._content)))
+        elif run:
+            out.append(KeepTogether(run + [f]))
+        else:
+            out.append(f)
+        run = []
+    out.extend(run)
+    return out
+
+
+class _ReportDoc(BaseDocTemplate):
+    """Registers every section heading on the contents page."""
+
+    def afterFlowable(self, flowable):
+        if isinstance(flowable, Paragraph) and flowable.style.name == "h2":
+            self.notify("TOCEntry", (0, flowable.getPlainText(), self.page))
 
 
 # ══════════════════════════════════════════════════════════
@@ -607,32 +559,27 @@ def _toc(story, s, T, entries, CW):
 # ══════════════════════════════════════════════════════════
 
 def _exec_summary(story, s, T, summary, findings, risks, opps, CW):
-    _sec(story, s, T, "Executive Summary",
-         "Key findings and strategic priorities")
+    _sec(story, s, T, "Executive Summary")
     if summary:
         _narrative_box(story, s, T, summary)
     if findings:
         story.append(Paragraph("Key Findings", s["h3"]))
         for f in findings[:5]:
-            story.append(Paragraph("+ " + str(f), s["bl"]))
+            story.append(Paragraph("• " + _clean(str(f)), s["bl"]))
         story.append(Spacer(1, 2*mm))
     if risks:
-        story.append(Paragraph("Business Risks", s["h3"]))
+        story.append(Paragraph("Risks", s["h3"]))
         for r in risks[:4]:
-            story.append(Paragraph("! " + str(r),
-                ParagraphStyle("risk_p", fontName=FONT_REG, fontSize=9,
-                               textColor=_c(T["negative"]), leading=13,
-                               leftIndent=10, firstLineIndent=-10,
-                               spaceAfter=3)))
+            story.append(Paragraph(
+                '<font color="{}">•</font> {}'.format(T["negative"], _clean(str(r))),
+                s["bl"]))
         story.append(Spacer(1, 2*mm))
     if opps:
         story.append(Paragraph("Opportunities", s["h3"]))
         for o in opps[:3]:
-            story.append(Paragraph("* " + str(o),
-                ParagraphStyle("opp_p", fontName=FONT_REG, fontSize=9,
-                               textColor=_c(T["positive"]), leading=13,
-                               leftIndent=10, firstLineIndent=-10,
-                               spaceAfter=3)))
+            story.append(Paragraph(
+                '<font color="{}">•</font> {}'.format(T["positive"], _clean(str(o))),
+                s["bl"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -659,19 +606,19 @@ def _top_insights(story, s, T, insights, CW, domain: str = "general"):
     insights = guarded.kept
     if not insights:
         _sec(story, s, T, "Findings",
-             "Each finding: Problem → Cause → Evidence → Action → Impact")
+             "What the data shows, why it matters, and what to check next")
         story.append(Paragraph(
             "No finding in this dataset met the evidence threshold for "
             "inclusion. That is a result, not an omission: the analysis "
             "ran and found nothing it could support.", s["body"]))
         note = withheld_note(guarded)
         if note:
-            story.append(Paragraph(note, s["note"]))
+            story.append(Paragraph(_clean(note), s["note"]))
         return
 
     grouped = group_insights(bp, list(insights))
     _sec(story, s, T, "{} — Findings".format(bp.label),
-         "Each finding: Problem → Cause → Evidence → Action → Impact")
+         "What the data shows, why it matters, and what to check next")
 
     num = 0
     for section, items in grouped:
@@ -696,7 +643,7 @@ def _top_insights(story, s, T, insights, CW, domain: str = "general"):
     note = withheld_note(guarded)
     if note:
         story.append(Spacer(1, 3 * mm))
-        story.append(Paragraph(note, s["note"]))
+        story.append(Paragraph(_clean(note), s["note"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -760,7 +707,7 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
         story.append(Paragraph("Data Quality Recommendations", s["h3"]))
         for rec in recs[:6]:
             sty = "bl"
-            story.append(Paragraph("• " + str(rec), s[sty]))
+            story.append(Paragraph("• " + _clean(str(rec)), s[sty]))
 
 
 def _readiness_block(story, s, T, df: pd.DataFrame, CW):
@@ -794,7 +741,7 @@ def _readiness_block(story, s, T, df: pd.DataFrame, CW):
         story.append(Paragraph(
             "Personal data present: {}. This report and the underlying "
             "extract should be handled and retained accordingly.".format(
-                ", ".join(rep.personal_data_columns[:8])),
+                _clean(", ".join(map(str, rep.personal_data_columns[:8])))),
             s["note"]))
 
 
@@ -802,6 +749,13 @@ def _clean(text: str) -> str:
     """Escape for ReportLab's mini-HTML parser."""
     return (str(text).replace("&", "&amp;")
             .replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _steps(text: str) -> str:
+    """Escaped text with "1. …  2. …" steps on lines of their own; written
+    inline they ran together into one sentence."""
+    out = _clean(str(text).strip())
+    return _re.sub(r"\s{2,}(?=\d+\.\s)", "<br/>", out)
 
 
 # ══════════════════════════════════════════════════════════
@@ -871,7 +825,7 @@ def _data_prep_section(story, s, T, cleaning_summary, CW, table="source_table"):
         "express the same treatment against <b>{}</b> so your data team can "
         "verify each step, or apply it upstream and stop the issue "
         "recurring. Order matters: deduplicating after imputing does not "
-        "give the same table. None of it has been executed.".format(table),
+        "give the same table. None of it has been executed.".format(_clean(table)),
         s["body"]))
     story.append(Spacer(1, 1.5*mm))
 
@@ -1065,22 +1019,27 @@ def _benchmark_section(story, s, T, domain, CW, df=None):
 
 def _attrition_page(story, s, T, attrition, CW):
     if attrition is None: return
-    _sec(story, s, T, "Attrition Deep Dive",
-         "Employee turnover analysis — drivers, segments, cost")
+    _sec(story, s, T, "Attrition", "Who left, from where, and what it costs")
 
-    _kpi_row(story, s, T, [
+    dept = getattr(attrition, "dept_attrition", {}) or {}
+    dept_p = getattr(attrition, "dept_p", None)
+    dept_differs = dept_p is not None and dept_p < 0.05
+    # A "highest department" is only worth a headline figure when the
+    # departments really differ; otherwise it is whichever one chance put on top.
+    top_dept = max(dept.items(), key=lambda kv: kv[1]) if dept and dept_differs else None
+    kpis = [
         {"label": "ATTRITION RATE", "value": "{:.1f}%".format(attrition.rate),
-         "sub": "{:,} left".format(attrition.n_left),
-         "color": T["negative"] if attrition.rate > 15 else T["warning"]},
-        {"label": "SEVERITY", "value": attrition.severity.upper(),
-         "sub": "Benchmark: 10–15%", "color": T["negative"]},
-        {"label": "FLIGHT RISK", "value": "{:,}".format(attrition.n_flight_risk),
-         "sub": "{:.0f}% of remaining".format(attrition.flight_risk_pct),
-         "color": T["warning"]},
-        {"label": "COST RISK",
-         "value": "HIGH" if attrition.n_left > 50 else "MED",
-         "sub": "50–200% salary/hire", "color": T["negative"]},
-    ], CW)
+         "sub": "{:,} of {:,} left".format(attrition.n_left, attrition.n_total),
+         "color": T["negative"] if attrition.rate > 15 else T["primary"]},
+        {"label": "PLANNING BAND", "value": "10–15%",
+         "sub": "indicative; varies by sector"},
+        {"label": "LOWEST-QUARTER SATISFACTION", "value": "{:,}".format(attrition.n_flight_risk),
+         "sub": "{:.0f}% of those remaining".format(attrition.flight_risk_pct)},
+    ]
+    if top_dept:
+        kpis.append({"label": "HIGHEST DEPARTMENT", "value": "{:.1f}%".format(top_dept[1]),
+                     "sub": str(top_dept[0])[:24]})
+    _kpi_row(story, s, T, kpis, CW)
 
     _narrative_box(story, s, T,
                    getattr(attrition, "interpretation", ""))
@@ -1103,10 +1062,17 @@ def _attrition_page(story, s, T, attrition, CW):
         story.append(Paragraph("Attrition by Department", s["h3"]))
         sorted_d = sorted(dept_atr.items(), key=lambda x: x[1], reverse=True)
         rows = [[str(dept), "{:.1f}%".format(rate),
-                 "CRITICAL" if rate > 25 else "HIGH" if rate > 18 else "OK"]
+                 "above band" if rate > 15 else "within band" if rate >= 10 else "below band"]
                 for dept, rate in sorted_d]
-        _gtable(story, T, ["Department","Rate","Status"],
-                rows, [CW*0.50, CW*0.25, CW*0.25], severity_col=2)
+        _gtable(story, T, ["Department", "Rate", "Against the 10–15% band"],
+                rows, [CW*0.50, CW*0.20, CW*0.30])
+        if dept_p is not None:
+            story.append(Paragraph(
+                "Departments differ in attrition by more than chance (chi-square "
+                "p={:.3f}).".format(dept_p) if dept_differs else
+                "The differences between departments are within what chance alone "
+                "produces (chi-square p={:.2f}); the ranking should not be relied "
+                "on.".format(dept_p), s["note"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -1114,8 +1080,7 @@ def _attrition_page(story, s, T, attrition, CW):
 # ══════════════════════════════════════════════════════════
 
 def _dataset_overview(story, s, T, df, profile, CW):
-    _sec(story, s, T, "Dataset Overview & Descriptive Statistics",
-         "Column breakdown and statistical summary")
+    _sec(story, s, T, "The Data", "What the dataset contains")
 
     # Identifiers get their own row and stay out of the statistics: the mean
     # of employee_id is not a figure anyone should read.
@@ -1125,53 +1090,36 @@ def _dataset_overview(story, s, T, df, profile, CW):
     cat_cols = [c for c in text_columns(df) if c not in id_cols]
     dt_cols  = df.select_dtypes(include="datetime").columns.tolist()
 
-    rows = [["Numeric",     len(num_cols), ", ".join(num_cols[:6]) or "None"],
-            ["Categorical", len(cat_cols), ", ".join(cat_cols[:6]) or "None"],
-            ["DateTime",    len(dt_cols),  ", ".join(dt_cols[:4]) or "None"]]
-    if id_cols:
-        rows.append(["Identifier", len(id_cols), ", ".join(id_cols[:6])])
-    _gtable(story, T, ["Type", "Count", "Columns (sample)"], rows,
+    rows = [[kind, len(cols), ", ".join(map(str, cols[:8]))]
+            for kind, cols in (("Measures", num_cols), ("Categories", cat_cols),
+                               ("Dates", dt_cols), ("Identifiers", id_cols)) if cols]
+    _gtable(story, T, ["Kind", "Columns", "Names"], rows,
             [CW*0.20, CW*0.12, CW*0.68])
 
     if num_cols:
-        story.append(Paragraph("Descriptive Statistics", s["h3"]))
-        show  = num_cols[:5]
-        desc  = df[show].describe().round(3)
-        hrow  = ["Stat"] + [c[:10] for c in show]
-        rows  = [hrow] + [
-            [stat] + [str(desc.loc[stat, c]) for c in show]
-            for stat in ["mean","std","min","25%","50%","75%","max"]
-            if stat in desc.index
-        ]
-        cw_s = CW / (len(show) + 1)
-        tbl  = Table(rows, colWidths=[cw_s] * (len(show)+1), repeatRows=1)
-        tbl.setStyle(TableStyle([
-            ("FONTNAME",     (0,0), (-1,0),  FONT_BOLD),
-            ("FONTNAME",     (0,1), (-1,-1), FONT_REG),
-            ("FONTSIZE",     (0,0), (-1,-1), 8),
-            ("TEXTCOLOR",    (0,0), (-1,0),  HexColor("#FFFFFF")),
-            ("BACKGROUND",   (0,0), (-1,0),  _c(T["header_bg"])),
-            ("ROWBACKGROUNDS",(0,1),(-1,-1), [HexColor("#FFFFFF"), _c(T["bg_light"])]),
-            ("GRID",         (0,0), (-1,-1), 0.3, _c(T["border"])),
-            ("ALIGN",        (0,0), (-1,-1), "CENTER"),
-            ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
-            ("TOPPADDING",   (0,0), (-1,-1), 4),
-            ("BOTTOMPADDING",(0,0), (-1,-1), 4),
-        ]))
-        story.append(KeepTogether([tbl]))
-        story.append(Spacer(1, 2*mm))
-
-        # Skew warning
-        for col in num_cols[:6]:
-            try:
-                sk = float(df[col].skew())
-                if abs(sk) > 1.0:
-                    story.append(Paragraph(
-                        "• {} is heavily skewed (skew={:.2f}) — "
-                        "use median not mean for reporting.".format(col, sk),
-                        s["note"]))
-            except Exception:
-                logger.debug("_dataset_overview: suppressed exception", exc_info=True)
+        # One row per measure, figures formatted as a reader writes them;
+        # the old table printed 59333.386 and cut headers to 10 letters.
+        from app.engines.chart_exporter import fmt
+        story.append(Paragraph("Descriptive statistics", s["h3"]))
+        rows = []
+        for c in num_cols[:10]:
+            v = pd.to_numeric(df[c], errors="coerce").dropna()
+            if v.empty:
+                continue
+            q = v.quantile([0.25, 0.5, 0.75])
+            rows.append([str(c), fmt(len(v)), fmt(v.mean()), fmt(q[0.5]),
+                         fmt(v.min()), fmt(q[0.25]), fmt(q[0.75]), fmt(v.max())])
+        _gtable(story, T, ["Measure", "Count", "Mean", "Median", "Min", "25th pct",
+                           "75th pct", "Max"], rows,
+                [CW * x for x in (0.24, 0.10, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11)])
+        skewed = [str(c) for c in num_cols[:10]
+                  if abs(float(pd.to_numeric(df[c], errors="coerce").skew() or 0)) > 1]
+        if skewed:
+            story.append(Paragraph(
+                "{} {} skewed, so the median describes a typical record better "
+                "than the mean.".format(", ".join(_clean(c) for c in skewed),
+                                        "is" if len(skewed) == 1 else "are"),
+                s["note"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -1181,39 +1129,20 @@ def _dataset_overview(story, s, T, df, profile, CW):
 def _stats_section(story, s, T, stats_report, CW):
     if stats_report is None: return
     _sec(story, s, T, "Statistical Analysis",
-         "Distribution, normality, correlations")
+         "How each measure is distributed, and which move together")
 
-    # Correlation honest-warning box
-    warn_t = Table([[Paragraph(
-        "<b>Analyst note:</b> "
-        "Correlation r does NOT mean 'Variable A changes Variable B by r%.' "
-        "That is a dangerous misread. r = -0.35 means the two variables share "
-        "12.3% of their variance (r² = 0.123). Association only — "
-        "NOT causation, NOT magnitude of effect.",
-        s["warn"])]],
-        colWidths=["100%"])
-    warn_t.setStyle(TableStyle([
-        ("LEFTPADDING",  (0,0), (-1,-1), 10),
-        ("RIGHTPADDING", (0,0), (-1,-1), 10),
-        ("TOPPADDING",   (0,0), (-1,-1), 8),
-        ("BOTTOMPADDING",(0,0), (-1,-1), 8),
-        ("BOX",          (0,0), (-1,-1), 1, _c(T["warning"])),
-    ]))
-    story.append(warn_t)
-    story.append(Spacer(1, 3*mm))
-
-    # Distribution summary
     col_stats = getattr(stats_report, "column_stats", {})
-    if col_stats:
-        story.append(Paragraph("Distribution Summary", s["h3"]))
-        for col, cs in list(col_stats.items())[:8]:
-            if getattr(cs, "mean", None) is None: continue
-            normal = "Normal" if getattr(cs, "is_normal", False) else "Non-normal"
-            sk_lbl = getattr(cs, "skew_label", "") or ""
-            outs   = getattr(cs, "outlier_count_iqr", 0)
-            story.append(Paragraph(
-                "• '{}': {} | {} | Outliers: {}".format(col, normal, sk_lbl, outs),
-                s["bl"]))
+    rows = []
+    for col, cs in list(col_stats.items())[:10]:
+        if getattr(cs, "mean", None) is None:
+            continue
+        rows.append([str(col),
+                     "Normal" if getattr(cs, "is_normal", False) else "Not normal",
+                     (getattr(cs, "skew_label", "") or "—").capitalize(),
+                     str(getattr(cs, "outlier_count_iqr", 0))])
+    if rows:
+        _gtable(story, T, ["Measure", "Distribution", "Shape", "Outliers (1.5×IQR)"],
+                rows, [CW * x for x in (0.30, 0.20, 0.32, 0.18)])
 
     # Correlations
     corrs = getattr(stats_report, "correlations", [])
@@ -1222,17 +1151,17 @@ def _stats_section(story, s, T, stats_report, CW):
              and abs(getattr(c, "pearson_r", 0)) >= 0.15]
     if sig:
         story.append(Spacer(1, 2*mm))
-        story.append(Paragraph("Significant Correlations (Correct Interpretation)", s["h3"]))
-        rows = [[c.col_a, c.col_b,
-                 str(round(c.pearson_r, 4)),
-                 str(round(getattr(c, "p_value", 0), 4)),
-                 c.strength.title(),
-                 "r²={:.3f} — {:.1f}% variance shared. Association only.".format(
-                     c.pearson_r**2, c.pearson_r**2 * 100)]
+        story.append(Paragraph("Measures that move together", s["h3"]))
+        rows = [[str(c.col_a), str(c.col_b), "{:.2f}".format(c.pearson_r),
+                 "{:.3f}".format(getattr(c, "p_value", 0)), c.strength.capitalize(),
+                 "{:.0f}%".format(c.pearson_r ** 2 * 100)]
                 for c in sig[:6]]
         _gtable(story, T,
-                ["Col A", "Col B", "r", "p", "Strength", "Interpretation"],
-                rows, [CW*x for x in [0.17, 0.17, 0.08, 0.08, 0.12, 0.38]])
+                ["Measure", "With", "r", "p", "Strength", "Variance shared"],
+                rows, [CW*x for x in [0.24, 0.24, 0.10, 0.10, 0.16, 0.16]])
+        story.append(Paragraph(
+            "Two measures that move together are associated; that does not show "
+            "that one drives the other.", s["note"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -1242,7 +1171,7 @@ def _stats_section(story, s, T, stats_report, CW):
 def _bi_section(story, s, T, bi_report, CW):
     if bi_report is None: return
     _sec(story, s, T, "Business Intelligence",
-         "Benchmarking, cohort analysis, segment performance")
+         "Spread, segments and what separates the best from the rest")
 
     brief = getattr(bi_report, "executive_brief", "")
     if brief:
@@ -1251,11 +1180,12 @@ def _bi_section(story, s, T, bi_report, CW):
     # Benchmarks
     bms = getattr(bi_report, "benchmarks", [])
     if bms:
-        story.append(Paragraph("Benchmarking Summary", s["h3"]))
-        rows = [[bm.column, str(bm.mean), str(bm.median),
-                 str(bm.top_10_pct), str(bm.bottom_10_pct),
-                 bm.benchmark_label.split("—")[0].strip()[:15]]
-                for bm in bms[:4]]
+        from app.engines.chart_exporter import fmt
+        story.append(Paragraph("How spread out each measure is", s["h3"]))
+        rows = [[str(bm.column), fmt(bm.mean), fmt(bm.median),
+                 fmt(bm.top_10_pct), fmt(bm.bottom_10_pct),
+                 bm.benchmark_label.split("—")[0].strip()[:24]]
+                for bm in bms[:6]]
         _gtable(story, T,
                 ["Metric","Mean","Median","Top 10%","Bottom 10%","Variation"],
                 rows, [CW*x for x in [0.22,0.12,0.12,0.12,0.13,0.29]])
@@ -1264,17 +1194,17 @@ def _bi_section(story, s, T, bi_report, CW):
     sig_c = [c for c in getattr(bi_report, "cohorts", [])
              if c.is_significant]
     if sig_c:
-        story.append(Paragraph("Significant Cohort Differences", s["h3"]))
+        story.append(Paragraph("Segments that differ", s["h3"]))
         for c in sig_c[:3]:
-            story.append(Paragraph("• " + c.interpretation, s["bl"]))
+            story.append(Paragraph("• " + _clean(c.interpretation), s["bl"]))
 
     # Key insights
     ki = getattr(bi_report, "key_insights", [])
     if ki:
         story.append(Spacer(1, 2*mm))
-        story.append(Paragraph("Key Business Insights", s["h3"]))
+        story.append(Paragraph("Observations", s["h3"]))
         for ins in ki[:5]:
-            story.append(Paragraph("• " + str(ins), s["bl"]))
+            story.append(Paragraph("• " + _clean(str(ins)), s["bl"]))
 
 
 def _ml_section(story, s, T, ml_report, CW):
@@ -1296,11 +1226,13 @@ def _ml_section(story, s, T, ml_report, CW):
             score += " · typical error ±{:,.2f}".format(best.rmse)
     else:
         score = "{:.1f}% accuracy on held-out rows".format(best.test_score * 100)
-    _narrative_box(story, s, T, _clean("{} predicting '{}' from {} column(s), {:,} rows: {}.".format(
+    _narrative_box(story, s, T, ("{} predicting '{}' from {} column(s), {:,} rows: {}.".format(
         best.name, target, ml_report.n_features, ml_report.n_rows_used, score)))
 
     note = getattr(ml_report, "no_signal", "")
-    for line in ml_report.insights[:4]:
+    # A model with no signal has nothing else worth reporting; its verdict
+    # is printed once, below.
+    for line in ([] if note else ml_report.insights[:4]):
         story.append(Paragraph("• " + _clean(str(line)), s["bl"]))
 
     imps = ml_report.feature_importance[:6]
@@ -1308,7 +1240,7 @@ def _ml_section(story, s, T, ml_report, CW):
         story.append(Spacer(1, 2*mm))
         story.append(Paragraph("What the model relies on", s["h3"]))
         _gtable(story, T, ["Column", "Share of the model", "Direction"],
-                [[_clean(f.feature), "{:.0f}%".format(f.importance * 100), f.direction]
+                [[str(f.feature), "{:.0f}%".format(f.importance * 100), f.direction]
                  for f in imps],
                 [CW * x for x in (0.50, 0.25, 0.25)])
         story.append(Paragraph(
@@ -1317,9 +1249,12 @@ def _ml_section(story, s, T, ml_report, CW):
     elif note:
         # No ranking: it would only order noise.
         story.append(Spacer(1, 2*mm))
-        _narrative_box(story, s, T, _clean(note))
+        _narrative_box(story, s, T, note)
 
-    for w in [w for w in ml_report.warnings if w][:3]:
+    # The task description ("Continuous numeric target (497 unique values)")
+    # is an internal detail, not a caveat for the reader.
+    reason = getattr(ml_report, "task_reason", None)
+    for w in [w for w in ml_report.warnings if w and w != reason][:3]:
         story.append(Paragraph("<b>Note:</b> " + _clean(str(w)), s["bl"]))
 
 
@@ -1327,18 +1262,34 @@ def _ml_section(story, s, T, ml_report, CW):
 #  CHART PAGE
 # ══════════════════════════════════════════════════════════
 
-def _chart_page(story, s, T, img_bytes, title, narrative, num, CW):
-    _sec(story, s, T, "Chart {}: {}".format(num, title))
-    if img_bytes:
+def _charts_section(story, s, T, chart_data, CW):
+    """All charts under one heading, each at its true proportions with the
+    caption computed from its own data. Every chart used to get its own
+    page and a fixed 2:1 frame, which squashed some and stretched others."""
+    if not chart_data:
+        return
+    _sec(story, s, T, "Charts", "Each caption is computed from the figures plotted")
+    for i, (title, img_bytes, caption) in enumerate(chart_data, 1):
+        if not img_bytes:
+            continue
         try:
-            img = Image(io.BytesIO(img_bytes),
-                        width=CW, height=CW * 0.48)
-            story.append(KeepTogether([img, Spacer(1, 3*mm)]))
+            from PIL import Image as _PIL
+            w, h = _PIL.open(io.BytesIO(img_bytes)).size
+            width = CW
+            height = CW * h / w
+            if height > 105 * mm:            # keep tall charts on the page
+                height = 105 * mm
+                width = height * w / h
+            img = Image(io.BytesIO(img_bytes), width=width, height=height)
+            img.hAlign = "LEFT"
         except Exception:
-            logger.debug("_chart_page: suppressed exception", exc_info=True)
-    if narrative:
-        story.append(Paragraph("Analysis", s["h3"]))
-        _narrative_box(story, s, T, narrative)
+            logger.warning("chart image could not be placed", exc_info=True)
+            continue
+        block = [Paragraph("{}. {}".format(i, _clean(title)), s["h3"]), img]
+        if caption:
+            block.append(Paragraph(_clean(caption), s["caption"]))
+        block.append(Spacer(1, 5 * mm))
+        story.append(KeepTogether(block))
 
 
 # ══════════════════════════════════════════════════════════
@@ -1346,8 +1297,7 @@ def _chart_page(story, s, T, img_bytes, title, narrative, num, CW):
 # ══════════════════════════════════════════════════════════
 
 def _recommendations(story, s, T, actions, CW):
-    _sec(story, s, T, "Recommendations & Action Plan",
-         "Follow-ups this data supports — confirm each before acting on it")
+    _sec(story, s, T, "Recommended Next Steps")
     if not actions:
         _narrative_box(story, s, T,
                        "The data did not point to a specific action beyond the findings "
@@ -1360,7 +1310,7 @@ def _recommendations(story, s, T, actions, CW):
         "LONG TERM":  (T["info"],      T["info_bg"]),
     }
 
-    for action in actions[:9]:
+    for n, action in enumerate(actions[:9], 1):
         action_str = str(action)
         # Only an explicit label sets urgency; matching the words anywhere
         # in the text tagged "...a critical supplier..." as CRITICAL.
@@ -1370,7 +1320,7 @@ def _recommendations(story, s, T, actions, CW):
                 priority = p
                 break
 
-        col, bg = pri_map.get(priority, (T["accent"], T["bg_light"]))
+        col, bg = pri_map.get(priority, (T["accent"], T["bg_card"]))
         text    = _clean(action_str
                    .replace("[CRITICAL] ", "")
                    .replace("[SHORT TERM] ", "")
@@ -1378,11 +1328,11 @@ def _recommendations(story, s, T, actions, CW):
                    .strip())
 
         card = Table([[
-            Paragraph(priority, ParagraphStyle(
-                "pri", fontName=FONT_BOLD, fontSize=7,
+            Paragraph(str(n), ParagraphStyle(
+                "pri", fontName=FONT_BOLD, fontSize=10,
                 textColor=HexColor(col), alignment=TA_CENTER)),
             Paragraph(text, s["body"]),
-        ]], colWidths=[CW*0.14, CW*0.86])
+        ]], colWidths=[CW*0.07, CW*0.93])
         card.setStyle(TableStyle([
             ("BACKGROUND",    (0,0), (-1,-1), HexColor(bg)),
             ("LINEBEFORE",    (0,0), (0,-1),  3, HexColor(col)),
@@ -1394,11 +1344,10 @@ def _recommendations(story, s, T, actions, CW):
         ]))
         story.append(KeepTogether([card, Spacer(1, 2*mm)]))
 
-    story.append(Spacer(1, 3*mm))
+    story.append(Spacer(1, 2*mm))
     story.append(Paragraph(
-        "All recommendations are based solely on the provided dataset. "
-        "Verify with domain experts before implementation.",
-        s["sm"]))
+        "Each step follows from this dataset alone; check it against what the "
+        "data cannot show before acting on it.", s["note"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -1421,7 +1370,7 @@ def _prepared_by_line(config: dict) -> str:
 
 
 def _appendix(story, s, T, config, CW, domain: str = "general"):
-    _sec(story, s, T, "Appendix — Methodology & Sources")
+    _sec(story, s, T, "Appendix: Method and Sources")
 
     # This section is what a reviewing analyst reads to decide whether to
     # trust the rest. It states the tests actually applied and why each was
@@ -1513,31 +1462,6 @@ def _appendix(story, s, T, config, CW, domain: str = "general"):
     if _bp.reference_note:
         story.append(Paragraph(_bp.reference_note, s["note"]))
 
-    story.append(Spacer(1, 4*mm))
-    disc = Table([[Paragraph(
-        "<b>BASIS OF PREPARATION</b><br/>"
-        "Prepared for {} on {}. All figures derive solely from the dataset "
-        "supplied for this engagement and describe the period it covers. "
-        "Statistical association is reported where present; it does not "
-        "establish causation. Any external reference range cited is "
-        "indicative and should be validated against the organisation's own "
-        "sector and prior periods before it informs a decision. "
-        "Recommendations assume the data is complete and accurate as "
-        "supplied.{}".format(
-            config.get("client_name", "Client"),
-            datetime.now().strftime("%B %d, %Y"),
-            _prepared_by_line(config)),
-        s["wh"])]],
-        colWidths=["100%"])
-    disc.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0), (-1,-1), _c(T["header_bg"])),
-        ("TOPPADDING",    (0,0), (-1,-1), 10),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 10),
-        ("LEFTPADDING",   (0,0), (-1,-1), 12),
-        ("RIGHTPADDING",  (0,0), (-1,-1), 12),
-        ("BOX",           (0,0), (-1,-1), 1.5, _c(T["accent"])),
-    ]))
-    story.append(disc)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1581,6 +1505,7 @@ def build_pdf(
         auto_key  = DOMAIN_THEMES.get(domain, "Corporate Light")
         theme_name = auto_key
     T = THEMES[theme_name]
+    config = dict(config)
     config["domain"]     = domain
     config["theme_name"] = theme_name
 
@@ -1588,24 +1513,24 @@ def build_pdf(
     client_name  = config.get("client_name", "Client")
     report_date  = datetime.now().strftime("%B %d, %Y")
 
-    # ── KPI preview for cover ─────────────────────────────
-    n_rows    = len(df)
-    miss_pct  = df.isna().mean().mean() * 100
-    n_charts  = len(chart_data)
-    qual      = getattr(profile, "overall_quality_score", "—")
-
+    # ── Facts about the data for the cover ────────────────
+    complete = 100 - df.isna().mean().mean() * 100 if len(df.columns) else 100
     kpis_cover = [
-        {"label": "RECORDS",      "value": "{:,}".format(n_rows),
-         "sub":   "Clean dataset", "color": T["accent"]},
-        {"label": "QUALITY",      "value": str(qual),
-         "sub":   "/ 100",         "color": T["positive"]},
-        {"label": "CHARTS",       "value": str(n_charts),
-         "sub":   "Incl. in report","color": T["accent"]},
-        {"label": "MISSING DATA", "value": "{:.1f}%".format(miss_pct),
-         "sub":   "0% = perfect",  "color": T["positive"] if miss_pct < 1 else T["warning"]},
+        {"label": "Records", "value": "{:,}".format(len(df))},
+        {"label": "Columns", "value": str(df.shape[1])},
+        {"label": "Cells filled", "value": "{:.1f}%".format(complete)},
     ]
+    dates = df.select_dtypes(include="datetime")
+    if not dates.empty:
+        col = dates.notna().sum().idxmax()
+        lo, hi = dates[col].min(), dates[col].max()
+        if pd.notna(lo) and pd.notna(hi):
+            kpis_cover.append({"label": "Period covered",
+                               "value": "{} – {}".format(lo.strftime("%b %Y"),
+                                                         hi.strftime("%b %Y"))
+                               if lo.year != hi.year or lo.month != hi.month
+                               else lo.strftime("%b %Y")})
 
-    # ── Cover page ────────────────────────────────────────
     cover_bytes = _build_cover(T, config, kpis_cover)
 
     # ── Content pages ─────────────────────────────────────
@@ -1619,12 +1544,13 @@ def build_pdf(
                              client_name=client_name,
                              report_date=report_date, **kw)
 
-    doc = BaseDocTemplate(
+    doc = _ReportDoc(
         content_buf, pagesize=A4,
         leftMargin=M, rightMargin=M,
-        topMargin=30*mm, bottomMargin=17*mm,
+        topMargin=22*mm, bottomMargin=18*mm,
+        title=report_title, author=client_name,
     )
-    frame = Frame(M, 17*mm, CW, H - 47*mm,
+    frame = Frame(M, 18*mm, CW, H - 40*mm,
                   leftPadding=0, rightPadding=0,
                   topPadding=0,  bottomPadding=0)
     tpl   = PageTemplate(id="main", frames=[frame], onPage=lambda c,d: None)
@@ -1633,89 +1559,39 @@ def build_pdf(
     s     = _styles(T)
     story = []
 
-    # ── Build TOC entries ─────────────────────────────────
-    sec_num = 1
-    toc     = []
-    def _add_toc(title):
-        nonlocal sec_num
-        toc.append((sec_num, title))
-        sec_num += 1
-
-    _add_toc("Executive Summary")
-    _add_toc("Data Quality & Transparency Note")
-    if cleaning_summary:
-        _add_toc("Data Preparation")
-    if _has_reference_ranges(domain, df):
-        _add_toc("Performance Against Published Ranges")
-    _add_toc("{} — Findings".format(
-        blueprint_for(domain).label))
-    if attrition:
-        _add_toc("Attrition Deep Dive")
-    _add_toc("Dataset Overview & Descriptive Statistics")
-    if stats_report:
-        _add_toc("Statistical Analysis")
-    if bi_report:
-        _add_toc("Business Intelligence")
-    if getattr(ml_report, "best_model", None) is not None:
-        _add_toc("Predictive Model")
-    for i, (t, _, _) in enumerate(chart_data, 1):
-        _add_toc("Chart {}: {}".format(i, t[:28]))
-    _add_toc("Recommendations & Action Plan")
-    _add_toc("Appendix — Methodology & Sources")
-
-    # ── Assemble story ────────────────────────────────────
-    _toc(story, s, T, toc, CW)
+    # ── Assemble: sections flow; each starts a new page only when too
+    # little room is left (see _sec). ─────────────────────
+    _toc(story, s, T, CW)
+    _basis_box(story, s, T, config)
     story.append(PageBreak())
 
     _exec_summary(story, s, T, executive_summary,
                   findings, risks, opportunities, CW)
-    story.append(PageBreak())
-
     _dq_note(story, s, T, df, profile, CW)
-    story.append(PageBreak())
-
     if cleaning_summary:
         _data_prep_section(story, s, T, cleaning_summary, CW,
                            table=config.get("source_table") or "source_table")
-        story.append(PageBreak())
-
     if _has_reference_ranges(domain, df):
         _benchmark_section(story, s, T, domain, CW, df=df)
-        story.append(PageBreak())
-
     _top_insights(story, s, T, top_insights, CW, domain=domain)
-    story.append(PageBreak())
-
     if attrition:
         _attrition_page(story, s, T, attrition, CW)
-        story.append(PageBreak())
-
+    _charts_section(story, s, T, chart_data, CW)
     _dataset_overview(story, s, T, df, profile, CW)
-    story.append(PageBreak())
-
     if stats_report:
         _stats_section(story, s, T, stats_report, CW)
-        story.append(PageBreak())
-
     if bi_report:
         _bi_section(story, s, T, bi_report, CW)
-        story.append(PageBreak())
-
     if getattr(ml_report, "best_model", None) is not None:
         _ml_section(story, s, T, ml_report, CW)
-        story.append(PageBreak())
-
-    for i, (title, img_bytes, narrative) in enumerate(chart_data, 1):
-        _chart_page(story, s, T, img_bytes, title, narrative, i, CW)
-        story.append(PageBreak())
-
     _recommendations(story, s, T, recommendations, CW)
-    story.append(PageBreak())
-
+    # No forced break: a short "Next Steps" was left alone on its page.
     _appendix(story, s, T, config, CW, domain=domain)
 
     # ── Build PDF ─────────────────────────────────────────
-    doc.build(story, canvasmaker=canvas_maker)
+    # Two passes: the first finds where each section starts, the second
+    # prints those page numbers on the contents page.
+    doc.multiBuild(_bind_headings(story), canvasmaker=canvas_maker)
     content_buf.seek(0)
 
     # ── Merge cover + content ─────────────────────────────

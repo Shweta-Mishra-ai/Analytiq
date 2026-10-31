@@ -52,10 +52,11 @@ def _measures(df: pd.DataFrame) -> List[str]:
 
 
 def _time_column(df: pd.DataFrame):
-    for c in df.columns:
-        if pd.api.types.is_datetime64_any_dtype(df[c]):
-            return c
-    return None
+    """The date records happened on. A hire, birth or start date is not
+    one: a measure "trending" over hire date is tenure and seniority showing
+    through, which the report printed as a key finding about salary."""
+    from app.engines.chart_exporter import _event_date
+    return _event_date(df)
 
 
 # ══════════════════════════════════════════════════════════
@@ -72,8 +73,9 @@ def trend_over_time(df: pd.DataFrame, insights: List, findings: List,
     with an R² of 0.02 is a true statement about a trend nobody could
     act on.
     """
+    from app.engines.chart_exporter import _measures as _ranked_measures
     time_col = _time_column(df)
-    measures = _measures(df)
+    measures = _ranked_measures(df)
     if not time_col or not measures:
         return
     try:
@@ -91,9 +93,8 @@ def trend_over_time(df: pd.DataFrame, insights: List, findings: List,
         r2 = float(fit.rvalue ** 2)
         if fit.pvalue >= 0.05 or r2 < MIN_TREND_R2:
             findings.append(
-                "'{}' shows no trend over the period that is distinguishable "
-                "from ordinary variation (R²={:.2f}, p={:.2g}, n={:,}). The "
-                "level, not the direction, is what this data supports.".format(
+                "'{}' shows no trend over the period beyond ordinary variation "
+                "(R²={:.2f}, p={:.2g}, n={:,}).".format(
                     target, r2, fit.pvalue, len(work)))
             return
 

@@ -110,7 +110,7 @@ export default function ReportsPage() {
     'w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink placeholder:text-mute focus:border-accent focus:outline-none'
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="Reports"
         subtitle="Client-ready analysis PDF, plus clean data exports"
@@ -181,7 +181,7 @@ export default function ReportsPage() {
                 ) : (
                   <FileText className="h-4 w-4" />
                 )}
-                {busy === 'pdf' ? 'Building report… (30–60s)' : 'Generate PDF report'}
+                {busy === 'pdf' ? 'Building report…' : 'Generate PDF report'}
               </span>
             </Btn>
             <p className="text-xs text-mute">

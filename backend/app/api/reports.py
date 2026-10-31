@@ -7,13 +7,11 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 
-from app.config import config
 from app.engines.data_cleaner import table_name_from_filename
 from app.services.auth import current_owner
 from app.services.dataset_store import store
@@ -83,9 +81,11 @@ def _neutralise_formulas(df):
 @router.get("/{ds_id}/csv")
 def export_csv(ds_id: str, owner: str = Depends(current_owner)):
     df = _neutralise_formulas(_df_or_404(owner, ds_id))
-    buf = io.BytesIO(df.to_csv(index=False).encode("utf-8-sig"))
-    return StreamingResponse(buf, media_type="text/csv", headers={
-        "Content-Disposition": "attachment; filename=analytiq_cleaned_data.csv"})
+    # Sent whole. A StreamingResponse over a BytesIO iterates it line by
+    # line: 60,000 rows went out as 60,000 chunks and took 12 s instead of 2.
+    return Response(df.to_csv(index=False).encode("utf-8-sig"), media_type="text/csv",
+                    headers={"Content-Disposition":
+                             "attachment; filename=analytiq_cleaned_data.csv"})
 
 
 def _excel_safe_times(df):
@@ -111,15 +111,16 @@ def export_excel(ds_id: str, owner: str = Depends(current_owner)):
     import pandas as pd
     # Strings are written as text. xlsxwriter's default turns any value
     # beginning with "=" into a live formula in the delivered workbook.
+    # Not constant_memory: it is faster, but pandas does not write row by
+    # row, and in that mode every text and date cell came back empty.
     with pd.ExcelWriter(buf, engine="xlsxwriter", engine_kwargs={
             "options": {"strings_to_formulas": False}}) as writer:
         df.to_excel(writer, sheet_name="Data", index=False)
         num = df.select_dtypes(include="number")
         if not num.empty:
             num.describe().T.to_excel(writer, sheet_name="Summary")
-    buf.seek(0)
-    return StreamingResponse(
-        buf,
+    return Response(
+        buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=analytiq_export.xlsx"})
 
@@ -131,7 +132,7 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
     from app.engines.data_profiler import profile_dataset
     from app.engines.story_engine import detect_domain, generate_story
     from app.engines.pdf_builder import build_pdf
-    from app.engines.chart_exporter import generate_all_charts
+    from app.engines.chart_exporter import build_report_charts
 
     # 1. profile
     try:
@@ -147,8 +148,7 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
 
     # 3. story
     story_obj = None
-    exec_summary, findings, risks, opportunities, actions = (
-        "Analysis completed by Analytiq.", [], [], [], [])
+    exec_summary, findings, risks, opportunities, actions = ("", [], [], [], [])
     try:
         story_obj = generate_story(df)
         exec_summary = story_obj.executive_summary
@@ -198,23 +198,17 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
     # 7. ML (only if previously trained)
     ml_report = store.cache_get(owner, ds_id, "ml_last") if req.include_ml else None
 
-    # 8. charts + AI narratives
+    # 8. charts, each captioned from the numbers it plots. The text used to
+    # be written separately, by guessing the chart's columns back from its
+    # title, and described identifiers and the wrong measure.
+    from app.engines import report_theme
+    theme_name = report_theme.resolve(req.theme_name, domain_name)
     chart_data = []
-    theme_name = req.theme_name
     try:
-        charts = generate_all_charts(df, theme_name, max_charts=req.max_charts)
-        for title, img_bytes in charts:
-            if not img_bytes:
-                continue
-            try:
-                from app.ai.report_narrator import generate_chart_narrative
-                narrative = generate_chart_narrative(
-                    df, title, config.groq_api_key, domain_name)
-            except Exception:
-                narrative = "Chart generated from dataset analysis."
-            chart_data.append((title, img_bytes, narrative))
-    except Exception as e:
-        logger.warning(f"chart export failed: {e}")
+        chart_data = [(c.title, c.png, c.caption) for c in build_report_charts(
+            df, theme_name, domain_name, max_charts=req.max_charts)]
+    except Exception:
+        logger.warning("chart export failed", exc_info=True)
 
     # 9. build PDF
     pdf_config = {
@@ -247,8 +241,8 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
         logger.exception("PDF build failed")
         raise HTTPException(500, f"PDF build failed: {e}")
 
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes), media_type="application/pdf",
+    return Response(
+        pdf_bytes, media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=analytiq_report.pdf"})
 
 
@@ -315,7 +309,7 @@ def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
         logger.exception("Health PDF build failed")
         raise HTTPException(500, f"Health report build failed: {e}")
 
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes), media_type="application/pdf",
+    return Response(
+        pdf_bytes, media_type="application/pdf",
         headers={"Content-Disposition":
                  "attachment; filename=analytiq_health_report.pdf"})

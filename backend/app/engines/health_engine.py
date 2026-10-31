@@ -23,7 +23,6 @@ from typing import Dict, List
 
 import numpy as np
 import pandas as pd
-from app.services.dtypes import is_text_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +68,14 @@ def compute_health(df: pd.DataFrame) -> dict:
         score = max(0.0, 100.0 - missing_pct)
     score = max(int(round(score)), 0)
 
-    grade_map = [(90,"A+","Excellent","#22d3a5"),
-                 (80,"A", "Very Good","#42b983"),
-                 (70,"B+","Good",     "#60a5fa"),
-                 (60,"B", "Fair",     "#fbbf24"),
-                 (50,"C", "Needs Work","#f97316"),
-                 (0, "D", "Poor",    "#ef4444")]
+    # The report's status colours (report_theme), not a separate bright set:
+    # a neon-teal grade was the one colour on the page from no palette.
+    grade_map = [(90,"A+","Excellent", "#067647"),
+                 (80,"A", "Very Good", "#067647"),
+                 (70,"B+","Good",      "#475467"),
+                 (60,"B", "Fair",      "#B54708"),
+                 (50,"C", "Needs Work","#B54708"),
+                 (0, "D", "Poor",      "#B42318")]
     grade, label, color = next(
         (g, ln, c) for thresh, g, ln, c in grade_map if score >= thresh)
 
@@ -106,349 +107,202 @@ def build_insights(df: pd.DataFrame, niche: str) -> list:
         return None
 
     def _ins(tag, title, body, action, severity):
-        # FIX: use rgba with low alpha so cards are visible on both light and dark Streamlit themes.
-        # Hardcoded light hex (#fef2f2, #eff6ff etc.) vanish on dark backgrounds.
-        COLOR = {
-            "critical": ("#ef4444", "rgba(239,68,68,0.08)"),
-            "warning":  ("#f97316", "rgba(249,115,22,0.08)"),
-            "positive": ("#22d3a5", "rgba(34,211,165,0.08)"),
-            "info":     ("#3b82f6", "rgba(59,130,246,0.08)"),
-        }
-        border, bg = COLOR.get(severity, ("#3b82f6", "rgba(59,130,246,0.08)"))
+        border, bg = _CARD_COLORS.get(severity, _CARD_COLORS["info"])
         return {"tag": tag, "title": title, "body": body, "action": action,
                 "severity": severity, "border": border, "bg": bg, "tag_color": border}
 
-    # ── Universal: skew check ──────────────────────────────
-    num_cols = df.select_dtypes(include="number").columns.tolist()
-    for c in num_cols[:3]:
+    # Every card here states a measured figure. A gap between groups is
+    # reported only when a significance test says it is larger than chance,
+    # and no card names a cause or cites a source this dataset cannot back.
+    # The cards this replaced quoted "Mercer 2024" and "McKinsey 2024" figures
+    # nobody could trace, called a 6-point department gap with p=0.78 "the
+    # highest attrition", and prescribed mentoring programmes and VIP tiers.
+    from app.engines.chart_exporter import _measures, fmt
+    from app.engines.domains.hr import (_exit_sentence, _find_left_mask,
+                                        _segment_exit_rates, describe_rates,
+                                        group_exit_gap)
+
+    # ── Universal: skew ────────────────────────────────────
+    for c in _measures(df)[:3]:
         s = df[c].dropna()
         if len(s) < 10:
             continue
-        skew = float(s.skew()) if len(s) > 3 else 0
+        skew = float(s.skew())
         if abs(skew) > 2:
-            direction = "right" if skew > 0 else "left"
-            diff_pct = abs(s.mean() - s.median()) / max(s.std(), 0.001) * 100
             insights.append(_ins(
                 "DATA SKEW",
-                "'{}' is heavily skewed (skew={:.2f})".format(c, skew),
-                "The distribution of **{}** is {}-skewed. Mean ({:.2f}) differs from Median ({:.2f}) by {:.0f}%. Averages in reports based on this column may be misleading.".format(c, direction, s.mean(), s.median(), diff_pct),
-                "Use median for '{}' in client reports, not mean.".format(c),
-                "warning"
+                "'{}' is heavily skewed: mean {}, median {}".format(c, fmt(s.mean()), fmt(s.median())),
+                "A few {} values pull the average {} the typical value "
+                "(skewness {:.1f}).".format("large" if skew > 0 else "small",
+                                           "above" if skew > 0 else "below", skew),
+                "Quote the median for '{}' when describing a typical record.".format(c),
+                "info"
             ))
+            insights[-1]["column"] = str(c)
 
     # ── HR-specific ────────────────────────────────────────
     if niche == "hr":
-        attrition_col = _find(["attrition","left","churned","resigned","exited","turnover"])
-        sat_col       = _find(["satisfaction","engagement","score","rating"])
-        dept_col      = _find(["department","dept","team","division"])
+        left = _find_left_mask(df)
+        sat_col = _find(["satisfaction", "engagement"], numeric_only=True)
 
-        if attrition_col:
-            s = df[attrition_col]
-            atr_rate = None
-            if str(s.dtype) in ["bool","int64","float64"] and float(s.max()) <= 1:
-                atr_rate = float(s.mean()) * 100
-            elif is_text_dtype(s):
-                atr_rate = float(s.str.lower().isin(["yes","true","1","left"]).mean()) * 100
-            if atr_rate is not None:
-                sev = "critical" if atr_rate > 20 else "warning" if atr_rate > 10 else "positive"
-                note = "CRITICAL — more than double the 10% planning threshold." if sev == "critical" else "Above the 10% planning threshold." if sev == "warning" else "Below 10% — excellent retention."
-                action = "IMMEDIATE: Conduct stay-interviews in high-risk departments." if sev == "critical" else "Build a quarterly pulse survey. Flag departments above 15%." if sev == "warning" else "Document what drives retention — use as a competitive advantage."
-                insights.append(_ins(
-                    "ATTRITION RISK" if sev == "critical" else "ATTRITION" if sev == "warning" else "HEALTHY RETENTION",
-                    "Attrition rate is {:.1f}% (planning threshold: <10%)".format(atr_rate),
-                    "Your dataset shows **{:.1f}% attrition**. {} Replacement cost is commonly modelled at **50–200% of annual salary** — substitute your actual figures to quantify the exposure.".format(atr_rate, note),
-                    action, sev
-                ))
-
-        if sat_col:
-            mean_sat = float(df[sat_col].dropna().mean())
-            max_sat  = float(df[sat_col].dropna().max())
-            sat_norm = mean_sat / max_sat if max_sat > 1 else mean_sat
-            sev = "critical" if sat_norm < 0.5 else "warning" if sat_norm < 0.7 else "positive"
-            note = "low satisfaction is a leading indicator of attrition — compare exit rates of low scorers vs the rest to quantify it for this organisation." if sev in ("critical","warning") else "scores above 70% indicate an engaged workforce."
+        if left is not None and len(left):
+            rate = float(left.mean() * 100)
+            band = ("above" if rate > 15 else "within" if rate >= 10 else "below")
             insights.append(_ins(
-                "EMPLOYEE SATISFACTION",
-                "Avg satisfaction: {:.2f} / {:.0f} ({:.0f}%)".format(mean_sat, max_sat, sat_norm*100),
-                "Mean satisfaction score is **{:.2f}** (normalized: {:.0f}%) — {}".format(mean_sat, sat_norm*100, note),
-                "Implement manager 1:1s and recognition programs, and track exits by satisfaction band to measure impact." if sev != "positive" else "Publish satisfaction data in employer branding.",
-                sev
+                "ATTRITION",
+                "Attrition is {:.1f}%, {} the 10–15% planning band".format(rate, band),
+                "{:,} of {:,} employees left. Healthy rates vary by industry; the band "
+                "is a planning reference, not a benchmark for this sector.".format(
+                    int(left.sum()), len(left)),
+                "Interview recent leavers to learn why they left." if rate > 15 else
+                "Keep tracking the rate by department so a rise shows early.",
+                "warning" if rate > 15 else "info" if rate >= 10 else "positive"
             ))
 
-        if dept_col and attrition_col:
-            try:
-                s = df[attrition_col]
-                tmp = df.copy()
-                if is_text_dtype(s):
-                    tmp["_atr"] = s.str.lower().isin(["yes","true","1","left"]).astype(float)
-                else:
-                    tmp["_atr"] = pd.to_numeric(s, errors="coerce")
-                grp = tmp.groupby(dept_col)["_atr"]
-                sizes = grp.size()
-                dept_risk = grp.mean()[sizes >= 20].sort_values(ascending=False)
-                if len(dept_risk) == 0:
-                    raise ValueError("no department with n>=20 — skip insight")
-                top_dept  = str(dept_risk.index[0])
-                top_rate  = float(dept_risk.iloc[0]) * 100
-                sev = "critical" if top_rate > 20 else "warning"
+        if sat_col:
+            from app.engines.domains.base import infer_scale_bounds
+            s = df[sat_col].dropna()
+            lo, hi = infer_scale_bounds(float(s.min()), float(s.max()))
+            pct = (float(s.mean()) - lo) / (hi - lo) * 100 if hi > lo else 0.0
+            insights.append(_ins(
+                "EMPLOYEE SATISFACTION",
+                "Satisfaction averages {:.0f}% of the scale".format(pct),
+                "Mean {:.2f} on a {:.0f}–{:.0f} scale.".format(float(s.mean()), lo, hi),
+                "Break the scores down by department to see where they are lowest.",
+                "warning" if pct < 55 else "info"
+            ))
+
+        # Tenure cohorts: only when cohorts really leave at different rates.
+        tenure_col = _find(["tenure", "years_at", "seniority", "time_spend"], numeric_only=True)
+        if tenure_col and left is not None:
+            cohorts = pd.cut(df[tenure_col], bins=[-0.01, 2, 5, float("inf")],
+                             labels=["0–2 years", "3–5 years", "6+ years"])
+            gap = group_exit_gap(cohorts, left)
+            if gap and gap["p"] < 0.05:
                 insights.append(_ins(
-                    "DEPARTMENT RISK",
-                    "'{}' has the highest attrition: {:.1f}%".format(top_dept, top_rate),
-                    "The **{}** department shows {:.1f}% attrition — {} the 10% planning threshold. Department-level attrition often signals a specific manager, workload, or pay equity issue.".format(top_dept, top_rate, "critically above" if top_rate > 20 else "above"),
-                    "Prioritize '{}' for skip-level interviews and exit interview analysis.".format(top_dept),
-                    sev
+                    "TENURE",
+                    "'{}' tenure leaves at {:.0f}%, against {:.0f}% for '{}'".format(
+                        gap["worst"], gap["rates"].iloc[0], gap["rates"].iloc[-1], gap["best"]),
+                    "Exit rate by tenure: {}. Chi-square p={:.3f}. The data shows when "
+                    "people leave, not why.".format(describe_rates(gap), gap["p"]),
+                    "Ask leavers from the '{}' group what made them go.".format(gap["worst"]),
+                    "warning"
                 ))
-            except Exception:
-                logger.warning("Health Report section failure", exc_info=True)
 
-        # ── HR: Tenure cohort analysis ─────────────────
-        tenure_col = _find(["tenure","years","seniority","experience","time_spend"])
-        if tenure_col and attrition_col:
-            try:
-                tmp2 = df.copy()
-                if is_text_dtype(df[attrition_col]):
-                    tmp2["_atr2"] = df[attrition_col].str.lower().isin(["yes","true","1","left"]).astype(float)
-                else:
-                    tmp2["_atr2"] = pd.to_numeric(df[attrition_col], errors="coerce")
-                # Bin tenure into 3 cohorts
-                tmp2["_tenure_bin"] = pd.cut(tmp2[tenure_col],
-                    bins=[0, 2, 5, float("inf")],
-                    labels=["0–2 yrs", "3–5 yrs", "6+ yrs"])
-                cohort_atr = tmp2.groupby("_tenure_bin")["_atr2"].mean() * 100
-                new_hire_atr = float(cohort_atr.get("0–2 yrs", 0))
-                vet_atr      = float(cohort_atr.get("6+ yrs", 0))
-                if new_hire_atr > 25:
-                    insights.append(_ins(
-                        "ONBOARDING RISK",
-                        "New hires (0–2 yrs) attrition: {:.1f}%".format(new_hire_atr),
-                        "Employees in their first 2 years show {:.1f}% attrition — a signal of poor onboarding, misaligned expectations, or poor manager support. "
-                        "Veteran employees (6+ yrs) show {:.1f}% attrition by comparison. "
-                        "Replacing a new hire is commonly modelled at 50–150% of salary before full productivity.".format(new_hire_atr, vet_atr),
-                        "Implement a structured 90-day onboarding program. Assign mentors to all new hires. "
-                        "Run a 30/60/90 check-in survey to catch at-risk employees early.",
-                        "critical" if new_hire_atr > 35 else "warning"
-                    ))
-                elif vet_atr > 15:
-                    insights.append(_ins(
-                        "VETERAN FLIGHT RISK",
-                        "Senior employees (6+ yrs) attrition: {:.1f}%".format(vet_atr),
-                        "Experienced employees (6+ years tenure) are leaving at {:.1f}%. "
-                        "This is a knowledge drain — these employees carry institutional memory, client relationships, and domain expertise. "
-                        "Senior replacements are commonly modelled at up to 200% of annual salary because of lost institutional knowledge.".format(vet_atr),
-                        "Run skip-level interviews with the 6+ year cohort this quarter. "
-                        "Review compensation and career growth opportunities for this group specifically.",
-                        "warning"
-                    ))
-            except Exception:
-                logger.warning("Health Report section failure", exc_info=True)
+        # Promotion: measured exit rates, not a cited multiplier.
+        promo_col = _find(["promotion", "promoted"])
+        if promo_col and left is not None:
+            p = df[promo_col]
+            p = (pd.to_numeric(p, errors="coerce") if pd.api.types.is_numeric_dtype(p)
+                 else p.astype(str).str.lower().isin(["yes", "true", "1"]).astype(float))
+            exits = _segment_exit_rates(df, p == 0)
+            if exits and exits[2] == exits[2] and exits[2] < 0.05 and exits[0] > exits[1]:
+                insights.append(_ins(
+                    "PROMOTION",
+                    "Employees without a recent promotion leave at {:.0f}%, against "
+                    "{:.0f}%".format(exits[0], exits[1]),
+                    "{:.1f}% of employees were promoted. {}".format(
+                        float((p == 1).mean() * 100),
+                        _exit_sentence("Those not promoted", exits)),
+                    "Check whether the gap holds within each department and pay band "
+                    "before treating promotion as a retention lever.",
+                    "warning"
+                ))
 
-        # ── HR: Overwork risk ─────────────────────────────
-        hours_col = _find(["hours","montly_hours","monthly_hours","avg_hours","work_hour"])
-        if hours_col:
-            try:
-                mean_h = float(df[hours_col].dropna().mean())
-                pct_overwork = float((df[hours_col].dropna() > 210).mean() * 100)
-                if pct_overwork > 20 or mean_h > 195:
-                    sev = "critical" if pct_overwork > 40 or mean_h > 220 else "warning"
-                    insights.append(_ins(
-                        "OVERWORK RISK",
-                        "Avg {:.0f} hrs/month — {:.0f}% working >210 hrs".format(mean_h, pct_overwork),
-                        "Average monthly hours are {:.0f} (standard: 160–180 hrs). "
-                        "{:.0f}% of employees work more than 210 hours per month — a burnout risk zone. "
-                        "Compare the exit rate of the >210-hour group against the rest of the workforce "
-                        "to quantify the burnout cost visible in this dataset.".format(mean_h, pct_overwork),
-                        "Audit workload distribution immediately — identify if overwork is concentrated in specific teams. "
-                        "Hire contractors or redistribute tasks. Target: bring >90% of workforce under 200 hrs/month.",
-                        sev
-                    ))
-            except Exception:
-                logger.warning("Health Report section failure", exc_info=True)
-
-        # ── HR: Salary band vs attrition ─────────────────
-        # A 'salary band' must be a small set of bands (low/medium/high) — NOT
-        # a rate/percent column like 'PercentSalaryHike' whose values (11, 22,
-        # 24…) would be printed as fake bands ("'24' band"). Exclude percent/
-        # rate columns; bin a continuous salary into quartiles.
-        _sal_candidates = [c for c in df.columns
-                           if any(k in c.lower() for k in ("salary", "pay", "compensation", "wage", "band"))
-                           and not any(k in c.lower() for k in ("percent", "pct", "hike", "rate", "ratio", "%"))]
-        salary_col = _sal_candidates[0] if _sal_candidates else None
-        if salary_col and attrition_col:
-            try:
-                tmp3 = df.copy()
-                if is_text_dtype(df[attrition_col]):
-                    tmp3["_atr3"] = df[attrition_col].str.lower().isin(["yes","true","1","left"]).astype(float)
-                else:
-                    tmp3["_atr3"] = pd.to_numeric(df[attrition_col], errors="coerce")
-                # Continuous salary with many values → quartile bands.
-                band_col = salary_col
-                if pd.api.types.is_numeric_dtype(df[salary_col]) and df[salary_col].nunique() > 8:
-                    tmp3["_band"] = pd.qcut(df[salary_col], 4,
-                                            labels=["Lowest 25%", "Lower-mid", "Upper-mid", "Highest 25%"],
-                                            duplicates="drop")
-                    band_col = "_band"
-                grp3 = tmp3.groupby(band_col, observed=True)["_atr3"]
-                sal_atr = (grp3.mean()[grp3.size() >= 20]
-                           .sort_values(ascending=False) * 100)
-                if len(sal_atr) >= 2:
-                    worst_band = str(sal_atr.index[0])
-                    worst_rate = float(sal_atr.iloc[0])
-                    best_band  = str(sal_atr.index[-1])
-                    best_rate  = float(sal_atr.iloc[-1])
-                    gap        = worst_rate - best_rate
-                    if gap > 8:
-                        insights.append(_ins(
-                            "PAY-DRIVEN ATTRITION",
-                            "'{}' band: {:.1f}% attrition vs '{}': {:.1f}%".format(worst_band, worst_rate, best_band, best_rate),
-                            "The '{}' salary band has {:.1f}% attrition vs {:.1f}% for the '{}' band — a {:.0f} percentage point gap. "
-                                                        "Pay-driven attrition is the fastest to fix but most expensive if ignored — each exit in a low band still costs 50–100% of annual salary.".format(
-                                worst_band, worst_rate, best_rate, best_band, gap),
-                            "Run market salary benchmarking for the '{}' band within 30 days. "
-                            "Model the ROI of a 10–15% pay increase vs replacement cost for the highest-risk employees.".format(worst_band),
-                            "critical" if worst_rate > 25 else "warning"
-                        ))
-            except Exception:
-                logger.warning("Health Report section failure", exc_info=True)
-
-        # ── HR: Promotion gap → flight risk ───────────────
-        promo_col = _find(["promotion","promoted","promotion_last"])
-        if promo_col and sat_col and attrition_col:
-            try:
-                promo_s = df[promo_col]
-                if not pd.api.types.is_numeric_dtype(promo_s):
-                    promo_s = promo_s.str.lower().isin(["yes","true","1"]).astype(float)
-                promo_rate = float(promo_s.mean()) * 100
-                # Satisfaction for un-promoted employees
-                not_promoted_sat = float(df.loc[promo_s == 0, sat_col].dropna().mean()) if (promo_s == 0).any() else None
-                promoted_sat     = float(df.loc[promo_s == 1, sat_col].dropna().mean()) if (promo_s == 1).any() else None
-                if promo_rate < 5 and not_promoted_sat is not None:
-                    insights.append(_ins(
-                        "PROMOTION GAP",
-                        "Only {:.1f}% promoted — unpromoted satisfaction: {:.2f}".format(promo_rate, not_promoted_sat),
-                        "Only {:.1f}% of employees received a promotion in the last 5 years. "
-                        "Employees without promotion show {:.2f} satisfaction vs {:.2f} for promoted staff — a {:.0f}% gap. "
-                        "Mercer 2024: lack of career growth is the #1 voluntary exit driver. "
-                        "Employees without a promotion path are 3× more likely to leave within 12 months.".format(
-                            promo_rate,
-                            not_promoted_sat,
-                            promoted_sat if promoted_sat else not_promoted_sat,
-                            abs((promoted_sat or not_promoted_sat) - not_promoted_sat) / max(not_promoted_sat, 0.01) * 100
-                        ),
-                        "Create transparent promotion criteria for all levels. "
-                        "Implement individual development plans (IDPs) for the bottom 30% satisfaction + no-promotion segment. "
-                        "Target: increase promotion rate to at least 10% per year.",
-                        "critical" if promo_rate < 3 else "warning"
-                    ))
-            except Exception:
-                logger.warning("Health Report section failure", exc_info=True)
-
-        # ── HR: Flight risk segment ───────────────────────
-        # Headline count/% MUST match the Main Report's flight-risk figure —
-        # both now call the one shared core.engines.hr.compute_flight_risk()
-        # definition (satisfaction only). Tenure is reported as additional
-        # context on top of that shared count, not folded into the count
-        # itself — previously this section used its own two-factor formula
-        # (satisfaction AND tenure), which produced a different headcount
-        # than the Main Report for the same dataset.
-        if attrition_col and sat_col:
-            try:
-                from app.engines.domains.hr import compute_flight_risk, _find_left_mask
-                left_mask = _find_left_mask(df)
-                n_flight, risk_pct, _sat_col = compute_flight_risk(df, left_mask=left_mask)
-                if n_flight > 0 and risk_pct > 10:
-                    tenure_note = ""
-                    if tenure_col and left_mask is not None:
-                        try:
-                            current = df.loc[~left_mask]
-                            ten_median = float(current[tenure_col].median())
-                            sat_q25 = float(current[sat_col].quantile(0.25))
-                            at_risk_mask = (~left_mask) & (df[sat_col] <= sat_q25)
-                            long_tenured = int((df.loc[at_risk_mask, tenure_col] >= ten_median).sum())
-                            tenure_note = (
-                                " Of these, {:,} are also long-tenured (≥{:.0f} years) — "
-                                "the highest-value flight risks, since they carry the most "
-                                "institutional knowledge to lose.".format(long_tenured, ten_median)
-                            )
-                        except Exception:
-                            logger.warning("Health Report tenure sub-segment failed", exc_info=True)
-                    insights.append(_ins(
-                        "FLIGHT RISK SEGMENT",
-                        "{:.0f}% of current workforce is at high flight risk".format(risk_pct),
-                        "**{:,} current employees** ({:.0f}% of workforce) fall in the bottom "
-                        "quartile of satisfaction — the flight risk profile.{}".format(
-                            n_flight, risk_pct, tenure_note),
-                        "Pull this segment's names from your HRIS immediately. "
-                        "Schedule 1:1 career conversations within 2 weeks. "
-                        "This is your highest-priority retention action — act before they decide.",
-                        "critical" if risk_pct > 20 else "warning"
-                    ))
-            except Exception:
-                logger.warning("Health Report section failure", exc_info=True)
+        # Flight risk is a label (bottom quartile of satisfaction); it is a
+        # finding only if that group is measured to leave more.
+        if sat_col and left is not None:
+            from app.engines.domains.hr import compute_flight_risk
+            n_flight, risk_pct, _ = compute_flight_risk(df, left_mask=left)
+            q25 = float(df.loc[~left, sat_col].quantile(0.25))
+            exits = _segment_exit_rates(df, df[sat_col] < q25)
+            if n_flight and exits and exits[2] == exits[2] and exits[2] < 0.05 \
+                    and exits[0] > exits[1]:
+                insights.append(_ins(
+                    "FLIGHT RISK",
+                    "{:,} current employees sit in the satisfaction group that leaves most".format(
+                        n_flight),
+                    "{} {:,} current employees ({:.0f}%) score in that bottom quarter.".format(
+                        _exit_sentence("Employees in the bottom quarter of satisfaction", exits),
+                        n_flight, risk_pct),
+                    "Start retention conversations with this group.",
+                    "warning"
+                ))
 
     # ── SALES-specific ────────────────────────────────────
     elif niche == "sales":
         rev_col    = _find(["revenue","amount","deal_value","deal_size","value","gmv","arr"], numeric_only=True)
-        status_col = _find(["status","stage","outcome","result","win","lost"])
+        status_col = _find(["status","stage","outcome","result"])
 
         if rev_col:
             s     = df[rev_col].dropna()
             total = float(s.sum())
-            top10 = float(s.nlargest(max(1, int(len(s)*0.1))).sum())
-            conc  = top10 / total * 100 if total > 0 else 0
-            sev   = "critical" if conc > 80 else "warning" if conc > 60 else "positive"
-            note  = "CRITICAL concentration risk — losing 1-2 key accounts could collapse revenue." if sev == "critical" else "High concentration — moderate dependency on key accounts." if sev == "warning" else "Healthy revenue distribution."
+            k     = max(1, int(len(s) * 0.1))
+            conc  = float(s.nlargest(k).sum()) / total * 100 if total > 0 else 0
             insights.append(_ins(
-                "REVENUE CONCENTRATION",
-                "Top 10% of deals = {:.0f}% of total revenue".format(conc),
-                "Your top 10% deals account for **{:.0f}% of {}** (${:,.0f} total). {}".format(conc, rev_col, total, note),
-                "Immediately build 3–5 additional pipeline accounts at the same deal size." if sev == "critical" else "Implement account health scoring. Trigger executive relationships for top 10%." if sev == "warning" else "Replicate the profile of top-performing deals in prospecting strategy.",
-                sev
+                "CONCENTRATION",
+                "The largest 10% of records bring in {:.0f}% of {}".format(conc, rev_col),
+                "The largest {:,} of {:,} records total {} of {}.".format(
+                    k, len(s), fmt(float(s.nlargest(k).sum())), fmt(total)),
+                "Check whether these records come from a few customers; if they do, "
+                "that dependence is the risk to manage.",
+                "warning" if conc > 60 else "info"
             ))
 
         if status_col:
             s    = df[status_col].dropna().astype(str).str.lower()
-            won  = int(s.isin(["won","win","closed won","success","yes"]).sum())
-            lost = int(s.isin(["lost","lose","closed lost","loss","no","failed"]).sum())
+            won  = int(s.isin(["won","win","closed won","success"]).sum())
+            lost = int(s.isin(["lost","lose","closed lost","loss","failed"]).sum())
             total = won + lost
-            win_rate = won / total * 100 if total > 0 else 0
-            sev  = "critical" if win_rate < 20 else "warning" if win_rate < 35 else "positive"
-            note = "Well below benchmark — significant pipeline efficiency problem." if sev == "critical" else "Below benchmark — improvement needed." if sev == "warning" else "At or above benchmark — strong sales execution."
-            insights.append(_ins(
-                "WIN RATE",
-                "Win rate: {:.1f}% (Benchmark: 25-40%)".format(win_rate),
-                "Out of **{} qualified deals**, {} were won ({:.1f}%). A 25–40% win rate is a common planning band — validate against your market. {}".format(total, won, win_rate, note),
-                "Implement MEDDIC or BANT qualification framework. Review lost deal reasons." if sev != "positive" else "Document the winning sales playbook. Scale to underperformers.",
-                sev
-            ))
+            if total >= 20:
+                win_rate = won / total * 100
+                insights.append(_ins(
+                    "WIN RATE",
+                    "{:.0f}% of closed deals were won".format(win_rate),
+                    "{:,} won and {:,} lost. A 25–40% win rate is a common planning "
+                    "band; it varies a great deal by market.".format(won, lost),
+                    "Compare won and lost deals by region, product and rep to see "
+                    "where the rate drops.",
+                    "warning" if win_rate < 25 else "info"
+                ))
 
     # ── E-COMMERCE-specific ──────────────────────────────
     elif niche == "ecommerce":
-        order_val_col = _find(["order_value","gmv","amount","total","price","revenue","aov"], numeric_only=True)
-        customer_col  = _find(["customer","user","buyer","client_id","customer_id"])
+        # Not "price": in a product catalogue that is a list price, and the
+        # card called it "average order".
+        order_val_col = _find(["order_value","gmv","amount","order_total","revenue","aov"],
+                              numeric_only=True)
+        customer_col  = _find(["customer","user","buyer","client"])
 
         if order_val_col:
-            s   = df[order_val_col].dropna()
-            aov = float(s.mean())
-            top20_avg = float(s.nlargest(max(1, int(len(s)*0.2))).mean())
+            s = df[order_val_col].dropna()
             insights.append(_ins(
-                "AVERAGE ORDER VALUE",
-                "AOV = ${:,.2f} per transaction".format(aov),
-                "Average Order Value is **${:,.2f}**. Top 20% of orders average ${:,.2f}. Increasing AOV by 10% through upselling is more profitable than acquiring new customers.".format(aov, top20_avg),
-                "Deploy bundled products for orders below ${:.0f}. Target: lift AOV by 15% in 90 days.".format(aov * 0.7),
+                "ORDER VALUE",
+                "Average order {}; median {}".format(fmt(s.mean()), fmt(s.median())),
+                "The top 20% of orders average {}.".format(
+                    fmt(s.nlargest(max(1, int(len(s) * 0.2))).mean())),
+                "Use the median when quoting a typical order; the average is pulled "
+                "up by the largest ones." if s.mean() > 1.2 * s.median() else
+                "The average is a fair summary of a typical order here.",
                 "info"
             ))
 
-        if customer_col and order_val_col:
+        if customer_col and order_val_col and customer_col != order_val_col:
             try:
-                cust_spend = df.groupby(customer_col)[order_val_col].sum()
-                top20_pct  = float(cust_spend.nlargest(max(1, int(len(cust_spend)*0.2))).sum() / cust_spend.sum() * 100)
-                sev = "critical" if top20_pct > 80 else "warning" if top20_pct > 65 else "positive"
-                insights.append(_ins(
-                    "PARETO PRINCIPLE",
-                    "Top 20% customers = {:.0f}% of revenue".format(top20_pct),
-                    "**{:.0f}% of revenue** comes from your top 20% customers. {} ".format(top20_pct, "Classic Pareto — but high concentration means churn of top customers = major revenue loss." if sev != "positive" else "Healthy spread — revenue reasonably distributed."),
-                    "Build a VIP tier for top 20% customers. Assign dedicated account managers.",
-                    sev
-                ))
+                spend = df.groupby(customer_col)[order_val_col].sum()
+                if len(spend) >= 20 and spend.sum() > 0:
+                    k = max(1, int(len(spend) * 0.2))
+                    top = float(spend.nlargest(k).sum() / spend.sum() * 100)
+                    insights.append(_ins(
+                        "CUSTOMER CONCENTRATION",
+                        "The top 20% of customers bring in {:.0f}% of revenue".format(top),
+                        "{:,} of {:,} customers account for {} of {}.".format(
+                            k, len(spend), fmt(float(spend.nlargest(k).sum())),
+                            fmt(float(spend.sum()))),
+                        "Look at what these customers buy and how often they return; "
+                        "losing a few of them would show directly in revenue.",
+                        "warning" if top > 80 else "info"
+                    ))
             except Exception:
                 logger.warning("Health Report section failure", exc_info=True)
 
@@ -460,16 +314,15 @@ def build_insights(df: pd.DataFrame, niche: str) -> list:
         if rev_col and cost_col:
             rev    = float(df[rev_col].dropna().sum())
             cost   = float(df[cost_col].dropna().sum())
-            margin = (rev - cost) / rev * 100 if rev > 0 else 0
-            sev    = "critical" if margin < 5 else "warning" if margin < 15 else "positive"
-            note   = "CRITICAL: At risk of operating loss." if sev == "critical" else "Below benchmark — cost control or pricing review needed." if sev == "warning" else "Healthy margin — above the planning band."
-            insights.append(_ins(
-                "GROSS MARGIN",
-                "Gross Margin: {:.1f}% (Benchmark: >15%)".format(margin),
-                "Total Revenue: **${:,.0f}** | Total Cost: **${:,.0f}** | Gross Margin: **{:.1f}%**. McKinsey 2024: healthy businesses target >15% gross margin. {}".format(rev, cost, margin, note),
-                "IMMEDIATE: Conduct cost structure analysis. Identify top 3 cost drivers." if sev == "critical" else "Review pricing strategy and renegotiate top 3 supplier contracts." if sev == "warning" else "Model the impact of a 5% price increase to protect margin.",
-                sev
-            ))
+            if rev > 0:
+                margin = (rev - cost) / rev * 100
+                insights.append(_ins(
+                    "MARGIN",
+                    "'{}' less '{}' leaves {:.1f}% of revenue".format(rev_col, cost_col, margin),
+                    "Total {} {}, total {} {}.".format(rev_col, fmt(rev), cost_col, fmt(cost)),
+                    "Break '{}' down by category to see which lines drive it.".format(cost_col),
+                    "critical" if margin < 0 else "warning" if margin < 15 else "info"
+                ))
 
     # ── Universal: Missing data risk ──────────────────────
     miss = df.isna().sum()
@@ -491,8 +344,8 @@ def build_insights(df: pd.DataFrame, niche: str) -> list:
         insights.append(_ins(
             "DATA HEALTH",
             "Dataset is clean and analysis-ready",
-            "No critical issues detected. Data completeness, distribution, and structure are within acceptable thresholds for business analysis.",
-            "Proceed directly to Dashboard and ML Predictions pages.",
+            "No column is more than 30% empty and no measure is heavily skewed.",
+            "No data-quality action is needed before analysis.",
             "positive"
         ))
 
@@ -517,10 +370,10 @@ _SEVERITY_TO_CARD = {
 }
 
 _CARD_COLORS = {
-    "critical": ("#ef4444", "rgba(239,68,68,0.08)"),
-    "warning":  ("#f97316", "rgba(249,115,22,0.08)"),
-    "positive": ("#22d3a5", "rgba(34,211,165,0.08)"),
-    "info":     ("#3b82f6", "rgba(59,130,246,0.08)"),
+    "critical": ("#B42318", "#FEF3F2"),
+    "warning":  ("#B54708", "#FFFAEB"),
+    "positive": ("#067647", "#ECFDF3"),
+    "info":     ("#475467", "#F2F4F7"),
 }
 
 
@@ -535,13 +388,19 @@ def _insight_to_card(ins) -> Dict:
     severity = _SEVERITY_TO_CARD.get(str(ins.severity).lower(), "info")
     border, bg = _CARD_COLORS[severity]
 
-    body_parts = [p for p in (ins.problem, ins.cause, ins.evidence) if p]
-    body = " ".join(str(p).strip() for p in body_parts)
-    if ins.impact:
-        body = f"{body} Impact: {str(ins.impact).strip()}"
+    # Each part is its own sentence; joined bare, "…in the bottom band" ran
+    # into "Not identifiable from…" with no full stop between them.
+    def _sentence(p) -> str:
+        p = str(p).strip()
+        return p if p[-1:] in ".!?" else p + "."
+    body = " ".join(_sentence(p) for p in (ins.problem, ins.cause, ins.evidence)
+                    if p and str(p).strip())
+    if ins.impact and str(ins.impact).strip():
+        body = f"{body} {_sentence(ins.impact)}"
 
     tag = str(getattr(ins, "category", "") or severity).upper().replace("_", " ")
-    return {"tag": tag, "title": str(ins.title), "body": body,
+    return {"tag": tag, "topic": str(getattr(ins, "category", "") or ""),
+            "title": str(ins.title), "body": body,
             "action": str(ins.action), "severity": severity,
             "border": border, "bg": bg, "tag_color": border,
             "confidence": str(getattr(ins, "confidence", "") or "")}
@@ -571,6 +430,7 @@ def build_report_payload(df: pd.DataFrame, niche: str,
         "actions": [],
     }
 
+    story = None
     try:
         from app.engines.story_engine import generate_story
         story = generate_story(df)
@@ -584,11 +444,12 @@ def build_report_payload(df: pd.DataFrame, niche: str,
                        "payload — narrative sections will be empty",
                        exc_info=True)
 
-    payload["insights"] = build_full_insights(df, niche, max_cards=max_cards)
+    payload["insights"] = build_full_insights(df, niche, max_cards=max_cards, story=story)
     return payload
 
 
-def build_full_insights(df: pd.DataFrame, niche: str, max_cards: int = 12) -> List[Dict]:
+def build_full_insights(df: pd.DataFrame, niche: str, max_cards: int = 12,
+                        story=None) -> List[Dict]:
     """Every insight the Health Report should carry, best-first.
 
     Sources, in priority order:
@@ -606,16 +467,32 @@ def build_full_insights(df: pd.DataFrame, niche: str, max_cards: int = 12) -> Li
     cards: List[Dict] = []
 
     try:
-        from app.engines.story_engine import generate_story
-        story = generate_story(df)
+        if story is None:       # the caller's story, so it is not built twice
+            from app.engines.story_engine import generate_story
+            story = generate_story(df)
         for ins in story.top_insights:
             cards.append(_insight_to_card(ins))
     except Exception:
         logger.warning("domain insight engines failed for the health report — "
                        "falling back to data-quality cards only", exc_info=True)
 
+    # The niche cards restate the headline figures the domain engines
+    # already cover — "Attrition at 19.6%" and "Attrition rate is 19.6%",
+    # and satisfaction as 51% of the scale in one card and 61% in another,
+    # measured two ways. Keep the domain engine's card for those topics.
+    covered = {c.get("topic") for c in cards}
+    topic_of = {"ATTRITION": "attrition", "EMPLOYEE SATISFACTION": "satisfaction",
+                "CONCENTRATION": "revenue",
+                "CUSTOMER CONCENTRATION": "ecommerce_concentration",
+                "MARGIN": "finance_margin"}
+    # A skew card for a measure a domain card already describes says the
+    # same thing twice ("median 160, mean 183" on both).
+    domain_text = " ".join("{} {}".format(c["title"], c["body"]) for c in cards)
     try:
-        cards.extend(build_insights(df, niche))
+        cards.extend(c for c in build_insights(df, niche)
+                     if topic_of.get(c.get("tag")) not in covered
+                     and not (c.get("tag") == "DATA SKEW"
+                              and "'{}'".format(c.get("column")) in domain_text))
     except Exception:
         logger.warning("niche data-quality cards failed", exc_info=True)
 

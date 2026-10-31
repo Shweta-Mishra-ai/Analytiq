@@ -96,7 +96,7 @@ export default function ComparePage() {
   }
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="Compare Datasets"
         subtitle="This period vs last — what actually moved, and whether it's real"

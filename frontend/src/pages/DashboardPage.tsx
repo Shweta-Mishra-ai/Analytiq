@@ -1,6 +1,8 @@
 /**
  * Power BI-style dashboard:
- *  - draggable / resizable tiles (react-grid-layout)
+ *  - opening tiles chosen by the server with the same rules as the report's
+ *    charts (an outcome as a rate, totals only for measures that add up)
+ *  - draggable / resizable tiles (react-grid-layout); stacked on narrow screens
  *  - every tile re-queries the server with the shared slicer state
  *  - clicking a bar / pie slice cross-filters every other tile
  *  - add-tile builder (chart type, x, y, aggregation)
@@ -33,6 +35,26 @@ interface TileState {
 
 const DEFAULT_LAYOUT_H = 5
 
+const TYPE_LABEL: Record<string, string> = {
+  bar: 'Bar',
+  rate: 'Outcome rate by group',
+  line: 'Line (over time)',
+  area: 'Area (over time)',
+  pie: 'Pie (shares of a total)',
+  scatter: 'Scatter',
+  histogram: 'Distribution',
+  heatmap: 'Correlation grid',
+}
+
+const AGG_LABEL: Record<string, string> = {
+  mean: 'Average',
+  sum: 'Total',
+  median: 'Median',
+  count: 'Count of',
+  min: 'Minimum',
+  max: 'Maximum',
+}
+
 export default function DashboardPage() {
   const { dataset, filters, addFilter } = useApp()
   const [fields, setFields] = useState<Field[]>([])
@@ -54,59 +76,22 @@ export default function DashboardPage() {
     return () => obs.disconnect()
   }, [ds])
 
-  // ── initial: fields + auto-recommended tiles ──────────
+  // ── initial: fields + the server's opening tiles ───────
+  // The tiles were chosen here from the first numeric and first text
+  // column, which summed employee_id by department and drew a pie of it.
   useEffect(() => {
     if (!ds) return
     setError('')
-    apiGet<{ fields: Field[] }>(`/api/charts/${ds}/fields`)
-      .then((r) => {
-        setFields(r.fields)
-        const nums = r.fields.filter((f) => f.kind === 'numeric')
-        const cats = r.fields.filter(
-          (f) => f.kind === 'categorical' && f.unique > 1 && f.unique <= 30,
-        )
-        const dates = r.fields.filter((f) => f.kind === 'datetime')
-        const auto: TileSpec[] = []
-        if (cats[0] && nums[0])
-          auto.push({
-            id: 't1',
-            title: `${nums[0].name} by ${cats[0].name}`,
-            type: 'bar',
-            x: cats[0].name,
-            y: nums[0].name,
-            agg: 'sum',
-          })
-        if (dates[0] && nums[0])
-          auto.push({
-            id: 't2',
-            title: `${nums[0].name} over time`,
-            type: 'line',
-            x: dates[0].name,
-            y: nums[0].name,
-            agg: 'sum',
-          })
-        if (cats[1] && nums[0])
-          auto.push({
-            id: 't3',
-            title: `${nums[0].name} share by ${cats[1].name}`,
-            type: 'pie',
-            x: cats[1].name,
-            y: nums[0].name,
-            agg: 'sum',
-          })
-        if (nums[1])
-          auto.push({
-            id: 't4',
-            title: `Distribution of ${nums[1].name}`,
-            type: 'histogram',
-            x: nums[1].name,
-          })
-        if (nums.length >= 2)
-          auto.push({ id: 't5', title: 'Correlation', type: 'heatmap' })
-        setTiles(auto)
+    Promise.all([
+      apiGet<{ fields: Field[] }>(`/api/charts/${ds}/fields`),
+      apiGet<{ tiles: TileSpec[] }>(`/api/charts/${ds}/auto-tiles`),
+    ])
+      .then(([f, t]) => {
+        setFields(f.fields)
+        setTiles(t.tiles)
         setLayout(
-          auto.map((t, i) => ({
-            i: t.id,
+          t.tiles.map((tile, i) => ({
+            i: tile.id,
             x: (i % 2) * 6,
             y: Math.floor(i / 2) * DEFAULT_LAYOUT_H,
             w: 6,
@@ -175,10 +160,15 @@ export default function DashboardPage() {
       addFilter({ column: col, op: 'eq', value: String(value) })
   }
 
+  const removeTile = (id: string) => {
+    setTiles((ts) => ts.filter((x) => x.id !== id))
+    setLayout((l) => l.filter((x) => x.i !== id))
+  }
+
   if (!dataset) return <NeedData />
 
   return (
-    <div className="p-6">
+    <div className="page">
       <PageHeader
         title="Dashboard"
         subtitle={`${dataset.filename} — click any bar or slice to cross-filter`}
@@ -204,62 +194,46 @@ export default function DashboardPage() {
         <FilterBar />
       </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
         {kpis.map((k) => (
           <KpiCard key={k.label} kpi={k} />
         ))}
       </div>
 
+      {tiles.length === 0 && !error && (
+        <div className="surface p-8 text-center text-sm text-mute">
+          No tiles yet — use <span className="font-semibold text-ink">Add tile</span> to build one.
+        </div>
+      )}
+
       <div id="dash-grid-wrap">
-        <GridLayout
-          className="layout"
-          layout={layout}
-          gridConfig={{ cols: 12, rowHeight: 64 }}
-          width={width}
-          onLayoutChange={(l) => setLayout([...l])}
-          dragConfig={{ handle: '.tile-drag' }}
-        >
-          {tiles.map((t) => {
-            const st = tileState[t.id]
-            return (
-              <div
-                key={t.id}
-                className="overflow-hidden rounded-xl border border-edge bg-panel"
-              >
-                <div className="flex items-center justify-between border-b border-edge px-3 py-1.5">
-                  <div className="tile-drag flex min-w-0 items-center gap-1.5">
-                    <GripVertical className="h-3.5 w-3.5 shrink-0 text-mute" />
-                    <span className="truncate text-xs font-semibold text-ink">
-                      {t.title}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setTiles((ts) => ts.filter((x) => x.id !== t.id))
-                      setLayout((l) => l.filter((x) => x.i !== t.id))
-                    }}
-                    className="text-mute hover:text-rose"
-                    title="Remove tile"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                <div className="h-[calc(100%-2rem)] p-1">
-                  {st?.loading && <Spinner label="" />}
-                  {st?.error && (
-                    <div className="p-3 text-xs text-rose">{st.error}</div>
-                  )}
-                  {st?.figure && (
-                    <PlotlyChart
-                      figure={st.figure}
-                      onClickPoint={handlePointClick(t)}
-                    />
-                  )}
-                </div>
+        {width < 768 ? (
+          // A 12-column grid on a phone made every tile 150px wide.
+          <div className="space-y-3">
+            {tiles.map((t) => (
+              <div key={t.id} className="h-80">
+                <Tile t={t} st={tileState[t.id]} onRemove={removeTile}
+                  onClickPoint={handlePointClick(t)} />
               </div>
-            )
-          })}
-        </GridLayout>
+            ))}
+          </div>
+        ) : (
+          <GridLayout
+            className="layout"
+            layout={layout}
+            gridConfig={{ cols: 12, rowHeight: 64 }}
+            width={width}
+            onLayoutChange={(l) => setLayout([...l])}
+            dragConfig={{ handle: '.tile-drag' }}
+          >
+            {tiles.map((t) => (
+              <div key={t.id}>
+                <Tile t={t} st={tileState[t.id]} onRemove={removeTile}
+                  onClickPoint={handlePointClick(t)} />
+              </div>
+            ))}
+          </GridLayout>
+        )}
       </div>
 
       {showBuilder && (
@@ -288,6 +262,43 @@ export default function DashboardPage() {
   )
 }
 
+// ── one tile ─────────────────────────────────────────────
+function Tile({
+  t,
+  st,
+  onRemove,
+  onClickPoint,
+}: {
+  t: TileSpec
+  st?: TileState
+  onRemove: (id: string) => void
+  onClickPoint: (pt: Record<string, unknown>) => void
+}) {
+  return (
+    <div className="surface flex h-full flex-col overflow-hidden">
+      <div className="flex items-center justify-between border-b border-edge px-3 py-2">
+        <div className="tile-drag flex min-w-0 cursor-grab items-center gap-1.5">
+          <GripVertical className="h-3.5 w-3.5 shrink-0 text-faint" />
+          <span className="truncate text-[13px] font-semibold text-ink">{t.title}</span>
+        </div>
+        <button
+          onClick={() => onRemove(t.id)}
+          className="rounded p-0.5 text-faint hover:bg-panel2 hover:text-rose"
+          title="Remove tile"
+          aria-label={`Remove ${t.title}`}
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 p-1.5">
+        {st?.loading && !st.figure && <Spinner label="" />}
+        {st?.error && <div className="p-3 text-xs text-rose">{st.error}</div>}
+        {st?.figure && <PlotlyChart figure={st.figure} onClickPoint={onClickPoint} />}
+      </div>
+    </div>
+  )
+}
+
 // ── tile builder modal ───────────────────────────────────
 function TileBuilder({
   fields,
@@ -301,15 +312,19 @@ function TileBuilder({
   const [type, setType] = useState('bar')
   const [x, setX] = useState('')
   const [y, setY] = useState('')
-  const [agg, setAgg] = useState('sum')
+  // Average by default: a total is right only for measures that add up
+  // (revenue, units), and summing salary or age gives a meaningless number.
+  const [agg, setAgg] = useState('mean')
 
   const nums = fields.filter((f) => f.kind === 'numeric')
+  const twoValue = fields.filter((f) => f.unique === 2)
   const xOptions =
     type === 'histogram'
       ? nums
       : type === 'scatter'
         ? nums
         : fields.filter((f) => f.kind !== 'numeric' || type === 'scatter')
+  const yOptions = type === 'rate' ? twoValue : nums
 
   const needsY = !['histogram', 'heatmap'].includes(type)
   const valid =
@@ -331,11 +346,11 @@ function TileBuilder({
           <div>
             <label className="mb-1 block text-xs text-mute">Chart type</label>
             <select value={type} onChange={(e) => setType(e.target.value)} className={sel}>
-              {['bar', 'line', 'area', 'pie', 'scatter', 'histogram', 'heatmap'].map(
-                (t) => (
-                  <option key={t}>{t}</option>
-                ),
-              )}
+              {Object.entries(TYPE_LABEL).map(([t, label]) => (
+                <option key={t} value={t}>
+                  {label}
+                </option>
+              ))}
             </select>
           </div>
           {type !== 'heatmap' && (
@@ -353,21 +368,25 @@ function TileBuilder({
           )}
           {needsY && (
             <div>
-              <label className="mb-1 block text-xs text-mute">Value (numeric)</label>
+              <label className="mb-1 block text-xs text-mute">
+                {type === 'rate' ? 'Outcome (two values, e.g. Yes/No)' : 'Value (numeric)'}
+              </label>
               <select value={y} onChange={(e) => setY(e.target.value)} className={sel}>
                 <option value="">— select —</option>
-                {nums.map((f) => (
+                {yOptions.map((f) => (
                   <option key={f.name}>{f.name}</option>
                 ))}
               </select>
             </div>
           )}
-          {needsY && type !== 'scatter' && (
+          {needsY && type !== 'scatter' && type !== 'rate' && (
             <div>
               <label className="mb-1 block text-xs text-mute">Aggregation</label>
               <select value={agg} onChange={(e) => setAgg(e.target.value)} className={sel}>
-                {['sum', 'mean', 'count', 'median', 'min', 'max'].map((a) => (
-                  <option key={a}>{a}</option>
+                {Object.entries(AGG_LABEL).map(([a, label]) => (
+                  <option key={a} value={a}>
+                    {label}
+                  </option>
                 ))}
               </select>
             </div>
@@ -380,10 +399,14 @@ function TileBuilder({
                 id: `t${Date.now()}`,
                 title:
                   type === 'heatmap'
-                    ? 'Correlation'
+                    ? 'How the measures relate'
                     : type === 'histogram'
                       ? `Distribution of ${x}`
-                      : `${agg} of ${y} by ${x}`,
+                      : type === 'rate'
+                        ? `${y} rate by ${x}`
+                        : type === 'scatter'
+                          ? `${y} against ${x}`
+                          : `${AGG_LABEL[agg]} ${y} by ${x}`,
                 type,
                 x: x || undefined,
                 y: y || undefined,

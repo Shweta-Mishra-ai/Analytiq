@@ -14,6 +14,8 @@ the richer domain engines are adapted into that shape rather than
 replacing it.
 """
 import logging
+import re
+
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
@@ -202,17 +204,14 @@ def _build_narrative_summary(
             d = attrition.top_drivers[0]
             cohort_note = f", concentrated among {d.get('label', 'a specific cohort')}"
         headline = (
-            f"The {attrition.rate:.1f}% attrition rate ({attrition.n_left:,} of "
-            f"{attrition.n_total:,} employees){cohort_note} is the dominant signal "
-            f"in this dataset and warrants immediate retention review."
+            f"{attrition.n_left:,} of {attrition.n_total:,} employees left — an "
+            f"attrition rate of {attrition.rate:.1f}%{cohort_note}. It is the largest "
+            f"signal in this dataset."
         )
     elif n_crit > 0:
         top_critical = next((i for i in deduped if i.severity == "critical"), None)
         if top_critical:
-            headline = (
-                f"{top_critical.problem} This is the most urgent finding in the "
-                f"dataset — {n_crit} critical issue{'s' if n_crit > 1 else ''} total."
-            )
+            headline = f"{top_critical.problem}"
 
     # A real business finding (even 'warning' severity) leads over a correlation.
     if headline is None:
@@ -224,15 +223,12 @@ def _build_narrative_summary(
         )
         if attrition is not None and attrition.rate > 0:
             headline = (
-                f"Attrition stands at {attrition.rate:.1f}% ({attrition.n_left:,} of "
-                f"{attrition.n_total:,}), the headline signal in this dataset; "
-                f"the sections below break it down by segment and driver."
+                f"Attrition is {attrition.rate:.1f}% ({attrition.n_left:,} of "
+                f"{attrition.n_total:,}); the findings break it down by group."
             )
         elif top_business is not None:
-            headline = (
-                f"{top_business.problem} This is the most material finding in the "
-                f"dataset and is detailed, with evidence, in the sections below."
-            )
+            headline = f"{top_business.problem}."
+            headline = headline.replace("..", ".")
 
     # Only fall back to a correlation if it is NOT a mechanical tautology.
     if headline is None:
@@ -241,8 +237,7 @@ def _build_narrative_summary(
             headline = (
                 f"'{mc['col_a']}' and '{mc['col_b']}' show a strong "
                 f"{mc['direction']} relationship (Spearman r={mc['r']:+.2f}), "
-                f"explaining {mc['r']**2*100:.0f}% of shared variance — the clearest "
-                f"non-trivial structural pattern in this dataset."
+                f"sharing {mc['r']**2*100:.0f}% of their variation."
             )
 
     if headline is None and miss > 15:
@@ -255,13 +250,13 @@ def _build_narrative_summary(
         # Only claim a domain when detection is confident. Printing
         # "HR domain (detection confidence: 7%)" in a client PDF both
         # mislabels the data and advertises the uncertainty.
+        _kind = {"hr": "HR", "ecommerce": "e-commerce"}.get(domain, domain)
         domain_phrase = (
-            f"in the {domain.upper()} domain " if confidence >= 0.4 else ""
+            f" of {_kind} data" if confidence >= 0.4 and domain != "general" else ""
         )
         headline = (
-            f"Analysis of {n_rows:,} records across {len(df.columns)} variables "
-            f"{domain_phrase}did not surface a single dominant risk — findings "
-            f"below are of comparable priority."
+            f"This review covers {n_rows:,} records and {len(df.columns)} columns"
+            f"{domain_phrase}."
         )
 
     # ── SUPPORTING sentences — connect to headline, don't repeat it ────────
@@ -269,22 +264,12 @@ def _build_narrative_summary(
 
     # Don't repeat attrition if the headline already covers it.
     if attrition is not None and headline and "attrition" not in headline.lower()[:80]:
-        support.append(
-            f"Separately, attrition stands at {attrition.rate:.1f}% "
-            f"({attrition.severity} severity)."
-        )
-
-    if n_warn > 0:
-        support.append(
-            f"{n_warn} additional warning{'s' if n_warn > 1 else ''} "
-            f"{'requires' if n_warn == 1 else 'require'} review but "
-            f"{'is' if n_warn == 1 else 'are'} not urgent."
-        )
+        support.append(f"Attrition is {attrition.rate:.1f}%.")
 
     if miss > 0 and miss <= 15:
-        support.append(f"Data completeness is acceptable ({100-miss:.1f}% complete).")
+        support.append(f"{100-miss:.1f}% of cells are filled.")
     elif miss == 0:
-        support.append("Data is fully complete with no missing values.")
+        support.append("No values are missing.")
 
     if "Spearman r=" not in (headline or ""):
         # First correlation that is real (not NaN from a constant column) and
@@ -305,16 +290,9 @@ def _build_narrative_summary(
         )
         if top is not None and abs(top["r"]) >= 0.25:
             support.append(
-                f"Notable relationship: '{top['col_a']}' vs '{top['col_b']}' "
+                f"'{top['col_a']}' and '{top['col_b']}' move together "
                 f"(r={top['r']:+.2f}, {top['strength']})."
             )
-
-    n_actions = len(raw.get("actions", []))
-    if n_actions:
-        support.append(
-            f"{n_actions} recommendation{'s' if n_actions > 1 else ''} "
-            f"{'follows' if n_actions == 1 else 'follow'} below."
-        )
 
     return headline + (" " + " ".join(support) if support else "")
 
@@ -399,21 +377,6 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
     # Findings" section while the rest of the page was full, with no error
     # anywhere. Fall back to the insight titles, then to a dataset-shape
     # summary, so this section is never silently empty.
-    findings_flat = raw["findings"][:6]
-    if not findings_flat and deduped:
-        findings_flat = ["{}: {}".format(ins.severity.upper(), ins.title)
-                          for ins in deduped[:6]]
-    if not findings_flat:
-        n_cat = len(df.select_dtypes(include=["object", "string"]).columns)
-        miss_pct = round(df.isna().mean().mean() * 100, 1)
-        findings_flat = [
-            "{:,} records × {} columns ({} numeric, {} categorical)".format(
-                len(df), len(df.columns), len(num_cols), n_cat),
-            "Missing data: {:.1f}%{}".format(
-                miss_pct, " — fully complete" if miss_pct == 0
-                else " — imputation applied"),
-        ]
-
     risks_flat    = raw["risks"][:6]
     opps_flat     = raw["opportunities"][:4]
     # No urgency label: it was assigned by list position — the first two
@@ -443,13 +406,36 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
             parts.append("Attrition: {:.1f}%.".format(attrition.rate))
         exec_s = " ".join(parts)
 
-    headline = ("CRITICAL: " + critical[0].title) if critical else (
-        deduped[0].title if deduped else "Analysis complete")
+    findings_flat = raw["findings"][:6]
+    if not findings_flat and deduped:
+        # The measured statement, not "CRITICAL: <card title>" — the label
+        # is the card's job, and the title is printed again on the card.
+        # A finding whose figures are all in the summary already ("98 of 500
+        # employees left") was printed twice, one line apart.
+        def _nums(t):
+            return set(re.findall(r"\d[\d,.]*\d|\d", t))
+        said = _nums(exec_s)
+        findings_flat = [f for f in (str(ins.problem or ins.title).strip()
+                                     for ins in deduped[:6])
+                         if not (_nums(f) and _nums(f) <= said)]
+    if not findings_flat:
+        n_cat = len(df.select_dtypes(include=["object", "string"]).columns)
+        miss_pct = round(df.isna().mean().mean() * 100, 1)
+        findings_flat = [
+            "{:,} records × {} columns ({} numeric, {} categorical)".format(
+                len(df), len(df.columns), len(num_cols), n_cat),
+            "No values are missing." if miss_pct == 0 else
+            "{:.1f}% of values are missing.".format(miss_pct),
+        ]
+
+    headline = critical[0].title if critical else (
+        deduped[0].title if deduped else "No finding stands out")
 
     # Quality
     avg_miss = sum(st.get("missing_pct",0) for st in all_stats.values()) / max(len(all_stats),1)
     quality  = ("GOOD — data suitable for reliable analysis." if avg_miss<5
-                else "FAIR — {:.1f}% avg missing. Imputation applied.".format(avg_miss)
+                else "FAIR — {:.1f}% of values missing on average; figures use the "
+                     "rows that are filled.".format(avg_miss)
                 if avg_miss<20
                 else "NEEDS ATTENTION — {:.1f}% missing. Treat findings with caution.".format(avg_miss))
 

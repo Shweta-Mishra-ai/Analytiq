@@ -228,8 +228,14 @@ export default function MlPage() {
         if (r.targets[0]) setSelected(r.targets[0].column)
       })
       .catch((e) => setError(e.message))
-    // load a previously trained report if it exists
-    apiGet<MlReport>(`/api/ml/${ds}/report`).then(setReport).catch(() => {})
+    // load a previously trained report if it exists, and point the target
+    // picker at it — it showed the first suggestion over another target's model
+    apiGet<MlReport>(`/api/ml/${ds}/report`)
+      .then((r) => {
+        setReport(r)
+        setSelected(r.target_col)
+      })
+      .catch(() => {})
   }, [ds])
 
   if (!dataset) return <NeedData />
@@ -247,9 +253,18 @@ export default function MlPage() {
   }
 
   const fmtScore = (v: number) => (v * 100).toFixed(1) + '%'
+  const isClf = report?.task === 'classification'
+  const baseline = report?.class_balance
+    ? Object.entries(report.class_balance).sort((a, b) => b[1] - a[1])[0]
+    : undefined
+  const scoreHint = !report?.best_model
+    ? ''
+    : isClf && baseline
+      ? `vs ${fmtScore(baseline[1])} from always answering '${baseline[0]}'`
+      : 'share of the variation explained on unseen rows'
 
   return (
-    <div className="p-8">
+    <div className="page">
       <PageHeader
         title="ML Predictions"
         subtitle="Auto model selection with cross-validation and feature importance"
@@ -288,7 +303,9 @@ export default function MlPage() {
         </div>
       </Panel>
 
-      {busy && <Spinner label="Training and cross-validating models…" />}
+      {busy && (
+        <Spinner label="Training four models with cross-validation — a few seconds on small files, up to a minute on 50,000 rows…" />
+      )}
 
       {report && !busy && (
         <div className="mt-5 space-y-5">
@@ -305,11 +322,12 @@ export default function MlPage() {
             </Panel>
             <Panel>
               <div className="text-xs text-mute uppercase">
-                {report.best_model?.metric_name ?? 'Score'}
+                {isClf ? 'Accuracy on unseen rows' : 'R² on unseen rows'}
               </div>
-              <div className="text-xl font-bold text-teal">
+              <div className={`text-xl font-bold ${report.no_signal ? 'text-amber' : 'text-teal'}`}>
                 {report.best_model ? fmtScore(report.best_model.test_score) : '—'}
               </div>
+              {scoreHint && <div className="mt-0.5 text-[11px] text-faint">{scoreHint}</div>}
             </Panel>
             <Panel>
               <div className="text-xs text-mute uppercase">Rows / features</div>
@@ -319,12 +337,19 @@ export default function MlPage() {
             </Panel>
           </div>
 
-          <Panel title="Model leaderboard">
+          <Panel
+            title="Model leaderboard"
+            subtitle={
+              isClf
+                ? 'Picked on cross-validated log-loss, which penalises confident wrong answers; scores shown are accuracy.'
+                : 'Picked on cross-validated R²; the test score is on rows no model saw in training.'
+            }
+          >
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="text-mute">
-                    {['Model', 'CV score', 'Test score', 'Overfit', 'Extra'].map((h) => (
+                    {['Model', isClf ? 'CV accuracy' : 'CV R²', 'Test score', 'Overfit', 'Extra'].map((h) => (
                       <th key={h} className="px-2 py-2">{h}</th>
                     ))}
                   </tr>
@@ -363,21 +388,35 @@ export default function MlPage() {
                 ⚠ {report.no_signal}
               </p>
             )}
-            <div className={`space-y-1.5 ${report.no_signal ? 'opacity-50' : ''}`}>
+            <div className={`space-y-3 ${report.no_signal ? 'opacity-60' : ''}`}>
               {report.feature_importance.slice(0, 12).map((f) => (
-                <div key={f.feature} className="flex items-center gap-3 text-xs">
-                  <span className="w-40 truncate font-semibold text-ink">{f.feature}</span>
-                  <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-panel2">
-                    <div
-                      className="h-full rounded-full bg-accent"
-                      style={{
-                        width: `${(f.importance / (report.feature_importance[0]?.importance || 1)) * 100}%`,
-                      }}
-                    />
+                <div key={f.feature} className="text-xs">
+                  <div className="flex items-center gap-3">
+                    <span className="w-32 shrink-0 truncate font-semibold text-ink sm:w-40" title={f.feature}>
+                      {f.feature}
+                    </span>
+                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-panel2">
+                      <div
+                        className="h-full rounded-full bg-accent"
+                        style={{
+                          width: `${(f.importance / (report.feature_importance[0]?.importance || 1)) * 100}%`,
+                        }}
+                      />
+                    </div>
+                    <span className="w-10 shrink-0 text-right font-data text-mute">
+                      {(f.importance * 100).toFixed(0)}%
+                    </span>
                   </div>
-                  <span className="w-56 truncate text-mute">{f.explanation}</span>
+                  {/* the full sentence: truncated at 56 characters it read
+                      "In the model, 'tenure' at 15 rather than…" */}
+                  <p className="mt-1 text-mute sm:pl-43">{f.explanation}</p>
                 </div>
               ))}
+              {report.feature_importance.length === 0 && (
+                <p className="text-sm text-mute">
+                  No column changes the model's accuracy on unseen rows, so there is nothing to rank.
+                </p>
+              )}
             </div>
           </Panel>
 

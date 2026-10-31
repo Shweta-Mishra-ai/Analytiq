@@ -76,10 +76,12 @@ def test_time_series_chart_actually_renders(finance_df):
     """resample("M") was removed in pandas 3 and raised inside a
     try/except that logged at debug level — so the trend chart silently
     vanished from every report."""
-    from app.engines.chart_exporter import make_line_chart
-    png = make_line_chart(finance_df, "period", "revenue", "Revenue Trend")
-    assert png[:4] == b"\x89PNG", "line chart did not render"
-    assert len(png) > 5_000
+    from app.engines.chart_exporter import build_report_charts
+    trend = [c for c in build_report_charts(finance_df, domain="finance", max_charts=6)
+             if c.kind == "trend"]
+    assert trend, "no trend chart for a dataset with a period column"
+    assert trend[0].png[:4] == b"\x89PNG", "line chart did not render"
+    assert len(trend[0].png) > 5_000
 
 
 def test_month_end_alias_is_valid_on_this_pandas():
@@ -250,4 +252,4 @@ def test_no_page_or_report_analyses_an_identifier(client, uploaded_dataset_id):
     # Allowed: the note that tells the reader to exclude it, and the bare
     # name in a table cell (column inventories). Not allowed: any sentence
     # or statistic about it.
-    assert all("ID COLUMNS DETECTED" in l or l.strip() == "employee_id" for l in lines), lines
+    assert all("Identifier columns (" in l or l.strip() == "employee_id" for l in lines), lines

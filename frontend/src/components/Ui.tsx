@@ -12,7 +12,7 @@ export function PageHeader({
   right?: ReactNode
 }) {
   return (
-    <div className="mb-6 flex items-end justify-between gap-4 border-b border-edge pb-5">
+    <div className="mb-6 flex flex-col gap-3 border-b border-edge pb-5 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
       <div className="min-w-0">
         <h1 className="t-display text-ink">{title}</h1>
         {subtitle && (

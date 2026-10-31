@@ -93,28 +93,8 @@ def _finance_margin_insights(df, cols, stats, insights, findings, risks, opps) -
                     severity="critical", category="finance_margin"
                 ))
             elif gross_margin < 25:
-                risks.append(f"Gross margin {gross_margin:.1f}% is below the 25% internal "
-                             "review threshold — worth a pricing/cost review.")
-            else:
-                opps.append(
-                    f"Gross margin of {gross_margin:.1f}% is healthy. "
-                    "Focus on volume growth and operating leverage."
-                )
-                insights.append(build_insight(
-                    title=f"Gross Margin Healthy: {gross_margin:.1f}%",
-                    problem=f"Gross margin is {gross_margin:.1f}%, above the 25% "
-                            "internal review threshold.",
-                    cause="Revenue is outpacing cost of goods sold at a healthy rate — "
-                          "worth understanding what's driving it so it can be sustained.",
-                    evidence=f"Revenue={total_rev:,.0f} | Cost={total_cost:,.0f} | "
-                             f"GM={gross_margin:.1f}%",
-                    action="1. Document what's driving this margin (pricing, mix, cost "
-                           "control)  2. Set this as the internal benchmark for other "
-                           "periods/segments  3. Watch for margin erosion as volume scales",
-                    impact="A healthy margin gives room to invest in growth without "
-                           "sacrificing profitability — worth protecting.",
-                    severity="positive", category="finance_margin"
-                ))
+                risks.append(f"Gross margin is {gross_margin:.1f}%: costs could rise about "
+                             f"{breakeven_cost_rise:.0f}% before gross profit is gone.")
 
     if profit_col:
         try:
@@ -134,47 +114,60 @@ def _finance_margin_insights(df, cols, stats, insights, findings, risks, opps) -
             logger.warning("Net profit analysis failed", exc_info=True)
 
 
+def _period_trend(series: pd.Series):
+    """(fitted % change first→last period, p, R², n) for a per-period series,
+    or None when there are too few periods to fit a trend."""
+    y = pd.to_numeric(series, errors="coerce").dropna()
+    if len(y) < 6 or float(y.std()) == 0:
+        return None
+    x = np.arange(len(y), dtype=float)
+    fit = scipy_stats.linregress(x, y.to_numpy(dtype=float))
+    start = fit.intercept
+    end = fit.intercept + fit.slope * (len(y) - 1)
+    if start <= 0:
+        return None
+    return ((end - start) / start * 100, float(fit.pvalue), float(fit.rvalue ** 2), len(y))
+
+
 def _finance_revenue_trend(df, cols, stats, insights, findings, risks, opps) -> None:
     """Period-over-period revenue trend analysis."""
     rev_col, period_col = cols["rev"], cols["period"]
     if not (rev_col and period_col):
         return
     try:
+        # A first-half against second-half comparison with no test called a
+        # 0.7% wobble "revenue declining". The trend is fitted across every
+        # period and reported only when it is distinguishable from noise.
         period_rev = df.groupby(period_col)[rev_col].sum().sort_index()
-        if len(period_rev) < 2:
+        trend = _period_trend(period_rev)
+        if trend is None:
             return
-        first_half = float(period_rev.iloc[:len(period_rev)//2].mean())
-        second_half = float(period_rev.iloc[len(period_rev)//2:].mean())
-        if first_half > 0:
-            trend_pct = (second_half - first_half) / first_half * 100
-            direction = "growing" if trend_pct > 0 else "declining"
+        change_pct, p, r2, n = trend
+        if p >= 0.05 or r2 < 0.10:
             findings.append(
-                f"Revenue {direction} {abs(trend_pct):.1f}% comparing first vs second half "
-                f"of available periods (n={len(period_rev)} periods)"
-            )
-            if trend_pct < -10:
-                risks.append(
-                    f"Revenue declining {abs(trend_pct):.1f}% period-over-period. "
-                    "Investigate structural causes — market, pricing, or volume."
-                )
-                insights.append(build_insight(
-                    title=f"Revenue Declining: {abs(trend_pct):.1f}% PoP",
-                    problem=f"Revenue declined {abs(trend_pct):.1f}% comparing first vs second half.",
-                    cause="Could be seasonal, structural, or customer churn-driven.",
-                    evidence=f"H1 avg: {first_half:,.0f} | H2 avg: {second_half:,.0f}",
-                    action="1. Decompose by category/product  2. Check customer retention  "
-                           "3. Review pricing changes  4. Compare against your own prior periods",
-                    impact=f"If the same rate of decline held, revenue would fall roughly "
-                           f"{abs(trend_pct):.0f}% further next period — a straight-line "
-                           f"projection, not a forecast; intervention changes it.",
-                    severity="critical" if trend_pct < -20 else "warning",
-                    category="finance_trend"
-                ))
-            elif trend_pct > 15:
-                opps.append(
-                    f"Revenue growing strongly ({trend_pct:.1f}% PoP). "
-                    "Invest in capacity and margin protection before the next growth phase."
-                )
+                f"Revenue per period shows no trend beyond ordinary variation "
+                f"(p={p:.2g}, n={n} periods).")
+            return
+        direction = "rising" if change_pct > 0 else "falling"
+        findings.append(
+            f"Revenue per period is {direction}: the fitted trend moves "
+            f"{change_pct:+.1f}% across {n} periods (R²={r2:.2f}, p={p:.2g}).")
+        if change_pct < -10:
+            risks.append(f"Revenue per period is falling: {change_pct:+.1f}% across the "
+                         f"{n} periods covered.")
+            insights.append(build_insight(
+                title=f"Revenue per period falls {abs(change_pct):.0f}% across the data",
+                problem=f"The fitted trend moves {change_pct:+.1f}% from the first period "
+                        f"to the last.",
+                cause="The data shows the fall, not its cause; splitting revenue by "
+                      "category or product shows where it comes from.",
+                evidence=f"Least-squares trend over {n} periods: R²={r2:.2f}, p={p:.2g}.",
+                action="Break revenue down by category or product period by period to "
+                       "find which lines account for the fall.",
+                impact="",
+                severity="critical" if change_pct < -20 else "warning",
+                category="finance_trend"
+            ))
     except Exception:
         logger.warning("Revenue trend analysis failed", exc_info=True)
 
@@ -205,12 +198,13 @@ def _finance_budget_variance(df, cols, stats, insights, findings, risks, opps) -
             insights.append(build_insight(
                 title=f"Budget Variance: {variance_pct:+.1f}%",
                 problem=f"Actual spend/revenue is {abs(variance_pct):.1f}% {'above' if variance_pct > 0 else 'below'} budget.",
-                cause="Forecast assumptions may not reflect current trading conditions.",
+                cause="The data shows the gap, not whether the budget or the trading "
+                      "moved; that needs the assumptions behind the budget.",
                 evidence=f"Budget: {total_budget:,.0f} | Actual: {total_actual:,.0f} | "
                          f"Variance: {total_actual - total_budget:+,.0f}",
-                action="1. Identify top 3 variance drivers  2. Reforecast for remaining period  "
-                       "3. Update planning assumptions  4. Communicate to stakeholders",
-                impact="Persistent variance >10% undermines budgeting credibility and cash planning.",
+                action="Find the lines with the largest variance and check whether each "
+                       "comes from the budget assumption or from trading.",
+                impact="",
                 severity=sev, category="finance_budget"
             ))
     except Exception:
@@ -237,11 +231,14 @@ def _finance_cost_concentration(df, cols, stats, insights, findings, risks, opps
                         f"'{top_cat}' represents {top_cat_pct:.1f}% of total costs — "
                         "high concentration creates supplier/vendor dependency risk."
                     )
-                opps.append(
-                    f"Pareto opportunity: targeting '{cat_cost.index[0]}' and "
-                    f"'{cat_cost.index[1] if len(cat_cost)>1 else 'next'}' could address "
-                    f"{float(cat_cost.iloc[:2].sum()/cat_cost.sum()*100):.0f}% of total cost."
-                )
+                # Two of four categories holding half the cost is arithmetic,
+                # not a finding; it was printed as a "Pareto opportunity".
+                top2 = float(cat_cost.iloc[:2].sum() / cat_cost.sum() * 100)
+                if len(cat_cost) >= 5 and top2 >= 60:
+                    opps.append(
+                        f"'{cat_cost.index[0]}' and '{cat_cost.index[1]}' carry {top2:.0f}% "
+                        f"of cost across {len(cat_cost)} categories, so a review of those "
+                        "two covers most of it.")
         except Exception:
             logger.warning("Cost concentration analysis failed", exc_info=True)
 
@@ -282,11 +279,12 @@ def _finance_revenue_concentration(df, cols, stats, insights, findings, risks, o
                     insights.append(build_insight(
                         title=f"Revenue Concentration Risk: {top_pct:.1f}% in One Category",
                         problem=f"'{cat_rev.index[0]}' accounts for {top_pct:.1f}% of total revenue.",
-                        cause="Over-reliance on one product/segment/client group.",
+                        cause="Most revenue comes from one category, so a change there moves "
+                              "the total.",
                         evidence=f"Top category: {float(cat_rev.iloc[0]):,.0f} of "
                                  f"total {float(cat_rev.sum()):,.0f}",
-                        action="1. Map revenue by sub-segment  2. Build pipeline in adjacent segments  "
-                               "3. Set concentration limit policy (<40% in one segment)",
+                        action=f"Break '{cat_rev.index[0]}' revenue down further to see whether "
+                               "it rests on a few customers or products.",
                         impact=f"A 20% decline in this segment = "
                                f"{float(cat_rev.iloc[0])*0.2/cat_rev.sum()*100:.1f}% revenue loss.",
                         severity="warning", category="finance_concentration"
@@ -294,23 +292,19 @@ def _finance_revenue_concentration(df, cols, stats, insights, findings, risks, o
         except Exception:
             logger.warning("Revenue concentration analysis failed", exc_info=True)
 
-    # Cost growth PoP
+    # Cost trend. Comparing the first period with the last read a −46%
+    # "cost growth" off two noisy weeks; the fitted trend uses every period.
     if cost_col and period_col:
         try:
-            period_cost = df.groupby(period_col)[cost_col].sum().sort_index()
-            if len(period_cost) >= 2:
-                cost_growth = float((period_cost.iloc[-1] - period_cost.iloc[0]) /
-                                     period_cost.iloc[0] * 100)
-                if abs(cost_growth) > 15:
-                    findings.append(
-                        f"Cost growth first→last period: {cost_growth:+.1f}% "
-                        f"({float(period_cost.iloc[0]):,.0f} → {float(period_cost.iloc[-1]):,.0f})"
-                    )
-                    if cost_growth > 15:
-                        risks.append(
-                            f"Costs grew {cost_growth:.1f}% over the data period. "
-                            "Verify if matched by equivalent revenue growth."
-                        )
+            trend = _period_trend(df.groupby(period_col)[cost_col].sum().sort_index())
+            if trend and trend[1] < 0.05 and trend[2] >= 0.10 and abs(trend[0]) > 15:
+                findings.append(
+                    f"Cost per period is {'rising' if trend[0] > 0 else 'falling'}: the "
+                    f"fitted trend moves {trend[0]:+.1f}% across {trend[3]} periods "
+                    f"(p={trend[1]:.2g}).")
+                if trend[0] > 15:
+                    risks.append(f"Cost per period rises {trend[0]:.0f}% across the data; "
+                                 "check whether revenue rose with it.")
         except Exception:
             logger.warning("Cost growth analysis failed", exc_info=True)
 
@@ -702,19 +696,29 @@ def _insights_finance(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     _finance_loss_making_segments(df, cols, stats, insights, findings, risks, opps)
     _finance_benford(df, cols, stats, insights, findings, risks, opps)
 
-    # Gated on the columns each action needs; this was a fixed list.
-    if cols.get("cost") and cols.get("cat"):
-        actions.append("Investigate the top 3 cost drivers in '{}' — understand the fixed "
-                       "vs variable split".format(cols["cat"]))
-    if cols.get("rev") and (cols.get("profit") or cols.get("cost")):
-        actions.append("Set KPI targets from internal data: gross margin"
-                       + (", budget variance tolerance" if cols.get("budget") else ""))
-    if cols.get("period"):
-        actions.append("Build a rolling 12-month trend view per '{}' — one number per "
-                       "period".format(cols["period"]))
-    if cols.get("cat") and (cols.get("rev") or cols.get("cost")):
-        actions.append("Define a concentration policy: no single '{}' above 40% of "
-                       "revenue or cost".format(cols["cat"]))
+    # Actions follow from what was found. The list this replaced ("set KPI
+    # targets", "define a concentration policy: no category above 40%") was
+    # the same for every file.
+    cats = {getattr(i, "category", "") for i in insights}
+    if "finance_segment_loss" in cats:
+        actions.append("Confirm how shared cost is allocated to the loss-making segments "
+                       "before deciding on price, cost or exit.")
+    if "finance_margin_stability" in cats:
+        actions.append("Compare the weakest period with the strongest line by line, and "
+                       "plan on the lower-quartile margin rather than the average.")
+    if "finance_trend" in cats:
+        actions.append("Find which categories or products account for the fall in revenue.")
+    if "finance_budget" in cats:
+        actions.append("Explain the largest budget variances line by line.")
+    if "finance_concentration" in cats:
+        actions.append("Check how much of the largest category's revenue rests on a few "
+                       "customers.")
+    if "finance_structure" in cats:
+        actions.append("Reconcile the estimated fixed cost against the actual fixed-cost "
+                       "lines.")
+    if "finance_integrity" in cats:
+        actions.append("Check whether the unusual leading digits cluster at a threshold or "
+                       "standard price before sampling records.")
 
     return {"findings": findings[:8], "risks": risks[:5], "opportunities": opps[:4],
             "actions": actions, "insights": insights}
