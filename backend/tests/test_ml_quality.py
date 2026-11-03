@@ -230,3 +230,34 @@ def test_dashboard_tiles_build_safely_in_parallel(client, uploaded_dataset_id):
         codes = list(pool.map(lambda t: client.post(
             f"/api/charts/{ds}/build", json={**t, "filters": []}).status_code, specs))
     assert codes == [200] * len(specs)
+
+
+def test_fast_excel_writer_matches_pandas_cell_for_cell():
+    import io
+    from app.api.reports import _xlsx_bytes
+    rng = np.random.default_rng(5)
+    n = 300
+    df = pd.DataFrame({
+        "x": rng.normal(size=n),
+        "k": rng.integers(0, 9, n),
+        "flag": rng.random(n) < 0.5,
+        "nullable": pd.array(np.where(rng.random(n) < 0.2, None, rng.integers(0, 5, n)), dtype="Int64"),
+        "cat": pd.Categorical(rng.choice(["a", "b"], n)),
+        "text": rng.choice(["North", "=SUM(A1)", "-5", "R&D <i>"], n),
+        "mixed": [1, "two", 3.5, None] * (n // 4),
+        "when": pd.date_range("2024-01-01", periods=n, freq="h"),
+    })
+    df.loc[::7, "x"] = np.nan
+    df.loc[::9, "x"] = np.inf
+    df.loc[::11, "text"] = None
+    df.loc[::13, "when"] = pd.NaT
+    ref = io.BytesIO()
+    with pd.ExcelWriter(ref, engine="xlsxwriter",
+                        engine_kwargs={"options": {"strings_to_formulas": False}}) as w:
+        df.to_excel(w, sheet_name="Data", index=False)
+        df.select_dtypes(include="number").describe().T.to_excel(w, sheet_name="Summary")
+    got = pd.read_excel(io.BytesIO(_xlsx_bytes(df)), sheet_name=None)
+    want = pd.read_excel(io.BytesIO(ref.getvalue()), sheet_name=None)
+    assert list(got) == list(want)
+    for sheet in want:
+        pd.testing.assert_frame_equal(got[sheet], want[sheet], check_dtype=False)
