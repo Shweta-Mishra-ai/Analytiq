@@ -63,6 +63,8 @@ class ModelResult:
     # What the models were ranked on: R² for regression, log-loss (negated)
     # for classification.
     cv_pick:        float = 0.0
+    # Why the model could not be trained, when it could not.
+    error:          str = ""
 
 
 @dataclass
@@ -109,6 +111,9 @@ class MLReport:
     # Set when the best model is no better than a trivial guess. Feature
     # importances always sum to 100%, so they still rank — noise.
     no_signal:          str = ""
+    # The answer in one plain sentence: can the target be predicted from
+    # the other columns, and how well, in terms a reader can check.
+    summary:            str = ""
 
 
 # ══════════════════════════════════════════════════════════
@@ -126,22 +131,22 @@ def detect_task(series: pd.Series) -> Tuple[str, str]:
 
     # Boolean or binary → classification
     if n_uniq == 2:
-        return "classification", "Binary target (2 unique values)"
+        return "classification", "Two possible outcomes"
 
     # Text → classification. `dtype == object or str(dtype) == "str"` missed
     # pandas' "string" dtype, which then fell through to regression on text.
     if is_text_dtype(dtype):
         if n_uniq <= 20:
-            return "classification", "Categorical target ({} classes)".format(n_uniq)
+            return "classification", "A category with {} values".format(n_uniq)
         else:
-            return "classification", "High-cardinality categorical ({} classes)".format(n_uniq)
+            return "classification", "A category with {} values".format(n_uniq)
 
     # Few unique integers → classification
     if pd.api.types.is_integer_dtype(dtype) and n_uniq <= 15:
-        return "classification", "Discrete integer target ({} unique values)".format(n_uniq)
+        return "classification", "A whole number with only {} values, treated as categories".format(n_uniq)
 
     # Continuous numeric → regression
-    return "regression", "Continuous numeric target ({} unique values)".format(n_uniq)
+    return "regression", "A number ({:,} different values)".format(n_uniq)
 
 
 # A classification target with more classes than this is a lookup, not a
@@ -152,6 +157,71 @@ MAX_CLASSES = 20
 
 class TargetError(ValueError):
     """A target this pipeline cannot model, explained for the user."""
+
+
+# The fewest rows with a value for the target, and the fewest examples of
+# any one outcome, that a model can be trained and honestly tested on.
+MIN_ROWS = 30
+MIN_PER_CLASS = 8
+
+_YES_NO = {"yes": "yes", "y": "yes", "true": "yes", "t": "yes",
+           "no": "no", "n": "no", "false": "no", "f": "no"}
+
+
+def tidy_labels(s: pd.Series) -> pd.Series:
+    """One spelling per outcome: "Yes", "yes " and "Y" are the same answer.
+
+    Labels are trimmed; spellings that differ only in case are merged into
+    the most common one; and a yes/no column written with Y/N or T/F as
+    well is folded onto its yes and no. Left as they were, "Yes" and
+    "yes " were two classes, and a two-outcome question became six."""
+    if not is_text_dtype(s):
+        return s
+    filled = s.dropna().astype(str).str.strip()
+    if filled.empty:
+        return s
+    keys = filled.str.casefold()
+    if set(keys.unique()) <= set(_YES_NO) and len({_YES_NO[k] for k in keys.unique()}) == 2:
+        keys = keys.map(_YES_NO)
+    spelling = {}
+    for key, group in filled.groupby(keys):
+        spelling[key] = group.value_counts().index[0]
+    if set(spelling) == {"yes", "no"} and len(set(filled)) > 2:
+        # Folded from several spellings: written the way most of the data
+        # writes its words, capitalised or not, and the same for both.
+        capital = (filled.str[:1].str.isupper()).mean() >= 0.5
+        spelling = {"yes": "Yes" if capital else "yes", "no": "No" if capital else "no"}
+    out = pd.Series(np.nan, index=s.index, dtype=object)
+    out[filled.index] = keys.map(spelling).values
+    return out
+
+
+def check_target(s: pd.Series, name: str, task: str) -> None:
+    """Refuse, with the reason, a target no model can be honestly trained
+    on. These used to train anyway and report a model worse than guessing,
+    or return no model and no explanation."""
+    filled = s.dropna()
+    if filled.nunique() < 2:
+        value = filled.iloc[0] if len(filled) else None
+        raise TargetError(
+            "'{}' has the same value{} in every row, so there is nothing to "
+            "predict.".format(name, " ({})".format(value) if value is not None else ""))
+    if len(filled) < MIN_ROWS:
+        raise TargetError(
+            "Only {} rows have a value for '{}'. A model needs at least {} to be "
+            "trained and then tested on rows it has not seen.".format(
+                len(filled), name, MIN_ROWS))
+    if task == "classification":
+        counts = filled.astype(str).value_counts()
+        rare = counts[counts < MIN_PER_CLASS]
+        if len(rare):
+            raise TargetError(
+                "Only {} row{} ha{} '{}' = '{}'. A model needs at least {} examples of "
+                "each outcome to learn it and be tested on it; with fewer, any "
+                "accuracy it reports is luck.".format(
+                    int(rare.iloc[-1]), "" if rare.iloc[-1] == 1 else "s",
+                    "s" if rare.iloc[-1] == 1 else "ve", name, rare.index[-1],
+                    MIN_PER_CLASS))
 
 
 def _target_kind(col: str, s: pd.Series, task: str) -> float:
@@ -173,7 +243,26 @@ def _target_kind(col: str, s: pd.Series, task: str) -> float:
         bonus += 0.6
     if words & _GROUP_WORDS:
         bonus -= 0.5
+    # Names that say "this is the outcome".
+    if words & {"y", "target", "label", "outcome", "result", "class", "response"}:
+        bonus += 0.3
     return bonus
+
+
+def _related_numbers(df: pd.DataFrame, sample: int = 5000) -> Dict[str, float]:
+    """For each numeric column, its strongest rank correlation with another
+    numeric column — leaving out near-copies (|r| > 0.98)."""
+    num = df.select_dtypes(include="number")
+    num = num.loc[:, num.nunique() > 2]
+    if num.shape[1] < 2:
+        return {}
+    if len(num) > sample:
+        num = num.sample(sample, random_state=0)
+    values = num.rank().corr().abs().to_numpy(copy=True)
+    np.fill_diagonal(values, 0.0)
+    values = np.where(values <= 0.98, values, 0.0)
+    values = np.nan_to_num(values)
+    return {str(c): float(values[:, i].max()) for i, c in enumerate(num.columns)}
 
 
 def suggest_targets(df: pd.DataFrame) -> List[Dict]:
@@ -182,9 +271,10 @@ def suggest_targets(df: pd.DataFrame) -> List[Dict]:
     Returns ranked list with task type and reason.
     """
     suggestions = []
+    numeric = _related_numbers(df)
     for col in df.columns:
-        s = df[col].dropna()
-        if len(s) < 10:
+        s = tidy_labels(df[col]).dropna()
+        if len(s) < MIN_ROWS or s.nunique() < 2:
             continue
         # A date is not a target this pipeline can model (it would be
         # "regression" on Timestamps, and abs() of a Timestamp raises).
@@ -203,10 +293,15 @@ def suggest_targets(df: pd.DataFrame) -> List[Dict]:
         task, reason = detect_task(s)
         if task == "classification" and s.nunique() > MAX_CLASSES:
             continue
+        if task == "classification" and s.astype(str).value_counts().min() < MIN_PER_CLASS:
+            continue
 
         if task == "regression":
-            cv = s.std() / abs(s.mean()) if s.mean() != 0 else 0
-            score = min(float(cv), 1.0)
+            # How strongly the other measures move with it: a column that
+            # nothing else explains is noise to a model. Ranked by its
+            # spread instead, twenty random columns were suggested ahead
+            # of the outcome they sat beside.
+            score = 0.3 + 0.7 * numeric.get(str(col), 0.0)
         else:
             # Prefer balanced classes
             vc = s.value_counts(normalize=True)
@@ -316,6 +411,11 @@ def _get_models(task: str, n_classes: int = 2, n_rows: int = 0) -> List[Tuple[st
     60,000 rows the forest alone took 56 of 74 seconds.
     """
     per_tree = min(1.0, 20_000 / n_rows) if n_rows else None
+    # Histogram boosting needs this many rows on each side of a split
+    # (default 20). A one-hot category with 12 rows could never be split
+    # on, so on a few hundred rows the model ignored every category and
+    # scored R²≈0 where the others reached 0.8.
+    leaf = int(min(20, max(5, (n_rows or 0) // 100)))
     if task == "regression":
         models = [
             ("Ridge Regression",    Ridge(alpha=1.0)),
@@ -325,7 +425,7 @@ def _get_models(task: str, n_classes: int = 2, n_rows: int = 0) -> List[Tuple[st
                                         random_state=42, n_jobs=-1)),
             ("Gradient Boosting",   HistGradientBoostingRegressor(
                                         max_iter=300, early_stopping=True,
-                                        random_state=42)),
+                                        min_samples_leaf=leaf, random_state=42)),
         ]
         if XGBOOST_AVAILABLE:
             models.append(("XGBoost", XGBRegressor(
@@ -344,7 +444,7 @@ def _get_models(task: str, n_classes: int = 2, n_rows: int = 0) -> List[Tuple[st
             # Early stopping: a 9-class target took 18 s without it, 1 s with.
             ("Gradient Boosting",   HistGradientBoostingClassifier(
                                         max_iter=300, early_stopping=True,
-                                        random_state=42)),
+                                        min_samples_leaf=leaf, random_state=42)),
         ]
         if XGBOOST_AVAILABLE and n_classes <= 10:
             models.append(("XGBoost", XGBClassifier(
@@ -508,6 +608,7 @@ def train_models(
                 metric_name="N/A",
                 model=None,
                 cv_pick=-1e9,
+                error=str(e)[:200],
             ))
 
     # Best by the selection score. A model that failed to train is never
@@ -739,14 +840,62 @@ def _encode_what_if_inputs(ml_report: MLReport,
                 when = when.tz_localize(origin.tzinfo)
             row[col] = float((when - origin).days)
         else:
-            try:
-                row[col] = float(v)
-            except (ValueError, TypeError):
+            number = _as_number(v)
+            if number is None:
                 raise ValueError("'{}' needs a number, got {!r}".format(col, v))
+            row[col] = number
     frame = pd.DataFrame([row])[ml_report.feature_cols]
     for col in ml_report.feature_cols:
         frame[col] = frame[col].astype(object) if col in cat_cols else frame[col].astype(float)
     return frame, assumed
+
+
+def _as_number(v: Any) -> Optional[float]:
+    """A what-if number as typed: 5, "5", "5%", "₹1,200"."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        pass
+    from app.engines.data_loader import decorated_numbers
+    parsed = decorated_numbers(pd.Series([str(v)])).iloc[0]
+    return None if pd.isna(parsed) else float(parsed)
+
+
+def _fmt_input(v: float) -> str:
+    return "{:,.4g}".format(v) if abs(v) < 1e4 else "{:,.0f}".format(v)
+
+
+def _outside_training(ml_report: MLReport, inputs: Dict[str, Any]) -> List[str]:
+    """Inputs the model never saw anything like, explained."""
+    notes = []
+    spec = {f["name"]: f for f in (getattr(ml_report, "feature_inputs", None) or [])}
+    for name, value in (inputs or {}).items():
+        f = spec.get(name)
+        if f is None or value is None or value == "":
+            continue
+        kind = f.get("kind")
+        if kind == "number" and f.get("min") is not None:
+            v = _as_number(value)
+            if v is None:
+                continue
+            lo, hi = float(f["min"]), float(f["max"])
+            if v < lo or v > hi:
+                notes.append(
+                    "{} = {} is outside the range the model was trained on ({} to {}). "
+                    "It cannot know what happens there, so treat this prediction as a "
+                    "guess.".format(name, _fmt_input(v), _fmt_input(lo), _fmt_input(hi)))
+        elif kind == "date" and f.get("min"):
+            v = str(value)[:10]
+            if v < f["min"] or v > f["max"]:
+                notes.append(
+                    "{} = {} is outside the dates the model was trained on ({} to {}); "
+                    "treat this prediction as a guess.".format(name, v, f["min"], f["max"]))
+        elif kind == "category" and f.get("options") and len(f["options"]) < 200:
+            if str(value) not in f["options"]:
+                notes.append(
+                    "{} = '{}' never appears in the training data, so the model treats it "
+                    "like its rarest values.".format(name, value))
+    return notes
 
 
 def predict_what_if(
@@ -774,6 +923,14 @@ def predict_what_if(
                                   "reliable": not ml_report.no_signal}
         if assumed:
             result["assumed_at_training_median"] = assumed
+        outside = _outside_training(ml_report, input_values)
+        if outside:
+            # A model only knows the range it was trained on: a tree model
+            # flattens beyond it and a linear one runs on in a straight
+            # line, and neither is a prediction. An area of 2,000 against
+            # a training range of 40–300 came back "reliable".
+            result["warnings"] = outside
+            result["reliable"] = False
 
         if ml_report.task == "classification":
             enc = ml_report.target_encoder
@@ -867,6 +1024,35 @@ def _no_signal_note(report: MLReport) -> str:
             "rows). Its feature ranking reflects noise, not influence, and what-if "
             "predictions should not be relied on.".format(
                 label, best.test_score * 100, baseline * 100, n_test))
+
+
+def _summary(report: MLReport) -> str:
+    """Can '{target}' be predicted, and how well — in the reader's units."""
+    best, t = report.best_model, report.target_col
+    if best is None:
+        return ""
+    n_test = len(report.y_test) if report.y_test is not None else 0
+    if report.task == "classification":
+        label, base = max((report.class_balance or {"": 0}).items(), key=lambda kv: kv[1])
+        if report.no_signal:
+            return ("No — the other columns do not predict '{}'. On {:,} rows it had not "
+                    "seen, the model was right {:.0f}% of the time, no better than always "
+                    "answering '{}' ({:.0f}%).".format(t, n_test, best.test_score * 100,
+                                                       label, base * 100))
+        return ("Yes{} — on {:,} rows it had not seen, the model predicted '{}' correctly "
+                "{:.0f}% of the time; always answering '{}' would be right {:.0f}% of the "
+                "time.".format(", partly" if best.test_score - base < 0.15 else "", n_test, t,
+                               best.test_score * 100, label, base * 100))
+    typical = best.mae
+    if report.no_signal:
+        return ("No — the other columns do not explain '{}'. The model's predictions are no "
+                "better than guessing its average for every row.".format(t))
+    strength = ("well" if best.test_score >= 0.7 else "partly" if best.test_score >= 0.3
+                else "only a little")
+    return ("Yes, {} — the other columns explain {:.0f}% of the differences in '{}' between "
+            "rows. On {:,} rows it had not seen, its predictions were off by {} on "
+            "average.".format(strength, best.test_score * 100, t, n_test,
+                              _fmt_input(typical) if typical is not None else "an unknown amount"))
 
 
 def _generate_insights(report: MLReport) -> List[str]:
@@ -998,6 +1184,29 @@ def _leaky_columns(X: pd.DataFrame, y: pd.Series, cat_cols: List[str]) -> List[T
     return out
 
 
+def _no_features_reason(df: pd.DataFrame, target_col: str, leaks: List[str]) -> str:
+    """Why no column could be used to predict the target, column by column."""
+    why = []
+    for col in df.columns:
+        if col == target_col:
+            continue
+        s = df[col].dropna()
+        if s.empty:
+            why.append("'{}' is empty".format(col))
+        elif s.nunique() < 2:
+            why.append("'{}' has one value".format(col))
+        elif is_id_column(col, df[col]):
+            why.append("'{}' identifies rows (an ID or row number)".format(col))
+        elif is_text_dtype(df[col]) and s.nunique() / max(len(df), 1) > 0.5:
+            why.append("'{}' is free text, different on most rows".format(col))
+        elif any("'{}'".format(col) in w for w in leaks):
+            why.append("'{}' is only known once the outcome is".format(col))
+    if not why:
+        return ("There are no other columns to predict '{}' from.".format(target_col))
+    return ("No column can be used to predict '{}': {}. Add columns that describe "
+            "the rows — measures, categories or dates.".format(target_col, "; ".join(why)))
+
+
 def run_ml_pipeline(
     df: pd.DataFrame,
     target_col: str,
@@ -1016,6 +1225,8 @@ def run_ml_pipeline(
     if len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
 
+    df = df.copy()
+    df[target_col] = tidy_labels(df[target_col])
     task, task_reason = detect_task(df[target_col])
     if task == "classification":
         n_classes = int(df[target_col].nunique())
@@ -1024,6 +1235,7 @@ def run_ml_pipeline(
                 "'{}' has {} different values — too many to predict as categories. "
                 "Pick an outcome with at most {} values, or a numeric measure.".format(
                     target_col, n_classes, MAX_CLASSES))
+    check_target(df[target_col], target_col, task)
 
     class_balance = None
     if task == "classification":
@@ -1042,23 +1254,16 @@ def run_ml_pipeline(
     datetime_origins = {c: o for c, o in datetime_origins.items() if c in X.columns}
 
     if len(X.columns) == 0:
-        report = MLReport(task=task, target_col=target_col, feature_cols=[],
-                          n_rows_used=len(df), n_features=0)
-        report.warnings.append("No usable feature columns found after preprocessing.")
-        return report
-
-    if len(X) < 20:
-        report = MLReport(task=task, target_col=target_col, feature_cols=list(X.columns),
-                          n_rows_used=len(X), n_features=len(X.columns))
-        report.warnings.append("Too few rows ({}) for reliable ML. Need at least 20.".format(len(X)))
-        return report
+        raise TargetError(_no_features_reason(df, target_col, leakage_warnings))
 
     model_results, X_test, y_test, target_encoder = train_models(
         X, y, task, cat_cols=cat_cols)
     best = next((m for m in model_results if m.is_best), None)
     if best is None:
-        leakage_warnings.append(
-            "No model could be trained on this target with these features.")
+        first = next((m.error for m in model_results if m.error), "")
+        raise TargetError(
+            "None of the models could be trained on '{}' with this data{}.".format(
+                target_col, " ({})".format(first) if first else ""))
 
     X_train = X.drop(index=X_test.index)
     y_train = (pd.Series(target_encoder.transform(
@@ -1094,7 +1299,9 @@ def run_ml_pipeline(
         categorical_cols=cat_cols,
         residual_band=residual_band,
         feature_inputs=describe_feature_inputs(X, cat_cols, datetime_origins),
-        warnings=[task_reason] + leakage_warnings,
+        # The task reason ("Continuous numeric target …") is not a warning;
+        # listed first among them, every model had a warning box.
+        warnings=list(leakage_warnings),
         task_reason=task_reason,
     )
 
@@ -1118,4 +1325,5 @@ def run_ml_pipeline(
                              "effect, since the model does not predict.".format(
                                  f.importance * 100))
     report.insights = _generate_insights(report)
+    report.summary = _summary(report)
     return report

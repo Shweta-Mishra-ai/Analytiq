@@ -12,7 +12,8 @@ import pandas as pd
 from scipy import stats as scipy_stats
 
 from app.engines.domains.base import (Insight, AttritionAnalysis, build_insight,
-                               col_stats, correlations, infer_scale_bounds)
+                               col_stats, correlations, infer_scale_bounds,
+                               is_id_column)
 from app.services.dtypes import is_text_dtype
 from app.services.stat_guards import apply_fdr, chi2_association
 
@@ -174,8 +175,12 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
                 else "warning" if rate > 12 else "normal")
 
     # Numeric drivers
+    # Identifiers are not drivers: an employee number ranked 1..n differs
+    # between leavers and stayers whenever the file is sorted by anything,
+    # and was reported as "the factor most associated with leaving".
     num_cols = [c for c in df.select_dtypes(include="number").columns
-                if c != attr_col]
+                if c != attr_col and not is_id_column(c, df[c])
+                and not pd.api.types.is_bool_dtype(df[c])]
     top_drivers = []
     for col in num_cols[:12]:
         try:
@@ -283,6 +288,7 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
         n_flight_risk=n_flight, flight_risk_pct=flight_pct,
         cost_estimate=cost_str,
         dept_p=dept_gap["p"] if dept_gap else None,
+        satisfaction_col=_sat_col,
         interpretation="{:.1f}% attrition ({:,} employees).{}".format(
             rate, n_left,
             " The factor most associated with leaving is '{}'.".format(

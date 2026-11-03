@@ -174,7 +174,8 @@ def test_root_cause_states_the_direction_the_numbers_show():
     drivers = {d["factor"]: d for d in analyze_root_cause(df, "score").drivers}
     d = drivers["absences"]
     assert d["low_mean"] > d["high_mean"]
-    assert "higher 'absences' than the rest" in d["detail"]
+    assert "'absences' averages 17.3 there against 7.56 for the rest" in d["detail"]
+    assert "higher" in d["detail"]
     assert "emp_id" not in drivers
 
 
@@ -198,7 +199,7 @@ def test_bi_reads_lower_is_better_metrics_the_right_way_round():
                        "complaints": rng.poisson(np.where(reg == "G", 6, 1)),
                        "cost": rng.gamma(2, 50, n)})
     rc = analyze_root_cause(df, "complaints")
-    assert "highest 'complaints'" in rc.group_label        # the worst are the high ones
+    assert "highest 25% of 'complaints'" in rc.group_label    # the worst are the high ones
     health = {s.segment_name: s for s in analyze_segment_health(df, "region", ["complaints"])}
     assert min(health.values(), key=lambda s: s.health_score).segment_name == "G"
 
@@ -234,7 +235,7 @@ def test_cohort_absence_of_significance_is_not_called_absence_of_effect():
     df = pd.DataFrame({"g": rng.choice(list("ab"), 60), "v": rng.normal(0, 1, 60)})
     c = analyze_cohort(df, "g", "v")
     if not c.is_significant:
-        assert "not the same as showing there is none" in " ".join(c.recommendations)
+        assert "not the same as showing they are alike" in " ".join(c.recommendations)
 
 
 # ── period comparison ─────────────────────────────────────
@@ -289,9 +290,9 @@ def test_eda_text_agrees_with_the_corrected_significance():
     r = run_eda(df)
     for c in r.correlations:
         assert ("adjusted p=" in c.interpretation)
-        assert c.is_significant == c.recommendation.startswith(("Significant", "Statistically"))
+        assert c.is_significant == (not c.interpretation.startswith("No link"))
     for g in r.group_comparisons:
-        assert ("No significant" not in g.interpretation) == g.is_significant
+        assert ("does not differ" not in g.interpretation) == g.is_significant
 
 
 def test_eda_heavy_tails_are_called_heavy():

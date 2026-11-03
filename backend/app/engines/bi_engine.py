@@ -145,29 +145,28 @@ def analyze_benchmark(df: pd.DataFrame, col: str) -> BenchmarkResult:
     above_avg_pct = float((s > mean).mean() * 100)
 
     if cv < 0.1:
-        label = "Very Consistent — low variation across records"
+        label = "Very consistent"
     elif cv < 0.3:
-        label = "Consistent — moderate variation"
+        label = "Fairly consistent"
     elif cv < 0.6:
-        label = "Variable — significant spread"
+        label = "Varies a lot"
     else:
-        label = "Highly Variable — large spread, investigate outliers"
+        label = "Varies widely"
 
-    # Mean vs median interpretation
+    # Written as an analyst would put it, with the figures formatted. It
+    # was "Consistent — moderate variation | 50.4% of records are above
+    # average. Top 10% threshold: 79515.20 …", and called a mean 14% above
+    # its median "close — symmetric distribution".
+    from app.engines.chart_exporter import fmt
     diff_pct = abs(mean - median) / abs(median) * 100 if median != 0 else 0
-    if diff_pct > 20:
-        central = ("Mean ({:.2f}) is {:.0f}% away from median ({:.2f}) — "
-                   "skewed distribution, use median for central tendency.").format(
-                       mean, diff_pct, median)
-    else:
-        central = ("Mean ({:.2f}) and median ({:.2f}) are close — "
-                   "symmetric distribution.").format(mean, median)
-
-    interp = (
-        "{} | {:.1f}% of records are above average. "
-        "Top 10% threshold: {:.2f}. Bottom 10%: {:.2f}. {}".format(
-            label, above_avg_pct, p90, p10, central)
-    )
+    interp = ("A typical record is around {} (the median). Half of them lie between {} "
+              "and {}; the top 10% are above {} and the bottom 10% below {}.".format(
+                  fmt(median), fmt(p25), fmt(p75), fmt(p90), fmt(p10)))
+    if diff_pct > 10:
+        interp += (" The average, {}, is pulled {} by a few {} values, so the median is "
+                   "the better figure to quote.".format(
+                       fmt(mean), "up" if mean > median else "down",
+                       "large" if mean > median else "small"))
 
     return BenchmarkResult(
         column=col, mean=round(mean, 4), median=round(median, 4),
@@ -202,18 +201,14 @@ def analyze_root_cause(
         threshold = float(s.quantile(1 - threshold_pct / 100))
         low_mask  = df[target_col] >= threshold
         high_mask = df[target_col] < threshold
-        group = "the worst {:.0f}% (highest '{}')".format(threshold_pct, target_col)
-        short = "worst performers"
+        group = "the highest {:.0f}% of '{}'".format(threshold_pct, target_col)
+        short = "that group"
     else:
         threshold = float(s.quantile(threshold_pct / 100))
         low_mask  = df[target_col] <= threshold
         high_mask = df[target_col] > threshold
-        if direction > 0:
-            group = "low performers (bottom {:.0f}% of '{}')".format(threshold_pct, target_col)
-            short = "low performers"
-        else:
-            group = "the bottom {:.0f}% of '{}'".format(threshold_pct, target_col)
-            short = "rows in the bottom {:.0f}% of '{}'".format(threshold_pct, target_col)
+        group = "the lowest {:.0f}% of '{}'".format(threshold_pct, target_col)
+        short = "that group"
 
     n_low     = int(low_mask.sum())
     low_pct   = round(n_low / max(len(df), 1) * 100, 1)
@@ -255,11 +250,11 @@ def analyze_root_cause(
                 # The old conditional printed "lower" whenever low performers
                 # had MORE of something: "56.3% lower absences (17.30 vs 7.56)".
                 low_vs_rest = "higher" if low_mean > high_mean else "lower"
+                from app.engines.chart_exporter import fmt as _fmt
                 detail = (
-                    "{} have {:.1f}% {} '{}' than the rest "
-                    "({:.2f} vs {:.2f}, p={:.4f})".format(
-                        short[:1].upper() + short[1:], diff_pct, low_vs_rest,
-                        col, low_mean, high_mean, p)
+                    "'{}' averages {} there against {} for the rest, {:.0f}% {} "
+                    "(p={})".format(col, _fmt(low_mean), _fmt(high_mean), diff_pct,
+                                     low_vs_rest, "<0.001" if p < 0.001 else "{:.3f}".format(p))
                 )
                 drivers.append({
                     "factor":    col,
@@ -362,26 +357,28 @@ def analyze_root_cause(
     # Interpretation
     if not drivers:
         interp = (
-            "Nothing in the other columns separates {} from the rest at a "
-            "level that survives a multiple-comparison check.".format(group)
+            "None of the other columns is clearly different for {} — every gap "
+            "found is within what chance produces.".format(group)
         )
-        recs = ["Collect more granular data to identify what distinguishes them."]
+        recs = ["Whatever sets this group apart is not recorded in this file; reasons, "
+                "notes or contact history would be the next thing to look at."]
     else:
         top = drivers[0]
         interp = (
-            "{:,} records ({:.0f}%) are {}. Strongest difference: "
-            "'{}' — {}".format(n_low, low_pct, group, top["factor"], top["detail"])
+            "Of the other columns, '{}' differs most for {} ({:,} records): {}.".format(
+                top["factor"], group, n_low, top["detail"])
         )
         # Differences, not causes: these columns move with the flagged
         # quarter in this data, which is where to look, not proof of why.
         recs = []
         for d in drivers[:3]:
             if d["dtype"] == "numeric":
+                from app.engines.chart_exporter import fmt as _fmt
                 recs.append(
-                    "Look at '{}': {:.2f} for {} against {:.2f} for the rest. "
-                    "Check whether it drives '{}' or only travels with it "
-                    "before acting on it.".format(
-                        d["factor"], d["low_mean"], short, d["high_mean"], target_col)
+                    "Look at '{}' ({} in {} against {} for the rest) and check "
+                    "whether it changes '{}' or only moves with it before acting on "
+                    "it.".format(d["factor"], _fmt(d["low_mean"]), short,
+                                 _fmt(d["high_mean"]), target_col)
                 )
             else:
                 recs.append(
@@ -586,39 +583,32 @@ def analyze_cohort(
 
     is_sig = p_val < 0.05
 
-    interp = (
-        "{} cohorts compared on '{}'. "
-        "Best: '{}' (mean={:.2f}), Worst: '{}' (mean={:.2f}). "
-        "Gap: {:.1f}% ({} difference, {} p={:.4f}).".format(
-            len(valid), metric_col,
-            best_cohort, cohorts[0]["mean"],
-            worst_cohort, cohorts[-1]["mean"],
-            gap_pct,
-            "statistically significant" if is_sig else "NOT significant",
-            test_used, p_val)
-    )
+    # Highest and lowest, not best and worst: for cost or absence the
+    # highest group is the worse one, and with no real difference neither
+    # is either.
+    from app.engines.chart_exporter import fmt
+    p_txt = "<0.001" if p_val < 0.001 else "{:.2f}".format(p_val)
+    if is_sig:
+        interp = ("Average '{}' is highest in '{}' ({}) and lowest in '{}' ({}) — a {:.0f}% "
+                  "gap across {} groups that is larger than chance (p={}).".format(
+                      metric_col, best_cohort, fmt(cohorts[0]["mean"]), worst_cohort,
+                      fmt(cohorts[-1]["mean"]), gap_pct, len(valid), p_txt))
+    else:
+        interp = ("Average '{}' ranges from {} in '{}' to {} in '{}' across {} groups, a "
+                  "{:.0f}% gap that chance alone could produce (p={}).".format(
+                      metric_col, fmt(cohorts[-1]["mean"]), worst_cohort,
+                      fmt(cohorts[0]["mean"]), best_cohort, len(valid), gap_pct, p_txt))
 
     recs = []
     if is_sig:
         recs.append(
-            "Significant difference confirmed — investigate what '{}' "
-            "does differently to achieve {:.1f}% higher '{}'.".format(
-                best_cohort, gap_pct, metric_col)
-        )
-        below_avg = [c for c in cohorts if c["status"] == "below"]
-        if below_avg:
-            recs.append(
-                "{} cohort(s) below average: {}. "
-                "Prioritize improvement in these segments.".format(
-                    len(below_avg),
-                    ", ".join([c["name"] for c in below_avg[:3]]))
-            )
+            "Compare '{}' with '{}' on what else differs between them before deciding "
+            "which end is the one to copy.".format(best_cohort, worst_cohort))
     else:
         recs.append(
-            "No statistically significant difference between '{}' groups on "
-            "'{}' at this sample size — the data do not show one, which is not "
-            "the same as showing there is none.".format(cohort_col, metric_col)
-        )
+            "This data cannot tell the '{}' groups apart on '{}' — not the same as "
+            "showing they are alike, but no ranking of them should be relied "
+            "on.".format(cohort_col, metric_col))
 
     return CohortResult(
         cohort_col=cohort_col, metric_col=metric_col,
@@ -783,9 +773,9 @@ def analyze_segment_health(
             best_col = max(metrics.items(),
                            key=lambda x: x[1]["better_vs_avg"])[0]
             opp = ("Already leading in '{}' — "
-                   "leverage this advantage in other segments.".format(best_col))
+                   "see whether what works there carries to the others.".format(best_col))
         else:
-            opp = "Performance close to average across all metrics."
+            opp = "Close to the overall average on every measure."
 
         results.append(SegmentHealth(
             segment_name=str(seg),

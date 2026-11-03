@@ -50,6 +50,7 @@ interface WhatIfResult {
   upper?: number
   confidence_note?: string
   assumed_at_training_median?: string[]
+  warnings?: string[]
 }
 
 interface MlReport {
@@ -65,6 +66,9 @@ interface MlReport {
   insights: string[]
   /** Set when the best model is no better than a trivial guess. */
   no_signal?: string
+  /** The answer in one plain sentence. */
+  summary?: string
+  task_reason?: string
   feature_inputs?: FeatureInput[]
 }
 
@@ -167,6 +171,9 @@ function WhatIfPanel({ ds, report }: { ds: string; report: MlReport }) {
           {report.no_signal && (
             <p className="mb-2 text-xs text-amber">⚠ {report.no_signal}</p>
           )}
+          {result.warnings?.map((w) => (
+            <p key={w} className="mb-2 text-xs text-amber">⚠ {w}</p>
+          ))}
           {report.task === 'classification' ? (
             <>
               <div className="text-xs text-mute uppercase">Predicted {report.target_col}</div>
@@ -261,13 +268,15 @@ export default function MlPage() {
     ? ''
     : isClf && baseline
       ? `vs ${fmtScore(baseline[1])} from always answering '${baseline[0]}'`
-      : 'share of the variation explained on unseen rows'
+      : report.best_model.test_score <= 0
+        ? 'worse than guessing the average every time'
+        : 'share of the differences between rows it explains on rows it never saw'
 
   return (
     <div className="page">
       <PageHeader
         title="ML Predictions"
-        subtitle="Auto model selection with cross-validation and feature importance"
+        subtitle="Find out whether a column can be predicted from the others, what moves it, and try what-if changes"
       />
       {error && (
         <div className="mb-4">
@@ -285,7 +294,7 @@ export default function MlPage() {
             >
               {targets.map((t) => (
                 <option key={t.column} value={t.column}>
-                  {t.column} — {t.task}
+                  {t.column} — {t.task === 'classification' ? 'a category' : 'a number'}
                 </option>
               ))}
             </select>
@@ -309,10 +318,25 @@ export default function MlPage() {
 
       {report && !busy && (
         <div className="mt-5 space-y-5">
+          {report.summary && (
+            <div
+              data-testid="ml-summary"
+              className={`rounded-xl border px-4 py-3 text-sm text-ink ${
+                report.no_signal ? 'border-amber/40 bg-amber/5' : 'border-teal/40 bg-teal/5'
+              }`}
+            >
+              <div className="mb-0.5 text-xs text-mute uppercase">
+                Can {report.target_col} be predicted?
+              </div>
+              {report.summary}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <Panel>
-              <div className="text-xs text-mute uppercase">Task</div>
-              <div className="text-xl font-bold text-ink capitalize">{report.task}</div>
+              <div className="text-xs text-mute uppercase">Predicts</div>
+              <div className="text-xl font-bold text-ink">
+                {isClf ? 'A category' : 'A number'}
+              </div>
             </Panel>
             <Panel>
               <div className="text-xs text-mute uppercase">Best model</div>
@@ -322,10 +346,14 @@ export default function MlPage() {
             </Panel>
             <Panel>
               <div className="text-xs text-mute uppercase">
-                {isClf ? 'Accuracy on unseen rows' : 'R² on unseen rows'}
+                {isClf ? 'Right on unseen rows' : 'Explained on unseen rows'}
               </div>
               <div className={`text-xl font-bold ${report.no_signal ? 'text-amber' : 'text-teal'}`}>
-                {report.best_model ? fmtScore(report.best_model.test_score) : '—'}
+                {!report.best_model
+                  ? '—'
+                  : !isClf && report.best_model.test_score <= 0
+                    ? 'None'
+                    : fmtScore(report.best_model.test_score)}
               </div>
               {scoreHint && <div className="mt-0.5 text-[11px] text-faint">{scoreHint}</div>}
             </Panel>
@@ -337,6 +365,10 @@ export default function MlPage() {
             </Panel>
           </div>
 
+          <details className="group rounded-xl border border-edge bg-panel">
+            <summary className="cursor-pointer select-none px-5 py-3 text-sm font-semibold text-ink">
+              Technical details — the {report.models.length} models compared
+            </summary>
           <Panel
             title="Model leaderboard"
             subtitle={
@@ -381,6 +413,7 @@ export default function MlPage() {
               </table>
             </div>
           </Panel>
+          </details>
 
           <Panel title="What drives the prediction">
             {report.no_signal && (

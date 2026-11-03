@@ -53,7 +53,10 @@ AVAILABLE TOOLS:
 
 RULES:
 1. Only use column names that exist in DATASET above.
-2. explanation must be plain English — no code, no jargon.
+2. explanation is one short plain sentence naming what is shown, such as
+   "Total amount by region." Do not start with "Here is" or "This chart",
+   do not say it will "help you understand" anything, and use no
+   exclamation marks, emojis or words like "insights" or "dive".
 3. If nothing matches return:
    {{"tool": "none", "params": {{}}, "explanation": "I could not find a matching analysis."}}
 """

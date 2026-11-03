@@ -1,5 +1,7 @@
 import logging
 import pandas as pd
+
+from app.engines.chart_exporter import fmt
 from dataclasses import dataclass
 from typing import Optional, Any
 from app.engines import chart_engine
@@ -75,10 +77,21 @@ def _aggregate(df, p):
 
     res  = df.groupby(grp)[val].agg(agg).reset_index()
     res  = res.sort_values(val, ascending=False)
-    text = f"**{agg.capitalize()} of `{val}` by `{grp}`:**\n"
+    # Lead with what the numbers say, as an analyst would, then the list.
+    what = {"sum": "total", "mean": "average", "median": "median", "count": "count of",
+            "max": "highest", "min": "lowest"}[agg]
+    if len(res) >= 2:
+        top, low = res.iloc[0], res.iloc[-1]
+        text = (f"**{top[grp]}** has the highest {what} {val} ({fmt(top[val])}) and "
+                f"**{low[grp]}** the lowest ({fmt(low[val])}), across {len(res):,} "
+                f"{grp} groups.\n\n")
+    else:
+        text = ""
     for _, row in res.head(15).iterrows():
-        text += f"- **{row[grp]}**: {row[val]:,.2f}\n"
-    return ToolResult(success=True, text_output=text, dataframe=res)
+        text += f"- {row[grp]}: {fmt(row[val])}\n"
+    if len(res) > 15:
+        text += f"- … and {len(res) - 15:,} more\n"
+    return ToolResult(success=True, text_output=text.strip(), dataframe=res)
 
 
 def _filter(df, p):
@@ -97,9 +110,11 @@ def _filter(df, p):
         return ToolResult(success=False, error=f"Unknown operator: {op}")
 
     filtered = df[mask]
+    share = len(filtered) / max(len(df), 1) * 100
     return ToolResult(
         success=True,
-        text_output=f"**{len(filtered):,} rows** match `{col} {op} {val}`.",
+        text_output=(f"**{len(filtered):,}** of {len(df):,} rows ({share:.0f}%) have "
+                     f"{col} {op} {val}."),
         dataframe=filtered
     )
 
@@ -109,56 +124,58 @@ def _top_n(df, p):
     n   = int(p.get("n", 10))
     asc = bool(p.get("ascending", False))
     res = df.sort_values(col, ascending=asc).head(n)
-    return ToolResult(
-        success=True,
-        text_output=f"**Top {n} rows by `{col}`:**",
-        dataframe=res
-    )
+    text = f"The {len(res):,} rows with the {'lowest' if asc else 'highest'} {col}"
+    if len(res) and pd.api.types.is_numeric_dtype(res[col]):
+        text += f", from {fmt(res[col].iloc[0])} to {fmt(res[col].iloc[-1])}"
+    return ToolResult(success=True, text_output=text + ".", dataframe=res)
 
 
 def _describe_col(df, p):
-    s     = df[p["column"]]
-    lines = [
-        f"**Column: `{p['column']}`**",
-        f"- Type: `{s.dtype}`",
-        f"- Non-null: {s.notna().sum():,} / {len(s):,}",
-        f"- Unique values: {s.nunique():,}",
-    ]
-    if pd.api.types.is_numeric_dtype(s):
-        c = s.dropna()
-        lines += [
-            f"- Mean: {c.mean():,.2f}",
-            f"- Median: {c.median():,.2f}",
-            f"- Std Dev: {c.std():,.2f}",
-            f"- Min: {c.min():,} | Max: {c.max():,}",
-        ]
+    name  = p["column"]
+    s     = df[name]
+    c     = s.dropna()
+    blank = len(s) - len(c)
+    tail  = f" {blank:,} rows are blank." if blank else ""
+    if pd.api.types.is_numeric_dtype(s) and len(c):
+        q1, med, q3 = (float(v) for v in c.quantile([0.25, 0.5, 0.75]))
+        text = (f"A typical {name} is **{fmt(med)}** (the median); half the rows lie "
+                f"between {fmt(q1)} and {fmt(q3)}, and the full range is {fmt(c.min())} to "
+                f"{fmt(c.max())}.")
+        if med and abs(c.mean() - med) / abs(med) > 0.1:
+            text += (f" The average, {fmt(c.mean())}, is pulled "
+                     f"{'up' if c.mean() > med else 'down'} by a few extreme values.")
+    elif len(c):
+        vc = c.value_counts()
+        text = (f"{name} has {len(vc):,} different values; the most common is "
+                f"**{vc.index[0]}** ({vc.iloc[0] / len(c) * 100:.0f}% of rows).")
+        if len(vc) > 1:
+            text += " Next: " + ", ".join(
+                f"{k} ({v / len(c) * 100:.0f}%)" for k, v in vc.iloc[1:5].items()) + "."
     else:
-        top5 = s.value_counts().head(5)
-        lines.append(f"- Top values: {', '.join(str(v) for v in top5.index.tolist())}")
-    return ToolResult(success=True, text_output="\n".join(lines))
+        text = f"{name} is empty."
+    return ToolResult(success=True, text_output=text + tail)
 
 
 def _correlation(df, p):
-    r         = df[[p["col_a"], p["col_b"]]].dropna().corr().iloc[0, 1]
-    strength  = "strong" if abs(r) > 0.7 else "moderate" if abs(r) > 0.4 else "weak"
-    direction = "positive" if r > 0 else "negative"
-    return ToolResult(
-        success=True,
-        text_output=(
-            f"**Correlation: `{p['col_a']}` & `{p['col_b']}`**\n\n"
-            f"r = **{r:.3f}** — {strength} {direction} correlation."
-        )
-    )
+    a, b      = p["col_a"], p["col_b"]
+    r         = df[[a, b]].dropna().corr().iloc[0, 1]
+    if abs(r) < 0.2:
+        text = f"{a} and {b} are not related in this data (r = {r:.2f})."
+    else:
+        how = "closely" if abs(r) > 0.7 else "somewhat" if abs(r) > 0.4 else "slightly"
+        way = "rise together" if r > 0 else "move in opposite directions"
+        text = (f"{a} and {b} {way} {how} (r = {r:.2f}). That is a link, not proof that "
+                f"one causes the other.")
+    return ToolResult(success=True, text_output=text)
 
 
 def _count_values(df, p):
-    counts         = df[p["column"]].value_counts().head(20).reset_index()
+    vc             = df[p["column"]].value_counts()
+    counts         = vc.head(20).reset_index()
     counts.columns = [p["column"], "count"]
-    return ToolResult(
-        success=True,
-        text_output=f"**Value counts for `{p['column']}`:**",
-        dataframe=counts
-    )
+    text = (f"{p['column']} has {len(vc):,} different values; **{vc.index[0]}** is the most "
+            f"common ({vc.iloc[0]:,} rows)." if len(vc) else f"{p['column']} is empty.")
+    return ToolResult(success=True, text_output=text, dataframe=counts)
 
 
 # ── CHART TOOLS ───────────────────────────────────────────
@@ -190,5 +207,6 @@ def _plot_heatmap(df, p):
 def _no_tool(df, p):
     return ToolResult(
         success=True,
-        text_output="I couldn't find a matching analysis. Try rephrasing your question."
+        text_output=("I couldn't match that to this data. Try naming the columns, for "
+                     "example \"average salary by department\".")
     )
