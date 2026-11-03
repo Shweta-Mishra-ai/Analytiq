@@ -714,10 +714,6 @@ def _generate_key_findings(report: "EDAReport") -> List[str]:
 
     # Non-normal columns
     measures = set(report.numeric_cols)
-    non_normal = [
-        col for col, r in report.univariate.items()
-        if r.is_normal is False and r.mean is not None and col in measures
-    ]
     # Whether a column is "normal" is a choice of test for the analysis,
     # made automatically; it is not a finding for the reader.
 
