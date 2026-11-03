@@ -433,15 +433,21 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
 
     # Quality
     avg_miss = sum(st.get("missing_pct",0) for st in all_stats.values()) / max(len(all_stats),1)
-    quality  = ("GOOD — data suitable for reliable analysis." if avg_miss<5
-                else "FAIR — {:.1f}% of values missing on average; figures use the "
-                     "rows that are filled.".format(avg_miss)
-                if avg_miss<20
-                else "NEEDS ATTENTION — {:.1f}% missing. Treat findings with caution.".format(avg_miss))
+    # Plain sentences: "GOOD — data suitable for reliable analysis." and
+    # "MEDIUM — directional" read as a form being filled in, and called
+    # 500 rows "directional".
+    quality  = ("Almost nothing is missing ({:.1f}% of values blank).".format(avg_miss)
+                if avg_miss < 5
+                else "{:.1f}% of values are blank on average; each figure uses the rows "
+                     "that have a value.".format(avg_miss)
+                if avg_miss < 20
+                else "{:.1f}% of values are blank — read the figures with care.".format(avg_miss))
 
-    conf = ("HIGH — sufficient data for reliable conclusions." if len(df)>=1000 and len(num_cols)>=3
-            else "MEDIUM — directional, more data improves reliability." if len(df)>=100
-            else "LOW — small dataset, treat as directional only.")
+    conf = ("{:,} rows — enough for firm comparisons between groups.".format(len(df))
+            if len(df) >= 300
+            else "{:,} rows — enough for broad comparisons; small groups within it are "
+                 "less certain.".format(len(df)) if len(df) >= 100
+            else "Only {:,} rows — read the figures as indicative.".format(len(df)))
 
     return StoryReport(
         domain=domain, domain_confidence=confidence,

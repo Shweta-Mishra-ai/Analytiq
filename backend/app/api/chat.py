@@ -102,20 +102,22 @@ def chat(ds_id: str, req: ChatRequest, owner: str = Depends(current_owner)):
     raw = _complete(system, messages)
     parsed = parse_tool_call(raw)
     if not parsed:
-        return {"text": "Couldn't understand. Try: 'Show sales by region as bar chart'",
+        return {"text": "I couldn't work out an analysis for that. Try naming the columns, "
+                        "for example \"total amount by region as a bar chart\".",
                 "figure": None, "table": None}
 
     result = dispatch(df, parsed["tool"], parsed["params"],
                       parsed.get("explanation", ""))
 
     if not result.success:
-        return {"text": f"Error: {result.error}", "figure": None, "table": None,
+        return {"text": f"That didn't work: {result.error}", "figure": None, "table": None,
                 "tool": parsed["tool"]}
 
     resp: dict = {
-        "text": "\n\n".join(x for x in
-                            [parsed.get("explanation", ""), result.text_output or ""]
-                            if x).strip(),
+        # The answer from the data when there is one. The model's own line
+        # is written before the analysis runs, so it can only announce what
+        # is coming ("Here is a chart that will help you understand…").
+        "text": (result.text_output or parsed.get("explanation", "")).strip(),
         "figure": None,
         "table": None,
         "tool": parsed["tool"],
