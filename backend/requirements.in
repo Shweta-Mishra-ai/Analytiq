@@ -10,9 +10,15 @@ numpy>=1.24.0
 plotly>=5.18.0
 scipy>=1.11.0
 statsmodels>=0.14.0
-matplotlib>=3.8.0
+matplotlib>=3.11.0   # shapes Hindi and Arabic chart labels
 Pillow>=10.0.0
 reportlab>=4.0.0
+# Hindi, Arabic and CJK text in the PDFs: HarfBuzz shaping for Devanagari
+# conjuncts, and joined right-to-left Arabic (ReportLab's own RTL needs
+# rlbidi, which is not on PyPI).
+uharfbuzz>=0.56.0
+arabic-reshaper>=3.0.0
+python-bidi>=0.6.0
 xlsxwriter>=3.1.0
 openpyxl>=3.1.0
 xlrd>=2.0.1          # legacy .xls — the upload page accepts it

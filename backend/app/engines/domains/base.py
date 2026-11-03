@@ -168,6 +168,9 @@ class AttritionAnalysis:
     # test could not be run. Without it the report labelled departments
     # HIGH or OK off a fixed threshold, whatever the test said.
     dept_p:           Optional[float] = None
+    # The satisfaction column the flight-risk count was taken from, or None
+    # when there is none — the count is then 0 and must not be shown.
+    satisfaction_col: Optional[str] = None
 
 
 @dataclass

@@ -107,7 +107,7 @@ def _pct(x: float) -> str:
 
 # ── drawing ───────────────────────────────────────────────
 
-def _font_family() -> Optional[str]:
+def _font_family() -> Optional[list]:
     from matplotlib import font_manager as fm
     from app.engines.pdf_fonts import FONT_DIR
     try:
@@ -115,7 +115,10 @@ def _font_family() -> Optional[str]:
             p = os.path.join(FONT_DIR, f)
             if os.path.exists(p):
                 fm.fontManager.addfont(p)
-        return "Carlito"
+        # Hindi, Arabic and CJK labels fall back to the bundled Noto faces
+        # instead of drawing as boxes.
+        from app.engines.pdf_fonts import matplotlib_fallbacks
+        return ["Carlito"] + matplotlib_fallbacks()
     except Exception:
         logger.debug("chart font unavailable", exc_info=True)
         return None

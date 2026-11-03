@@ -42,7 +42,8 @@ def _clean_text(text: object) -> str:
     s = str(text or "")
     s = s.replace("**", "").replace(" ", " ")
     s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return s.strip()
+    from app.engines.pdf_fonts import script_markup
+    return script_markup(s.strip())
 
 def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                      insights: list, fname: str,
@@ -98,6 +99,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
     # (see engines/pdf_fonts.py). The fonts were never committed, so every
     # report fell back to Helvetica, which has no rupee sign.
     from app.engines.pdf_fonts import FONT_BOLD as _BB, FONT_ITALIC as _BI, FONT_REG as _BF
+    from app.engines.pdf_fonts import draw_mixed
 
     def ps(name, **kw): return ParagraphStyle(name, **kw)
     ST = {
@@ -145,8 +147,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             self.rect(14 * mm, 0, 1.2 * mm, H, fill=1, stroke=0)
             x0 = 30 * mm
             self.setFillColor(dark)
-            self.setFont(_BB, 12)
-            self.drawString(x0, H - 30 * mm, agency_name)
+            draw_mixed(self, x0, H - 30 * mm, agency_name, _BB, 12)
             self.setFillColor(accent)
             self.setFont(_BB, 8.5)
             self.drawString(x0, H - 92 * mm, T.get("domain_label", "ANALYTICS"))
@@ -155,8 +156,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             self.drawString(x0, H - 106 * mm, "Data Health &")
             self.drawString(x0, H - 120 * mm, "Business Insights")
             self.setFillColor(gray)
-            self.setFont(_BF, 11)
-            self.drawString(x0, H - 131 * mm, fname[:70])
+            draw_mixed(self, x0, H - 131 * mm, fname[:70], _BF, 11)
             self.setStrokeColor(accent)
             self.setLineWidth(1.2)
             self.line(x0, H - 138 * mm, x0 + 40 * mm, H - 138 * mm)
@@ -185,8 +185,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
                 self.setFont(_BF, 8)
                 self.drawString(mx, 30 * mm, label)
                 self.setFillColor(ink)
-                self.setFont(_BB, 10)
-                self.drawString(mx, 24 * mm, value)
+                draw_mixed(self, mx, 24 * mm, value, _BB, 10)
                 mx += (W - x0 - 22 * mm) / 3
             self.setFillColor(gray)
             self.setFont(_BF, 7.5)
@@ -206,9 +205,10 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             self.drawString(18*mm, H - 13*mm, "Data Health & Business Insights")
             self.setFont(_BF, 7.5)
             self.setFillColor(gray)
-            self.drawRightString(W - 18*mm, H - 13*mm, "{} · {}".format(fname[:40], now))
+            draw_mixed(self, W - 18*mm, H - 13*mm, "{} · {}".format(fname[:40], now),
+                       _BF, 7.5, align="right")
             self.line(18*mm, 13*mm, W - 18*mm, 13*mm)
-            self.drawString(18*mm, 9*mm, "{} · Confidential".format(agency_name))
+            draw_mixed(self, 18*mm, 9*mm, "{} · Confidential".format(agency_name), _BF, 7.5)
             self.drawRightString(W - 18*mm, 9*mm,
                                  "Page {} of {}".format(self._pageNumber - 1, tot - 1))
 

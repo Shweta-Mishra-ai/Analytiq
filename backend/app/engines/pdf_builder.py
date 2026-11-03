@@ -41,7 +41,8 @@ from reportlab.pdfgen import canvas as CV
 from app.engines.report_blueprints import blueprint_for
 from app.services.dtypes import is_text_dtype, text_columns
 
-from app.engines.pdf_fonts import FONT_BOLD, FONT_ITALIC, FONT_REG
+from app.engines.pdf_fonts import (FONT_BOLD, FONT_ITALIC, FONT_REG, draw_mixed,
+                                    mixed_width, script_markup)
 logger = logging.getLogger(__name__)
 
 W, H = A4
@@ -154,16 +155,15 @@ class _ReportCanvas(CV.Canvas):
         self.setStrokeColor(_c(T["border"]))
         self.setLineWidth(0.6)
         self.line(18*mm, H - 16*mm, W - 18*mm, H - 16*mm)
-        self.setFont(FONT_BOLD, 8)
         self.setFillColor(_c(T["primary"]))
-        self.drawString(18*mm, H - 13*mm, self.report_title)
-        self.setFont(FONT_REG, 7.5)
+        draw_mixed(self, 18*mm, H - 13*mm, self.report_title, FONT_BOLD, 8)
         self.setFillColor(_c(T["text_muted"]))
-        self.drawRightString(W - 18*mm, H - 13*mm,
-                             "{} · {}".format(self.client_name, self.report_date))
+        draw_mixed(self, W - 18*mm, H - 13*mm,
+                   "{} · {}".format(self.client_name, self.report_date), FONT_REG, 7.5,
+                   align="right")
         self.line(18*mm, 13*mm, W - 18*mm, 13*mm)
-        self.drawString(18*mm, 9*mm, "Confidential · Prepared for {}".format(
-            self.client_name))
+        draw_mixed(self, 18*mm, 9*mm, "Confidential · Prepared for {}".format(
+            self.client_name), FONT_REG, 7.5)
         self.drawRightString(W - 18*mm, 9*mm,
                              "Page {} of {}".format(self._pageNumber, tot))
 
@@ -212,7 +212,7 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     words, lines, line = title.split(), [], ""
     for w in words:
         test = (line + " " + w).strip()
-        if stringWidth(test, FONT_BOLD, size) <= max_w:
+        if mixed_width(test, FONT_BOLD, size) <= max_w:
             line = test
         else:
             if line:
@@ -223,14 +223,12 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     cv.setFillColor(_c(T["primary"]))
     y = H * 0.62 + 12*mm
     for ln in lines[:3]:
-        cv.setFont(FONT_BOLD, size)
-        cv.drawString(x0, y, ln)
+        draw_mixed(cv, x0, y, ln, FONT_BOLD, size)
         y -= size * 1.2
     subtitle = config.get("subtitle", "")
     if subtitle:
         cv.setFillColor(_c(T["text_muted"]))
-        cv.setFont(FONT_REG, 11)
-        cv.drawString(x0, y - 2*mm, subtitle[:90])
+        draw_mixed(cv, x0, y - 2*mm, subtitle[:90], FONT_REG, 11)
         y -= 8*mm
     cv.setStrokeColor(_c(T["accent"]))
     cv.setLineWidth(1.2)
@@ -266,8 +264,7 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
         cv.setFont(FONT_REG, 8)
         cv.drawString(mx, 30*mm, k)
         cv.setFillColor(_c(T["text"]))
-        cv.setFont(FONT_BOLD, 10)
-        cv.drawString(mx, 24*mm, v[:30])
+        draw_mixed(cv, mx, 24*mm, v[:30], FONT_BOLD, 10)
     cv.save()
     buf.seek(0)
     return buf.read()
@@ -505,7 +502,7 @@ def _basis_box(story, s, T, config):
         "sector and prior periods before it informs a decision. "
         "Recommendations assume the data is complete and accurate as "
         "supplied.{}".format(
-            config.get("client_name", "Client"),
+            _clean(config.get("client_name", "Client")),
             datetime.now().strftime("%B %d, %Y"),
             _prepared_by_line(config)),
         s["body"])]],
@@ -746,9 +743,10 @@ def _readiness_block(story, s, T, df: pd.DataFrame, CW):
 
 
 def _clean(text: str) -> str:
-    """Escape for ReportLab's mini-HTML parser."""
-    return (str(text).replace("&", "&amp;")
-            .replace("<", "&lt;").replace(">", "&gt;"))
+    """Escape for ReportLab's mini-HTML parser, and set any Hindi, Arabic
+    or CJK run in a font that has it."""
+    return script_markup(str(text).replace("&", "&amp;")
+                         .replace("<", "&lt;").replace(">", "&gt;"))
 
 
 def _steps(text: str) -> str:
@@ -1033,9 +1031,14 @@ def _attrition_page(story, s, T, attrition, CW):
          "color": T["negative"] if attrition.rate > 15 else T["primary"]},
         {"label": "PLANNING BAND", "value": "10–15%",
          "sub": "indicative; varies by sector"},
-        {"label": "LOWEST-QUARTER SATISFACTION", "value": "{:,}".format(attrition.n_flight_risk),
-         "sub": "{:.0f}% of those remaining".format(attrition.flight_risk_pct)},
     ]
+    if getattr(attrition, "satisfaction_col", None):
+        # Shown only when there is a satisfaction column: without one the
+        # count is 0 by construction, and printed as a figure it read as
+        # "nobody is dissatisfied".
+        kpis.append({"label": "LOWEST-QUARTER SATISFACTION",
+                     "value": "{:,}".format(attrition.n_flight_risk),
+                     "sub": "{:.0f}% of those remaining".format(attrition.flight_risk_pct)})
     if top_dept:
         kpis.append({"label": "HIGHEST DEPARTMENT", "value": "{:.1f}%".format(top_dept[1]),
                      "sub": str(top_dept[0])[:24]})
