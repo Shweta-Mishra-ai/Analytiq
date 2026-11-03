@@ -209,10 +209,10 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
     from app import i18n
     lang = _check_language(req.language)
     meta = store.get_meta(owner, ds_id)
-    keep = i18n.protected_from(
+    data = i18n.data_context(
         df, getattr(meta, "filename", ""), _typed(req.title, "Data Analysis Report"),
         req.subtitle, _typed(req.client_name, "Client"), req.prepared_by)
-    with i18n.use_language(lang, keep):
+    with i18n.use_language(lang, **data):
         pdf_bytes = _generate_pdf(df, owner, ds_id, req)
     return Response(
         pdf_bytes, media_type="application/pdf",
@@ -374,7 +374,7 @@ def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
     filename = meta.filename if meta else f"{ds_id}.csv"
     from app import i18n
     lang = _check_language(req.language)
-    with i18n.use_language(lang, i18n.protected_from(df, filename, req.agency_name)):
+    with i18n.use_language(lang, **i18n.data_context(df, filename, req.agency_name)):
         pdf_bytes = _generate_health_pdf(df, filename, req)
     return Response(
         pdf_bytes, media_type="application/pdf",

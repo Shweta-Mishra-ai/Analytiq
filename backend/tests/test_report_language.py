@@ -136,3 +136,22 @@ def test_numbered_steps_are_translated_one_by_one():
                       "3. Compare against your own historical periods  4. Review pricing")
     assert not re.search(r"[A-Za-z]{2,}", out), out
     assert out.startswith("1. ")
+
+
+def test_known_column_names_are_printed_in_the_report_language(client, hr_csv_bytes):
+    """English column names the dictionary knows are written in Hindi in a
+    Hindi report; the data's values are not touched."""
+    r = client.post("/api/datasets/upload",
+                    files={"file": ("hr.csv", io.BytesIO(hr_csv_bytes), "text/csv")})
+    ds = r.json()["meta"]["dataset_id"]
+    text = _text(client.post(f"/api/reports/{ds}/pdf", json={"language": "hi"}).content)
+    for name in ("salary", "department", "satisfaction", "attrition"):
+        assert name not in text.lower(), name
+
+
+def test_a_column_name_that_is_also_a_value_is_left_alone():
+    import pandas as pd
+    df = pd.DataFrame({"salary": [1, 2], "team": ["salary", "ops"]})
+    with i18n.use_language("hi", **i18n.data_context(df)):
+        assert i18n.column_name("salary") == "salary"       # also a value
+        assert i18n.column_name("team") == "टीम"

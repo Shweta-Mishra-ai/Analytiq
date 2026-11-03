@@ -34,7 +34,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from app.engines.domains.base import is_id_column  # noqa: E402
-from app.i18n import month_year, tr  # noqa: E402
+from app.i18n import column_name, month_year, tr  # noqa: E402
 from app.services.dtypes import MONTH_END, text_columns  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,12 @@ def _words(col) -> set:
 
 
 def _label(col) -> str:
-    """'tenure_years' → 'Tenure years' for axis labels and captions."""
+    """'tenure_years' → 'Tenure years' for axis labels and captions; in a
+    report written in another language, the column's name in it when the
+    column dictionary knows it ('वेतन')."""
+    translated = column_name(col)
+    if translated != str(col):
+        return translated
     s = re.sub(r"[_\s]+", " ", str(col)).strip()
     return s[:1].upper() + s[1:]
 
