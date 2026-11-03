@@ -41,6 +41,7 @@ from reportlab.pdfgen import canvas as CV
 from app.engines.report_blueprints import blueprint_for
 from app.services.dtypes import is_text_dtype, text_columns
 
+from app.i18n import date_text, month_year, tr
 from app.engines.pdf_fonts import (FONT_BOLD, FONT_ITALIC, FONT_REG, draw_mixed,
                                     mixed_width, script_markup)
 logger = logging.getLogger(__name__)
@@ -162,10 +163,11 @@ class _ReportCanvas(CV.Canvas):
                    "{} · {}".format(self.client_name, self.report_date), FONT_REG, 7.5,
                    align="right")
         self.line(18*mm, 13*mm, W - 18*mm, 13*mm)
-        draw_mixed(self, 18*mm, 9*mm, "Confidential · Prepared for {}".format(
-            self.client_name), FONT_REG, 7.5)
-        self.drawRightString(W - 18*mm, 9*mm,
-                             "Page {} of {}".format(self._pageNumber, tot))
+        draw_mixed(self, 18*mm, 9*mm, tr("Confidential · Prepared for {client}",
+                                         client=self.client_name), FONT_REG, 7.5)
+        draw_mixed(self, W - 18*mm, 9*mm,
+                   tr("Page {page} of {pages}", page=self._pageNumber, pages=tot),
+                   FONT_REG, 7.5, align="right")
 
 
 # ══════════════════════════════════════════════════════════
@@ -178,10 +180,10 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     stripes and multi-coloured tiles it replaced competed with the title."""
     buf = io.BytesIO()
     cv  = CV.Canvas(buf, pagesize=A4)
-    title       = config.get("title", "Data Analysis Report")
-    client_name = config.get("client_name", "Client")
-    report_date = datetime.now().strftime("%B %d, %Y")
-    domain_lbl  = T.get("domain_label", "BUSINESS ANALYTICS")
+    title       = tr(config.get("title", "Data Analysis Report"))
+    client_name = tr(config.get("client_name", "Client"))
+    report_date = date_text(datetime.now())
+    domain_lbl  = tr(T.get("domain_label", "BUSINESS ANALYTICS"))
     x0 = 30*mm
 
     cv.setFillColor(_c(T["primary"]))
@@ -203,7 +205,7 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
 
     cv.setFillColor(_c(T["accent"]))
     cv.setFont(FONT_BOLD, 8.5)
-    cv.drawString(x0, H * 0.62 + 24*mm, domain_lbl)
+    draw_mixed(cv, x0, H * 0.62 + 24*mm, domain_lbl, FONT_BOLD, 8.5)
 
     # Title, wrapped to the cover's width by measured text width.
     from reportlab.pdfbase.pdfmetrics import stringWidth
@@ -249,20 +251,18 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
             cv.setFont(FONT_BOLD, vsize)
             cv.drawString(kx, ky, value)
             cv.setFillColor(_c(T["text_muted"]))
-            cv.setFont(FONT_REG, 8)
-            cv.drawString(kx, ky - 6*mm, str(kpi.get("label", ""))[:24])
+            draw_mixed(cv, kx, ky - 6*mm, tr(str(kpi.get("label", "")))[:24], FONT_REG, 8)
         cv.setStrokeColor(_c(T["border"]))
         cv.setLineWidth(0.6)
         cv.line(x0, ky + 10*mm, W - 22*mm, ky + 10*mm)
 
-    meta = [("Prepared for", client_name), ("Date", report_date),
-            ("Classification", "Confidential")]
+    meta = [(tr("Prepared for"), client_name), (tr("Date"), report_date),
+            (tr("Classification"), tr("Confidential"))]
     mw = (W - x0 - 22*mm) / 3
     for i, (k, v) in enumerate(meta):
         mx = x0 + i * mw
         cv.setFillColor(_c(T["text_muted"]))
-        cv.setFont(FONT_REG, 8)
-        cv.drawString(mx, 30*mm, k)
+        draw_mixed(cv, mx, 30*mm, k, FONT_REG, 8)
         cv.setFillColor(_c(T["text"]))
         draw_mixed(cv, mx, 24*mm, v[:30], FONT_BOLD, 10)
     cv.save()
@@ -503,7 +503,7 @@ def _basis_box(story, s, T, config):
         "Recommendations assume the data is complete and accurate as "
         "supplied.{}".format(
             _clean(config.get("client_name", "Client")),
-            datetime.now().strftime("%B %d, %Y"),
+            date_text(datetime.now()),
             _prepared_by_line(config)),
         s["body"])]],
         colWidths=["100%"])
@@ -1223,14 +1223,18 @@ def _ml_section(story, s, T, ml_report, CW):
     _sec(story, s, T, "Predictive Model",
          "What the best model trained on '{}' can and cannot tell you".format(target))
 
-    if ml_report.task == "regression":
-        score = "R² {:.2f} on held-out rows".format(best.test_score)
-        if best.rmse is not None:
-            score += " · typical error ±{:,.2f}".format(best.rmse)
+    if ml_report.task == "regression" and best.rmse is not None:
+        score = tr("R² {score} on held-out rows · typical error ±{error}",
+                   score="{:.2f}".format(best.test_score), error="{:,.2f}".format(best.rmse))
+    elif ml_report.task == "regression":
+        score = tr("R² {score} on held-out rows", score="{:.2f}".format(best.test_score))
     else:
-        score = "{:.1f}% accuracy on held-out rows".format(best.test_score * 100)
-    _narrative_box(story, s, T, ("{} predicting '{}' from {} column(s), {:,} rows: {}.".format(
-        best.name, target, ml_report.n_features, ml_report.n_rows_used, score)))
+        score = tr("{score}% accuracy on held-out rows",
+                   score="{:.1f}".format(best.test_score * 100))
+    _narrative_box(story, s, T, tr(
+        "{model:t} predicting '{target}' from {n} column(s), {rows} rows: {score}.",
+        model=best.name, target=target, n=ml_report.n_features,
+        rows="{:,}".format(ml_report.n_rows_used), score=score))
 
     note = getattr(ml_report, "no_signal", "")
     # A model with no signal has nothing else worth reporting; its verdict
@@ -1512,9 +1516,9 @@ def build_pdf(
     config["domain"]     = domain
     config["theme_name"] = theme_name
 
-    report_title = config.get("title", "Data Analysis Report")
-    client_name  = config.get("client_name", "Client")
-    report_date  = datetime.now().strftime("%B %d, %Y")
+    report_title = tr(config.get("title", "Data Analysis Report"))
+    client_name  = tr(config.get("client_name", "Client"))
+    report_date  = date_text(datetime.now())
 
     # ── Facts about the data for the cover ────────────────
     complete = 100 - df.isna().mean().mean() * 100 if len(df.columns) else 100
@@ -1529,10 +1533,9 @@ def build_pdf(
         lo, hi = dates[col].min(), dates[col].max()
         if pd.notna(lo) and pd.notna(hi):
             kpis_cover.append({"label": "Period covered",
-                               "value": "{} – {}".format(lo.strftime("%b %Y"),
-                                                         hi.strftime("%b %Y"))
+                               "value": "{} – {}".format(month_year(lo), month_year(hi))
                                if lo.year != hi.year or lo.month != hi.month
-                               else lo.strftime("%b %Y")})
+                               else month_year(lo)})
 
     cover_bytes = _build_cover(T, config, kpis_cover)
 

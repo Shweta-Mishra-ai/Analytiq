@@ -59,6 +59,9 @@ export default function ReportsPage() {
   const [includeMl, setIncludeMl] = useState(false)
   const [confidential, setConfidential] = useState(false)
   const [agencyName, setAgencyName] = useState('Analytiq')
+  // Language of every word the reports write; the data's own names and
+  // values are printed as uploaded.
+  const [language, setLanguage] = useState<'en' | 'hi'>('en')
   const [health, setHealth] = useState<HealthSummary | null>(null)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -88,11 +91,13 @@ export default function ReportsPage() {
           include_stats: includeStats,
           include_bi: includeBi,
           include_ml: includeMl,
+          language,
         })
         downloadBlob(blob, 'analytiq_report.pdf')
       } else if (kind === 'health-pdf') {
         const blob = await apiBlob(`/api/reports/${ds}/health-pdf`, 'POST', {
           agency_name: agencyName,
+          language,
         })
         downloadBlob(blob, 'analytiq_health_report.pdf')
       } else {
@@ -120,6 +125,25 @@ export default function ReportsPage() {
           <ErrorBox message={error} />
         </div>
       )}
+
+      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-edge bg-panel px-4 py-3">
+        <label htmlFor="report-language" className="text-sm text-ink">
+          Report language
+        </label>
+        <select
+          id="report-language"
+          value={language}
+          onChange={(e) => setLanguage(e.target.value as 'en' | 'hi')}
+          className="rounded-lg border border-edge bg-panel2 px-3 py-1.5 text-sm text-ink focus:border-accent focus:outline-none"
+        >
+          <option value="en">English</option>
+          <option value="hi">हिन्दी (Hindi)</option>
+        </select>
+        <p className="text-xs text-mute">
+          Applies to both PDF reports. Column names and values are printed as
+          they are in your data.
+        </p>
+      </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Panel title="PDF report">

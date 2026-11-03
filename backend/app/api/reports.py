@@ -37,6 +37,23 @@ class PdfRequest(BaseModel):
     # under the methodology, because a review deliverable is signed by a
     # person or a firm. Nothing about the tooling is named anywhere.
     prepared_by: str = ""
+    # Language every word of the report is written in ("en" or "hi"). The
+    # data's own names and values are printed as they are.
+    language: str = "en"
+
+
+def _check_language(lang: str) -> str:
+    from app.i18n import LANGUAGES
+    if lang not in LANGUAGES:
+        raise HTTPException(422, "language must be one of: " + ", ".join(LANGUAGES))
+    return lang
+
+
+def _typed(value: str, default: str) -> str:
+    """What the user typed, to be printed as it is; a default left in
+    place is the report's own wording and is translated."""
+    value = (value or "").strip()
+    return "" if value == default else value
 
 
 def _df_or_404(owner: str, ds_id: str):
@@ -189,7 +206,20 @@ def export_excel(ds_id: str, owner: str = Depends(current_owner)):
 @router.post("/{ds_id}/pdf")
 def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner)):
     df = _df_or_404(owner, ds_id)
+    from app import i18n
+    lang = _check_language(req.language)
+    meta = store.get_meta(owner, ds_id)
+    keep = i18n.protected_from(
+        df, getattr(meta, "filename", ""), _typed(req.title, "Data Analysis Report"),
+        req.subtitle, _typed(req.client_name, "Client"), req.prepared_by)
+    with i18n.use_language(lang, keep):
+        pdf_bytes = _generate_pdf(df, owner, ds_id, req)
+    return Response(
+        pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=analytiq_report.pdf"})
 
+
+def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
     from app.engines.data_profiler import profile_dataset
     from app.engines.story_engine import detect_domain, generate_story
     from app.engines.pdf_builder import build_pdf
@@ -301,16 +331,14 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
     except Exception as e:
         logger.exception("PDF build failed")
         raise HTTPException(500, f"PDF build failed: {e}")
-
-    return Response(
-        pdf_bytes, media_type="application/pdf",
-        headers={"Content-Disposition": "attachment; filename=analytiq_report.pdf"})
+    return pdf_bytes
 
 
 class HealthPdfRequest(BaseModel):
     # Shown in the header/footer of every page — set it to your own or your
     # client's agency name when delivering the report.
     agency_name: str = "Analytiq"
+    language: str = "en"
 
 
 @router.get("/{ds_id}/health")
@@ -344,6 +372,17 @@ def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
     df = _df_or_404(owner, ds_id)
     meta = store.get_meta(owner, ds_id)
     filename = meta.filename if meta else f"{ds_id}.csv"
+    from app import i18n
+    lang = _check_language(req.language)
+    with i18n.use_language(lang, i18n.protected_from(df, filename, req.agency_name)):
+        pdf_bytes = _generate_health_pdf(df, filename, req)
+    return Response(
+        pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition":
+                 "attachment; filename=analytiq_health_report.pdf"})
+
+
+def _generate_health_pdf(df, filename: str, req: HealthPdfRequest) -> bytes:
 
     from app.engines.health_engine import build_report_payload, compute_health
     from app.engines.health_pdf_builder import build_health_pdf
@@ -369,8 +408,4 @@ def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
     except Exception as e:
         logger.exception("Health PDF build failed")
         raise HTTPException(500, f"Health report build failed: {e}")
-
-    return Response(
-        pdf_bytes, media_type="application/pdf",
-        headers={"Content-Disposition":
-                 "attachment; filename=analytiq_health_report.pdf"})
+    return pdf_bytes

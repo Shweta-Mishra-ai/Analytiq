@@ -34,6 +34,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from app.engines.domains.base import is_id_column  # noqa: E402
+from app.i18n import month_year, tr  # noqa: E402
 from app.services.dtypes import MONTH_END, text_columns  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -282,7 +283,9 @@ def _by_group(df, T, metric, group) -> Optional[ReportChart]:
     agg = agg.sort_values(ascending=False)
     if len(agg) < 2:
         return None
-    what = ("Total" if additive else "Average") + " " + _label(metric).lower()
+    m_lbl = _label(metric).lower()
+    what = tr("Total {measure}", measure=m_lbl) if additive \
+        else tr("Average {measure}", measure=m_lbl)
     png = _bars(T, list(agg.index), agg.values, what)
 
     hi, lo = agg.index[0], agg.index[-1]
@@ -290,13 +293,20 @@ def _by_group(df, T, metric, group) -> Optional[ReportChart]:
     parts = []
     if additive:
         share = agg.iloc[0] / agg.sum() * 100 if agg.sum() else 0
-        parts.append("{} has the largest total {} ({}, {} of the total shown); {} the "
-                     "smallest ({}).".format(hi, _label(metric).lower(), fmt(agg.iloc[0]),
-                                             _pct(share), lo, fmt(agg.iloc[-1])))
+        parts.append(tr("{high} has the largest total {measure} ({high_value}, {share} of "
+                        "the total shown); {low} the smallest ({low_value}).",
+                        high=hi, measure=m_lbl, high_value=fmt(agg.iloc[0]),
+                        share=_pct(share), low=lo, low_value=fmt(agg.iloc[-1])))
+    elif np.isfinite(gap):
+        parts.append(tr("Average {measure} is highest in {high} ({high_value}) and lowest "
+                        "in {low} ({low_value}), a {gap} difference.",
+                        measure=m_lbl, high=hi, high_value=fmt(agg.iloc[0]), low=lo,
+                        low_value=fmt(agg.iloc[-1]), gap=_pct(gap)))
     else:
-        parts.append("Average {} is highest in {} ({}) and lowest in {} ({}){}.".format(
-            _label(metric).lower(), hi, fmt(agg.iloc[0]), lo, fmt(agg.iloc[-1]),
-            ", a {} difference".format(_pct(gap)) if np.isfinite(gap) else ""))
+        parts.append(tr("Average {measure} is highest in {high} ({high_value}) and lowest "
+                        "in {low} ({low_value}).",
+                        measure=m_lbl, high=hi, high_value=fmt(agg.iloc[0]), low=lo,
+                        low_value=fmt(agg.iloc[-1])))
     groups = [g[metric].values for _, g in data.groupby(group) if len(g) >= 3]
     if len(groups) >= 2:
         try:
@@ -305,26 +315,29 @@ def _by_group(df, T, metric, group) -> Optional[ReportChart]:
                 # A total also grows with the number of records, so say
                 # which of the two is behind the ranking.
                 parts.append(
-                    "Individual {} values differ between groups by more than chance "
-                    "(Kruskal-Wallis p={:.3f}).".format(_label(metric).lower(), p) if p < 0.05
-                    else "Individual {} values do not differ between groups by more than "
-                         "chance (Kruskal-Wallis p={:.2f}); the totals differ mainly because "
-                         "the groups have different numbers of records.".format(
-                             _label(metric).lower(), p))
+                    tr("Individual {measure} values differ between groups by more than "
+                       "chance (Kruskal-Wallis p={p}).", measure=m_lbl, p="{:.3f}".format(p))
+                    if p < 0.05 else
+                    tr("Individual {measure} values do not differ between groups by more "
+                       "than chance (Kruskal-Wallis p={p}); the totals differ mainly because "
+                       "the groups have different numbers of records.",
+                       measure=m_lbl, p="{:.2f}".format(p)))
             else:
                 parts.append(
-                    "The groups differ by more than chance would explain (Kruskal-Wallis "
-                    "p={:.3f}).".format(p) if p < 0.05 else
-                    "Differences this size are within what chance alone produces "
-                    "(Kruskal-Wallis p={:.2f}), so the ranking should not be relied on."
-                    .format(p))
+                    tr("The groups differ by more than chance would explain (Kruskal-Wallis "
+                       "p={p}).", p="{:.3f}".format(p)) if p < 0.05 else
+                    tr("Differences this size are within what chance alone produces "
+                       "(Kruskal-Wallis p={p}), so the ranking should not be relied on.",
+                       p="{:.2f}".format(p)))
         except Exception:
             logger.debug("kruskal failed", exc_info=True)
     n_lo, n_hi = int(counts[top].min()), int(counts[top].max())
-    parts.append("Each group has {}–{} records{}.".format(
-        fmt(n_lo), fmt(n_hi),
-        "; the 12 largest of {} groups are shown".format(len(counts)) if len(counts) > 12 else ""))
-    return ReportChart(title="{} by {}".format(what, _label(group).lower()), png=png,
+    parts.append(tr("Each group has {low}–{high} records; the 12 largest of {groups} groups "
+                    "are shown.", low=fmt(n_lo), high=fmt(n_hi), groups=len(counts))
+                 if len(counts) > 12 else
+                 tr("Each group has {low}–{high} records.", low=fmt(n_lo), high=fmt(n_hi)))
+    return ReportChart(title=tr("{what} by {group}", what=what, group=_label(group).lower()),
+                       png=png,
                        caption=" ".join(parts), kind="by_group", columns=(metric, group))
 
 
@@ -339,17 +352,21 @@ def _rate_by_group(df, T, outcome, group) -> Optional[ReportChart]:
         return None
     overall = float(data["y"].mean() * 100)
     what = "{} = {}".format(_label(col), event)
-    png = _bars(T, list(rate.index), rate.values, "Share of records where " + what,
-                ref=overall, ref_label="overall {}".format(_pct(overall)), percent=True)
-    parts = ["Overall, {} of records have {}. It is highest in {} ({}) and lowest in {} "
-             "({}).".format(_pct(overall), what, rate.index[0], _pct(rate.iloc[0]),
-                            rate.index[-1], _pct(rate.iloc[-1]))]
+    png = _bars(T, list(rate.index), rate.values, tr("Share of records where {what}", what=what),
+                ref=overall, ref_label=tr("overall {rate}", rate=_pct(overall)), percent=True)
+    parts = [tr("Overall, {rate} of records have {what}. It is highest in {high} "
+                "({high_rate}) and lowest in {low} ({low_rate}).",
+                rate=_pct(overall), what=what, high=rate.index[0],
+                high_rate=_pct(rate.iloc[0]), low=rate.index[-1], low_rate=_pct(rate.iloc[-1]))]
     test = chi2_association(pd.crosstab(data["g"], data["y"]))
     if test:
-        parts.append("The difference between groups is {} (chi-square p={:.3f})."
-                     .format("statistically significant" if test["p"] < 0.05
-                             else "not statistically significant", test["p"]))
-    return ReportChart(title="{} rate by {}".format(_label(col), _label(group).lower()),
+        parts.append(
+            tr("The difference between groups is statistically significant "
+               "(chi-square p={p}).", p="{:.3f}".format(test["p"])) if test["p"] < 0.05 else
+            tr("The difference between groups is not statistically significant "
+               "(chi-square p={p}).", p="{:.3f}".format(test["p"])))
+    return ReportChart(title=tr("{outcome} rate by {group}", outcome=_label(col),
+                                group=_label(group).lower()),
                        png=png, caption=" ".join(parts), kind="rate", columns=(col, group))
 
 
@@ -371,7 +388,8 @@ def _trend(df, T, metric, date_col) -> Optional[ReportChart]:
     monthly = monthly[days.loc[keep] > 0]
     if len(monthly) < 4:
         return None
-    what = ("Monthly total" if additive else "Monthly average") + " " + _label(metric).lower()
+    what = tr("Monthly total {measure}", measure=_label(metric).lower()) if additive \
+        else tr("Monthly average {measure}", measure=_label(metric).lower())
     # Each point sits at the start of its month: resampling labels a month
     # by its last day, which put January's value beside the February tick.
     x = monthly.index.to_period("M").to_timestamp()
@@ -388,17 +406,22 @@ def _trend(df, T, metric, date_col) -> Optional[ReportChart]:
         import matplotlib.dates as mdates
         loc = mdates.AutoDateLocator(maxticks=8)
         ax.xaxis.set_major_locator(loc)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y" if len(monthly) <= 36 else "%Y"))
+        from matplotlib.ticker import FuncFormatter
+        ax.xaxis.set_major_formatter(FuncFormatter(
+            lambda v, _: month_year(mdates.num2date(v)) if len(monthly) <= 36
+            else str(mdates.num2date(v).year)))
         png = _png(fig)
     change = (monthly.iloc[-1] - monthly.iloc[0]) / abs(monthly.iloc[0]) * 100 \
         if monthly.iloc[0] else float("nan")
     peak = monthly.idxmax()
-    caption = ("{} went from {} in {} to {} in {}{}. The highest month was {} ({}). "
-               "Months the data only partly covers are left out.").format(
-        what, fmt(monthly.iloc[0]), monthly.index[0].strftime("%b %Y"),
-        fmt(monthly.iloc[-1]), monthly.index[-1].strftime("%b %Y"),
-        " ({:+.0f}%)".format(change) if np.isfinite(change) else "",
-        peak.strftime("%b %Y"), fmt(monthly.max()))
+    caption = tr("{what} went from {first} in {first_month} to {last} in {last_month}"
+                 "{change}. The highest month was {peak_month} ({peak}). Months the data "
+                 "only partly covers are left out.",
+                 what=what, first=fmt(monthly.iloc[0]),
+                 first_month=month_year(monthly.index[0]), last=fmt(monthly.iloc[-1]),
+                 last_month=month_year(monthly.index[-1]),
+                 change=" ({:+.0f}%)".format(change) if np.isfinite(change) else "",
+                 peak_month=month_year(peak), peak=fmt(monthly.max()))
     return ReportChart(title=what, png=png, caption=caption, kind="trend",
                        columns=(metric, date_col))
 
@@ -419,11 +442,11 @@ def _distribution(df, T, metric) -> Optional[ReportChart]:
         # than printed across the bars.
         top = ax.get_ylim()[1] * 1.18
         ax.set_ylim(0, top)
-        ax.text(med, top * 0.98, " median " + fmt(med), fontsize=8,
+        ax.text(med, top * 0.98, " " + tr("median {value}", value=fmt(med)), fontsize=8,
                 color=T["primary"], va="top",
                 bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.5})
         ax.set_xlabel(_label(metric))
-        ax.set_ylabel("Records")
+        ax.set_ylabel(tr("Records"))
         _value_axis(ax, T, horizontal=False)
         from matplotlib.ticker import FuncFormatter
         ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: fmt(v)))
@@ -432,10 +455,12 @@ def _distribution(df, T, metric) -> Optional[ReportChart]:
     shape = ("closely bunched around the middle" if abs(skew) < 0.5 else
              "stretched towards high values, so the median is the better summary"
              if skew > 0 else "stretched towards low values, so the median is the better summary")
-    caption = ("Half the records have {} between {} and {} (median {}). The spread is {}. "
-               "Range: {} to {}.").format(_label(metric).lower(), fmt(q1), fmt(q3), fmt(med),
-                                          shape, fmt(s.min()), fmt(s.max()))
-    return ReportChart(title="Distribution of " + _label(metric).lower(), png=png,
+    caption = tr("Half the records have {measure} between {q1} and {q3} (median {median}). "
+                 "The spread is {shape:t}. Range: {low} to {high}.",
+                 measure=_label(metric).lower(), q1=fmt(q1), q3=fmt(q3), median=fmt(med),
+                 shape=shape, low=fmt(s.min()), high=fmt(s.max()))
+    return ReportChart(title=tr("Distribution of {measure}", measure=_label(metric).lower()),
+                       png=png,
                        caption=caption, kind="distribution", columns=(metric,))
 
 
@@ -476,13 +501,14 @@ def _correlations(df, T, measures) -> Optional[ReportChart]:
         r = corr.loc[a, b]
         if abs(r) < 0.3:
             break
-        lines.append("{} and {} ({}, r={:.2f})".format(
-            _label(a), _label(b).lower(), "move together" if r > 0 else "move in opposite directions",
-            r))
-    caption = ("Strongest relationships: {}. Spearman rank correlation over {} records; it "
-               "shows that two measures move together, not that one causes the other."
-               ).format("; ".join(lines), fmt(len(df)))
-    return ReportChart(title="How the measures relate", png=png, caption=caption,
+        lines.append(tr("{a} and {b} (move together, r={r})", a=_label(a), b=_label(b).lower(),
+                        r="{:.2f}".format(r)) if r > 0 else
+                     tr("{a} and {b} (move in opposite directions, r={r})", a=_label(a),
+                        b=_label(b).lower(), r="{:.2f}".format(r)))
+    caption = tr("Strongest relationships: {pairs}. Spearman rank correlation over {n} "
+                 "records; it shows that two measures move together, not that one causes "
+                 "the other.", pairs="; ".join(lines), n=fmt(len(df)))
+    return ReportChart(title=tr("How the measures relate"), png=png, caption=caption,
                        kind="correlation", columns=tuple(cols))
 
 

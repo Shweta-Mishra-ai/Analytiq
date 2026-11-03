@@ -27,6 +27,7 @@ from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 from reportlab.pdfgen import canvas as rl_canvas
 from pypdf import PdfReader, PdfWriter
 from app.engines.pdf_primitives import truncate_label, is_id_col
+from app.i18n import date_text, tr
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
 
     W, H = A4
     CW   = W - 36 * mm
-    now  = datetime.datetime.now().strftime("%B %d, %Y")
+    now  = date_text(datetime.datetime.now())
 
     # The same palette as the main report and its charts (report_theme).
     from app.engines import report_theme
@@ -149,12 +150,10 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             self.setFillColor(dark)
             draw_mixed(self, x0, H - 30 * mm, agency_name, _BB, 12)
             self.setFillColor(accent)
-            self.setFont(_BB, 8.5)
-            self.drawString(x0, H - 92 * mm, T.get("domain_label", "ANALYTICS"))
+            draw_mixed(self, x0, H - 92 * mm, tr(T.get("domain_label", "ANALYTICS")), _BB, 8.5)
             self.setFillColor(dark)
-            self.setFont(_BB, 30)
-            self.drawString(x0, H - 106 * mm, "Data Health &")
-            self.drawString(x0, H - 120 * mm, "Business Insights")
+            draw_mixed(self, x0, H - 106 * mm, tr("Data Health &"), _BB, 30)
+            draw_mixed(self, x0, H - 120 * mm, tr("Business Insights"), _BB, 30)
             self.setFillColor(gray)
             draw_mixed(self, x0, H - 131 * mm, fname[:70], _BF, 11)
             self.setStrokeColor(accent)
@@ -170,26 +169,25 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             self.setFont(_BF, 7)
             self.drawCentredString(x0 + 14 * mm, badge_y - 8 * mm, "/ 100")
             self.setFillColor(dark)
-            self.setFont(_BB, 13)
-            self.drawString(x0 + 34 * mm, badge_y + 3 * mm,
-                            "Grade {} — {}".format(health["grade"], health["label"]))
+            draw_mixed(self, x0 + 34 * mm, badge_y + 3 * mm,
+                       tr("Grade {grade:t} — {label:t}", grade=health["grade"],
+                          label=health["label"]), _BB, 13)
             self.setFillColor(gray)
-            self.setFont(_BF, 9)
-            self.drawString(x0 + 34 * mm, badge_y - 4 * mm,
-                            "{:,} rows · {} columns".format(health["rows"], health["cols"]))
+            draw_mixed(self, x0 + 34 * mm, badge_y - 4 * mm,
+                       tr("{rows} rows · {cols} columns", rows="{:,}".format(health["rows"]),
+                          cols=health["cols"]), _BF, 9)
 
             mx = x0
-            for label, value in (("Dataset", fname[:34]), ("Date", now),
-                                 ("Prepared by", agency_name)):
+            for label, value in ((tr("Dataset"), fname[:34]), (tr("Date"), now),
+                                 (tr("Prepared by"), agency_name)):
                 self.setFillColor(gray)
-                self.setFont(_BF, 8)
-                self.drawString(mx, 30 * mm, label)
+                draw_mixed(self, mx, 30 * mm, label, _BF, 8)
                 self.setFillColor(ink)
                 draw_mixed(self, mx, 24 * mm, value, _BB, 10)
                 mx += (W - x0 - 22 * mm) / 3
             self.setFillColor(gray)
-            self.setFont(_BF, 7.5)
-            self.drawString(x0, 14 * mm, "Confidential — prepared for the named client only.")
+            draw_mixed(self, x0, 14 * mm,
+                       tr("Confidential — prepared for the named client only."), _BF, 7.5)
 
         def _draw_hf(self, tot):
             # The cover carries no running header/footer or page number,
@@ -200,17 +198,18 @@ def build_health_pdf(df: pd.DataFrame, niche: str, health: dict,
             self.setStrokeColor(border)
             self.setLineWidth(0.6)
             self.line(18*mm, H - 16*mm, W - 18*mm, H - 16*mm)
-            self.setFont(_BB, 8)
             self.setFillColor(dark)
-            self.drawString(18*mm, H - 13*mm, "Data Health & Business Insights")
+            draw_mixed(self, 18*mm, H - 13*mm, tr("Data Health & Business Insights"), _BB, 8)
             self.setFont(_BF, 7.5)
             self.setFillColor(gray)
             draw_mixed(self, W - 18*mm, H - 13*mm, "{} · {}".format(fname[:40], now),
                        _BF, 7.5, align="right")
             self.line(18*mm, 13*mm, W - 18*mm, 13*mm)
-            draw_mixed(self, 18*mm, 9*mm, "{} · Confidential".format(agency_name), _BF, 7.5)
-            self.drawRightString(W - 18*mm, 9*mm,
-                                 "Page {} of {}".format(self._pageNumber - 1, tot - 1))
+            draw_mixed(self, 18*mm, 9*mm, tr("{agency} · Confidential", agency=agency_name),
+                       _BF, 7.5)
+            draw_mixed(self, W - 18*mm, 9*mm, tr("Page {page} of {pages}",
+                                                 page=self._pageNumber - 1, pages=tot - 1),
+                       _BF, 7.5, align="right")
 
     class _Doc(BaseDocTemplate):
         def afterFlowable(self, flowable):

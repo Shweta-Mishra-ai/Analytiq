@@ -133,6 +133,8 @@ def _shape_when_needed():
         return
 
     def __init__(self, text, style=None, *args, **kwargs):
+        if isinstance(text, str):
+            text = translate_markup(text)
         if style is not None and not getattr(style, "shaping", 0) \
                 and isinstance(text, str) and _DEVANAGARI.search(text):
             from reportlab.lib.styles import ParagraphStyle
@@ -175,7 +177,11 @@ def _shape_per_font():
             return w
         pairs = list(w[1:])
         fonts = {f.fontName for f, _ in pairs if not hasattr(f, "cbDefn")}
-        if len(fonts) <= 1:
+        # A callback piece (the contents page's dot leader) in the word is
+        # not text: shaped with the rest, it broke line breaking with an
+        # IndexError, so such words take the per-piece path below.
+        has_callback = any(hasattr(f, "cbDefn") for f, _ in pairs)
+        if len(fonts) <= 1 and not has_callback:
             if fonts and next(iter(fonts)).startswith(_UNSHAPED):
                 return w
             return original(w, *args, **kwargs)
@@ -236,6 +242,44 @@ def _visual_arabic(run: str) -> str:
 
 def has_other_script(text: str) -> bool:
     return bool(_RUN.search(str(text)))
+
+
+_WRAPPED = re.compile(r'<font name="Report(?:Deva|Arab|CJK)">[^<]*</font>')
+_TAG = re.compile(r"(<[^>]+>)")
+
+
+def translate_markup(text: str) -> str:
+    """Paragraph markup in the report's language.
+
+    Each run of text between tags is translated on its own. Runs already
+    set in a script font (the data's own Hindi or Arabic, put there by
+    `script_markup`) are kept as opaque tokens, so a sentence quoting one
+    still matches its template and Arabic is not put in visual order
+    twice."""
+    from app import i18n
+    if i18n.current() == i18n.DEFAULT or not re.search(r"[A-Za-z]", text):
+        return text
+    from xml.sax.saxutils import escape, unescape
+    kept: list = []
+
+    def keep(m):
+        kept.append(m.group(0))
+        return "\x00%d\x00" % (len(kept) - 1)
+
+    text = _WRAPPED.sub(keep, text)
+    out = []
+    for part in _TAG.split(text):
+        if not part or part.startswith("<"):
+            out.append(part)
+            continue
+        plain = unescape(re.sub("\x00(\\d+)\x00",
+                                lambda m: re.sub("<[^>]+>", "", kept[int(m.group(1))]), part))
+        if i18n.is_done(plain):
+            out.append(part)
+            continue
+        done = i18n.tr(unescape(part))
+        out.append(script_markup(escape(done)) if done != unescape(part) else part)
+    return re.sub("\x00(\\d+)\x00", lambda m: kept[int(m.group(1))], "".join(out))
 
 
 def script_markup(text: str) -> str:
@@ -314,6 +358,7 @@ def draw_mixed(canvas, x: float, y: float, text: str, font: str, size: float,
     """drawString for text that may mix scripts: each run in a font that
     has it, Latin in `font`. `align` is left, right or centre around x.
     Returns the width drawn."""
+    text = str(text)
     width = mixed_width(text, font, size)
     cursor = x - width if align == "right" else x - width / 2 if align == "centre" else x
     deva = _SCRIPTS.get("deva")
