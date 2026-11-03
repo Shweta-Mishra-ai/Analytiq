@@ -164,8 +164,8 @@ def _correlation(df, p):
     else:
         how = "closely" if abs(r) > 0.7 else "somewhat" if abs(r) > 0.4 else "slightly"
         way = "rise together" if r > 0 else "move in opposite directions"
-        text = (f"{a} and {b} {way} {how} (r = {r:.2f}). That shows they move together, "
-                f"not that one causes the other.")
+        text = (f"{a} and {b} {way} {how} (r = {r:.2f}). That is a link, not proof that "
+                f"one causes the other.")
     return ToolResult(success=True, text_output=text)
 
 
