@@ -131,22 +131,22 @@ def detect_task(series: pd.Series) -> Tuple[str, str]:
 
     # Boolean or binary → classification
     if n_uniq == 2:
-        return "classification", "Binary target (2 unique values)"
+        return "classification", "Two possible outcomes"
 
     # Text → classification. `dtype == object or str(dtype) == "str"` missed
     # pandas' "string" dtype, which then fell through to regression on text.
     if is_text_dtype(dtype):
         if n_uniq <= 20:
-            return "classification", "Categorical target ({} classes)".format(n_uniq)
+            return "classification", "A category with {} values".format(n_uniq)
         else:
-            return "classification", "High-cardinality categorical ({} classes)".format(n_uniq)
+            return "classification", "A category with {} values".format(n_uniq)
 
     # Few unique integers → classification
     if pd.api.types.is_integer_dtype(dtype) and n_uniq <= 15:
-        return "classification", "Discrete integer target ({} unique values)".format(n_uniq)
+        return "classification", "A whole number with only {} values, treated as categories".format(n_uniq)
 
     # Continuous numeric → regression
-    return "regression", "Continuous numeric target ({} unique values)".format(n_uniq)
+    return "regression", "A number ({:,} different values)".format(n_uniq)
 
 
 # A classification target with more classes than this is a lookup, not a

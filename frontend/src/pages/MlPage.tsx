@@ -268,7 +268,9 @@ export default function MlPage() {
     ? ''
     : isClf && baseline
       ? `vs ${fmtScore(baseline[1])} from always answering '${baseline[0]}'`
-      : 'share of the variation explained on unseen rows'
+      : report.best_model.test_score <= 0
+        ? 'worse than guessing the average every time'
+        : 'share of the differences between rows it explains on rows it never saw'
 
   return (
     <div className="page">
@@ -335,9 +337,6 @@ export default function MlPage() {
               <div className="text-xl font-bold text-ink">
                 {isClf ? 'A category' : 'A number'}
               </div>
-              {report.task_reason && (
-                <div className="mt-0.5 text-[11px] text-faint">{report.task_reason}</div>
-              )}
             </Panel>
             <Panel>
               <div className="text-xs text-mute uppercase">Best model</div>
@@ -350,7 +349,11 @@ export default function MlPage() {
                 {isClf ? 'Right on unseen rows' : 'Explained on unseen rows'}
               </div>
               <div className={`text-xl font-bold ${report.no_signal ? 'text-amber' : 'text-teal'}`}>
-                {report.best_model ? fmtScore(report.best_model.test_score) : '—'}
+                {!report.best_model
+                  ? '—'
+                  : !isClf && report.best_model.test_score <= 0
+                    ? 'None'
+                    : fmtScore(report.best_model.test_score)}
               </div>
               {scoreHint && <div className="mt-0.5 text-[11px] text-faint">{scoreHint}</div>}
             </Panel>
