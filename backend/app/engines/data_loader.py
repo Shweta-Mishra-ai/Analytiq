@@ -453,9 +453,14 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
         # date like 01/02/2024 also starts with a zero.
         zero_padded = df[col].astype(str).str.match(r"^\s*[+-]?0\d+\s*$").any()
 
-        # Try numeric
+        # Try numeric: plain numbers first, then numbers written with a
+        # currency sign, thousands separators or a % sign ("₹1,23,456",
+        # "$1,200", "22%"), which to_numeric rejects and which then stayed
+        # text — left out of every chart, statistic and model.
         try:
             converted = pd.to_numeric(df[col], errors="coerce")
+            if converted.notna().sum() / max(len(df), 1) <= 0.80:
+                converted = decorated_numbers(df[col])
             success_rate = converted.notna().sum() / max(len(df), 1)
             if success_rate > 0.80 and not zero_padded:
                 df[col] = converted.where(converted.notna(), df[col])
@@ -479,6 +484,26 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
                 logger.debug("_smart_dtype_inference: suppressed exception", exc_info=True)
 
     return df
+
+
+def decorated_numbers(s: pd.Series) -> pd.Series:
+    """Numbers written for people — "₹1,23,456", "$ 1,200.50", "22%",
+    "(500)", "1.234,56" — as numbers; anything else as missing. A % sign
+    is dropped and the number kept as written (22% is 22)."""
+    from app.services.table_extractor import _uses_comma_decimal
+    raw = (s.astype(str).str.strip()
+           .str.replace(r"^[\$₹€£¥]\s*|\s*[\$₹€£¥]$", "", regex=True)
+           .str.replace(r"^(?:Rs\.?|INR|USD|EUR|GBP)\s*", "", regex=True)
+           .str.replace(r"\s*%$", "", regex=True))
+    if _uses_comma_decimal(raw):
+        raw = raw.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+    else:
+        raw = raw.str.replace(",", "", regex=False)
+    raw = raw.str.replace(r"(?<=\d)\s+(?=\d{3}\b)", "", regex=True)
+    neg = raw.str.match(r"^\(.+\)$", na=False)
+    raw = raw.where(~neg, "-" + raw.str.strip("()"))
+    out = pd.to_numeric(raw, errors="coerce")
+    return out.where(s.notna())
 
 
 def _parse_dates(s: pd.Series) -> pd.Series:

@@ -261,3 +261,105 @@ def test_fast_excel_writer_matches_pandas_cell_for_cell():
     assert list(got) == list(want)
     for sheet in want:
         pd.testing.assert_frame_equal(got[sheet], want[sheet], check_dtype=False)
+
+
+# ── Targets that used to fail, or train and mislead ─────────────────────
+
+def _upload_df(client, df, name="t.csv"):
+    import io as _io
+    r = client.post("/api/datasets/upload",
+                    files={"file": (name, _io.BytesIO(df.to_csv(index=False).encode()), "text/csv")})
+    assert r.status_code == 200, r.text
+    return r.json()["meta"]["dataset_id"]
+
+
+def test_money_written_as_text_is_a_number(client):
+    """'₹1,23,456' was text: as a target it failed with 'too many values to
+    predict as categories', and as a feature it was left out."""
+    rng = np.random.default_rng(3)
+    area = rng.uniform(40, 300, 400)
+    price = 2000 * area + rng.normal(0, 60000, 400)
+    ds = _upload_df(client, pd.DataFrame({"area": area.round(1),
+                                          "price": ["₹{:,.0f}".format(p) for p in price]}))
+    r = client.post(f"/api/ml/{ds}/train", json={"target": "price"})
+    assert r.status_code == 200, r.text
+    assert r.json()["task"] == "regression" and r.json()["best_model"]["test_score"] > 0.6
+
+
+def test_spellings_of_one_answer_are_one_class(client):
+    rng = np.random.default_rng(4)
+    ds = _upload_df(client, pd.DataFrame({
+        "score": rng.normal(0, 1, 300),
+        "churn": rng.choice(["Yes", "yes ", "Y", "No", "no", "N"], 300)}))
+    body = client.post(f"/api/ml/{ds}/train", json={"target": "churn"}).json()
+    assert set(body["class_balance"]) == {"Yes", "No"}
+
+
+@pytest.mark.parametrize("frame, phrase", [
+    (pd.DataFrame({"x": np.arange(200) % 7, "y": 5}), "same value (5) in every row"),
+    (pd.DataFrame({"x": np.random.default_rng(1).normal(0, 1, 300),
+                   "fraud": ["No"] * 298 + ["Yes"] * 2}), "Only 2 rows have 'fraud' = 'Yes'"),
+    (pd.DataFrame({"x": np.random.default_rng(1).normal(0, 1, 400),
+                   "y": list(np.arange(20) / 2) + [np.nan] * 380}), "Only 20 rows have a value"),
+    (pd.DataFrame({"note": ["text {}".format(i) for i in range(200)],
+                   "y": np.random.default_rng(1).normal(0, 1, 200)}), "'note' is free text"),
+])
+def test_a_target_that_cannot_be_modelled_is_refused_with_the_reason(client, frame, phrase):
+    ds = _upload_df(client, frame)
+    target = "fraud" if "fraud" in frame else "y"
+    r = client.post(f"/api/ml/{ds}/train", json={"target": target})
+    assert r.status_code == 422, r.text
+    assert phrase in r.json()["detail"]
+
+
+def test_categories_are_used_by_gradient_boosting_on_small_data():
+    """Boosting needed 20 rows on each side of a split; one-hot categories
+    of a few hundred rows had fewer, and it scored R²≈0."""
+    from app.engines.ml_engine import run_ml_pipeline
+    rng = np.random.default_rng(1)
+    d = rng.integers(0, 40, 600)
+    df = pd.DataFrame({"band": ["b{}".format(v) for v in d], "units": 60 - d + rng.normal(0, 3, 600)})
+    rep = run_ml_pipeline(df, "units")
+    gb = next(m for m in rep.models if m.name == "Gradient Boosting")
+    assert gb.test_score > 0.5
+
+
+def test_a_what_if_outside_the_training_range_says_so(client):
+    rng = np.random.default_rng(2)
+    area = rng.uniform(40, 300, 400)
+    ds = _upload_df(client, pd.DataFrame({"area": area, "price": 2000 * area + rng.normal(0, 60000, 400)}))
+    client.post(f"/api/ml/{ds}/train", json={"target": "price"})
+    inside = client.post(f"/api/ml/{ds}/what-if", json={"target": "price", "inputs": {"area": 150}}).json()
+    outside = client.post(f"/api/ml/{ds}/what-if", json={"target": "price", "inputs": {"area": 2000}}).json()
+    assert not inside.get("warnings") and inside["reliable"]
+    assert outside["reliable"] is False and "outside the range" in outside["warnings"][0]
+
+
+def test_a_what_if_number_may_be_typed_as_written(client):
+    rng = np.random.default_rng(5)
+    d = rng.integers(0, 40, 500)
+    ds = _upload_df(client, pd.DataFrame({"discount": ["{}%".format(v) for v in d],
+                                          "units": 60 - d + rng.normal(0, 5, 500)}))
+    client.post(f"/api/ml/{ds}/train", json={"target": "units"})
+    out = client.post(f"/api/ml/{ds}/what-if", json={"target": "units", "inputs": {"discount": "5%"}})
+    assert out.status_code == 200, out.text
+    assert abs(out.json()["prediction"] - 55) < 5
+
+
+def test_the_result_opens_with_a_plain_answer(client, hr_csv_bytes):
+    import io as _io
+    ds = client.post("/api/datasets/upload",
+                     files={"file": ("hr.csv", _io.BytesIO(hr_csv_bytes), "text/csv")}).json()["meta"]["dataset_id"]
+    body = client.post(f"/api/ml/{ds}/train", json={"target": "salary"}).json()
+    assert body["summary"].startswith(("Yes", "No"))
+    assert not any("target (" in w for w in body["warnings"])     # the task reason is not a warning
+
+
+def test_suggested_targets_put_the_outcome_before_noise():
+    from app.engines.ml_engine import suggest_targets
+    rng = np.random.default_rng(0)
+    n = 3000
+    x1 = rng.normal(50, 10, n)
+    df = pd.DataFrame({**{f"f{i}": rng.normal(0, 1, n) for i in range(10)},
+                       "x1": x1, "y_value": 3 * x1 + rng.normal(0, 5, n)})
+    assert suggest_targets(df)[0]["column"] == "y_value"
