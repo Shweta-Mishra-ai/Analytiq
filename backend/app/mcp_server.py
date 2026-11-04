@@ -41,6 +41,7 @@ from typing import Optional
 import pandas as pd
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import ToolAnnotations
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +54,25 @@ DOWNLOAD_TTL = 3600
 
 INSTRUCTIONS = """\
 Analytiq runs statistical and business analysis on tabular data (CSV, Excel,
-JSON) and writes consulting-style PDF reports, in English or Hindi.
+JSON) and writes consulting-style PDF reports in English or Hindi.
 
-Start with load_dataset (or list_datasets), then business_summary. Its figures
-are computed and tested here: quote them as given. Findings were checked for
-chance and corrected for multiple comparisons; do not add claims the tools
-did not make. Use query for specific questions (totals by group, filters,
-top rows, correlations). Use generate_report for a client-ready PDF."""
+Typical order: load_dataset (or list_datasets), then business_summary, then
+query for specific questions and generate_report for a PDF. Figures in the
+responses are computed by Analytiq from the data; group differences and
+correlations are tested for chance and adjusted for multiple comparisons."""
+
+
+def _read(title: str) -> ToolAnnotations:
+    return ToolAnnotations(title=title, read_only_hint=True, destructive_hint=False,
+                           idempotent_hint=True, open_world_hint=False)
+
+
+def _write(title: str, open_world: bool = False) -> ToolAnnotations:
+    """Creates something new (a dataset, a model, a PDF); never deletes or
+    overwrites what is there."""
+    return ToolAnnotations(title=title, read_only_hint=False, destructive_hint=False,
+                           idempotent_hint=False, open_world_hint=open_world)
+
 
 mcp = MCPServer(name="Analytiq", instructions=INSTRUCTIONS)
 
@@ -222,7 +235,7 @@ def _fetch(url: str) -> tuple[str, bytes]:
 
 # ── tools ────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=_read("List datasets"))
 @_guard
 def list_datasets(ctx: Context) -> str:
     """List the datasets you have loaded, newest first, with their ids."""
@@ -234,7 +247,7 @@ def list_datasets(ctx: Context) -> str:
                      for m in metas[:30])
 
 
-@mcp.tool()
+@mcp.tool(annotations=_write("Load a dataset", open_world=True))
 @_guard
 def load_dataset(ctx: Context, path: str = "", url: str = "", csv_text: str = "",
                  name: str = "") -> str:
@@ -271,7 +284,7 @@ def load_dataset(ctx: Context, path: str = "", url: str = "", csv_text: str = ""
     return _profile(meta, df)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_read("Business summary"))
 @_guard
 def business_summary(ctx: Context, dataset_id: str) -> str:
     """Headline figures (this period against the last), the key messages
@@ -313,7 +326,7 @@ def business_summary(ctx: Context, dataset_id: str) -> str:
     return "\n".join(out) or "Nothing to report for this dataset."
 
 
-@mcp.tool()
+@mcp.tool(annotations=_read("Data quality"))
 @_guard
 def data_quality(ctx: Context, dataset_id: str) -> str:
     """Quality score and grade, missing values, duplicates and outliers, and
@@ -344,7 +357,7 @@ def data_quality(ctx: Context, dataset_id: str) -> str:
 _QUERY_OPS = {"aggregate", "filter", "top_n", "describe_column", "correlation", "count_values"}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_read("Query the data"))
 @_guard
 def query(ctx: Context, dataset_id: str, operation: str, column: str = "",
           group_by: str = "", agg: str = "sum", operator: str = "", value: str = "",
@@ -384,7 +397,7 @@ def query(ctx: Context, dataset_id: str, operation: str, column: str = "",
     return text
 
 
-@mcp.tool()
+@mcp.tool(annotations=_read("Find what predicts an outcome"))
 @_guard
 def find_drivers(ctx: Context, dataset_id: str, outcome: str = "") -> str:
     """Which columns predict a yes/no outcome (churn, attrition, default),
@@ -415,7 +428,7 @@ def find_drivers(ctx: Context, dataset_id: str, outcome: str = "") -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_write("Train prediction models"))
 @_guard
 def train_model(ctx: Context, dataset_id: str, target: str) -> str:
     """Train and compare prediction models for `target`, judged on rows the
@@ -487,7 +500,7 @@ def _base_url(ctx: Context) -> str:
     return f"{proto}://{host}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_write("Generate a PDF report"))
 @_guard
 def generate_report(ctx: Context, dataset_id: str, kind: str = "analysis",
                     language: str = "en", title: str = "Data Analysis Report",
@@ -496,8 +509,9 @@ def generate_report(ctx: Context, dataset_id: str, kind: str = "analysis",
     """Write a client-ready PDF: `kind` "analysis" (executive summary,
     scorecard, exhibits, recommendations) or "health" (data-quality report).
     `language` is "en" or "hi". Locally the PDF is saved to `output_path`
-    (default: your Downloads folder); remotely you get a download link valid
-    for one hour."""
+    (default: your Downloads folder; an existing file is never overwritten,
+    the report is saved beside it under a numbered name); remotely you get a
+    download link valid for one hour."""
     from app import i18n
     from app.api.reports import (HealthPdfRequest, PdfRequest, _check_language,
                                  _generate_health_pdf, _generate_pdf)
@@ -523,6 +537,13 @@ def generate_report(ctx: Context, dataset_id: str, kind: str = "analysis",
     if local:
         target = os.path.abspath(os.path.expanduser(
             output_path or os.path.join("~", "Downloads", stem + ".pdf")))
+        # Never overwrite: an existing file at the path keeps its content
+        # and the report is saved beside it under a numbered name.
+        base, ext = os.path.splitext(target)
+        i = 1
+        while os.path.exists(target):
+            target = f"{base} ({i}){ext or '.pdf'}"
+            i += 1
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "wb") as f:
             f.write(pdf)

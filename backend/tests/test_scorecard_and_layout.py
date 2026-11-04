@@ -198,3 +198,11 @@ def test_the_trend_and_the_cards_agree_on_whether_the_last_month_is_complete(cli
     fig = client.post(f"/api/charts/{ds}/build",
                       json={"type": "line", "x": "order_date", "y": "sales", "agg": "sum"}).json()
     assert "last partial month excluded" not in fig["figure"]["layout"]["xaxis"]["title"]["text"]
+
+
+def test_bars_carry_value_labels_only_when_they_can_be_read():
+    from app.engines.chart_engine import make_bar
+    few = pd.DataFrame({"g": list("ABCDE"), "v": [5.0, 4, 3, 2, 1]})
+    many = pd.DataFrame({"g": [f"g{i}" for i in range(20)], "v": range(20)})
+    assert make_bar(few, "g", "v").data[0].texttemplate == "%{y:.3~s}"
+    assert make_bar(many, "g", "v").data[0].texttemplate is None

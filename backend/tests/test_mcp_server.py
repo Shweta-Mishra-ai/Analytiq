@@ -248,3 +248,29 @@ def test_open_mode_serves_this_machine_but_not_a_proxied_internet_caller():
     finally:
         srv.should_exit = True
         t.join(timeout=10)
+
+
+def test_every_tool_is_annotated_for_the_connector_directory():
+    """The directory requires a title and read-only / destructive hints on
+    every tool; Claude uses them to decide when to ask before calling."""
+    async def tools():
+        async with Client(mcp) as c:
+            return (await c.list_tools()).tools
+    read_only = {"list_datasets", "business_summary", "data_quality", "query", "find_drivers"}
+    for t in _run(tools()):
+        assert t.annotations and t.annotations.title, t.name
+        assert t.annotations.read_only_hint is (t.name in read_only), t.name
+        assert t.annotations.destructive_hint is False, t.name
+        assert len(t.name) <= 64
+
+
+def test_a_report_never_overwrites_an_existing_file(tmp_path):
+    csv = _sales_csv(tmp_path / "sales.csv", n=300)
+    profile, = _run(_local([("load_dataset", {"path": str(csv)})]))
+    keep = tmp_path / "review.pdf"
+    keep.write_bytes(b"keep me")
+    msg, = _run(_local([("generate_report", {"dataset_id": _dataset_id(profile),
+                                              "output_path": str(keep)})]))
+    assert keep.read_bytes() == b"keep me"
+    saved = tmp_path / "review (1).pdf"
+    assert saved.read_bytes()[:5] == b"%PDF-" and str(saved) in msg
