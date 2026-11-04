@@ -17,7 +17,10 @@ arabic-reshaper and python-bidi, because ReportLab's own right-to-left
 support depends on rlbidi, which is not published on PyPI.
 
 Not covered: Korean (Hangul), Thai and other scripts with no bundled
-font; they still render as boxes. The CJK face is regular weight only.
+font; they still render as boxes. The CJK face is regular weight only,
+and a subset (GB2312 simplified Chinese plus JIS X 0208 Japanese, 10,490
+characters, 3.4 MB instead of 10.6 MB; see assets/fonts/LICENSE-Noto.txt):
+everyday Chinese and Japanese print, very rare characters show as boxes.
 
 If the font files are missing the PDFs still build, in Helvetica, and the
 fallback is logged once.
