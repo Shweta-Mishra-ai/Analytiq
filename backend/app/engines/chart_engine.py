@@ -59,6 +59,11 @@ def make_bar(df, x, y, title=""):
                  labels={x: _lab(x), y: _lab(y)},
                  color_discrete_sequence=PALETTE[:1])
     fig.update_traces(hovertemplate="%{x}<br>%{y:,.4~g}<extra></extra>")
+    if len(agg) <= 12:
+        # Values on the bars, as an exhibit prints them; reading each off
+        # the axis gridlines was the reader's job.
+        fig.update_traces(texttemplate="%{y:.3~s}", textposition="outside",
+                          cliponaxis=False)
     return _style(fig, title)
 
 

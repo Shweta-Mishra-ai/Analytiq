@@ -59,6 +59,7 @@ export default function DashboardPage() {
   const { dataset, filters, addFilter } = useApp()
   const [fields, setFields] = useState<Field[]>([])
   const [kpis, setKpis] = useState<Kpi[]>([])
+  const [period, setPeriod] = useState('')
   const [tiles, setTiles] = useState<TileSpec[]>([])
   const [tileState, setTileState] = useState<Record<string, TileState>>({})
   const [layout, setLayout] = useState<LayoutItem[]>([])
@@ -107,12 +108,16 @@ export default function DashboardPage() {
   // ── refetch KPIs + all tiles when filters change ──────
   const loadKpis = useCallback(() => {
     if (!ds) return
-    apiPost<{ kpis: Kpi[] }>(`/api/charts/${ds}/kpis`, { filters })
-      .then((r) => setKpis(r.kpis))
+    apiPost<{ kpis: Kpi[]; period?: string }>(`/api/charts/${ds}/kpis`, { filters })
+      .then((r) => {
+        setKpis(r.kpis)
+        setPeriod(r.period ?? '')
+      })
       // On failure the cards used to keep the previous filters' numbers
       // under the new filters. Clear them and say why.
       .catch((e) => {
         setKpis([])
+        setPeriod('')
         setError(`The KPI cards could not be computed for these filters: ${e instanceof Error ? e.message : String(e)}`)
       })
   }, [ds, filters])
@@ -199,6 +204,12 @@ export default function DashboardPage() {
         <FilterBar />
       </div>
 
+      {period && (
+        <p className="mb-2 text-xs text-mute">
+          {period}
+          {filters.length > 0 && ' · for the rows the filters keep'}
+        </p>
+      )}
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
         {kpis.map((k) => (
           <KpiCard key={k.label} kpi={k} />

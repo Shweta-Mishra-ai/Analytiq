@@ -263,6 +263,14 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
     except Exception:
         _failed("story", "The summary, risks and next steps could not be produced.")
 
+    # 3b. the business scorecard the summary leads with
+    scorecard = None
+    try:
+        from app.engines.scorecard import build_scorecard
+        scorecard = build_scorecard(df)
+    except Exception:
+        _failed("scorecard", "The performance scorecard could not be computed.")
+
     # 4. structured insights
     top_insights = []
     try:
@@ -332,6 +340,7 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
         "source_table": table_name_from_filename(
             getattr(store.get_meta(owner, ds_id), "filename", "")),
         "omitted": omitted,
+        "source_file": getattr(store.get_meta(owner, ds_id), "filename", "") or "",
     }
     try:
         pdf_bytes = build_pdf(
@@ -344,6 +353,7 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
             recommendations=actions, top_insights=top_insights,
             attrition=getattr(story_obj, "attrition", None),
             domain=domain_name,
+            scorecard=scorecard,
         )
     except Exception as e:
         logger.exception("PDF build failed")

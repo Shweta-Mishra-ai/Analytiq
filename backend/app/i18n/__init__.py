@@ -272,6 +272,18 @@ def tr(text, **values) -> str:
     return out
 
 
+def mark_done(*texts: str) -> None:
+    """Record pieces cut from a finished translation (a caption's first
+    sentence used as a title) as translations, so they are not translated
+    again as if they were English."""
+    done = _DONE.get()
+    if done is None:
+        return
+    for t in texts:
+        if t:
+            done.add(_norm(t))
+
+
 def is_done(text: str) -> bool:
     """Whether `text` is already a translation made for this report."""
     done = _DONE.get()

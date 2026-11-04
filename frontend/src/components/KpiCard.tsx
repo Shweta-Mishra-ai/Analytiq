@@ -15,7 +15,26 @@ export default function KpiCard({ kpi }: { kpi: Kpi }) {
       <div className="t-label truncate" title={kpi.label}>
         {kpi.label}
       </div>
-      <div className="t-metric mt-1.5 text-2xl text-ink">{fmt(kpi)}</div>
+      <div className="mt-1.5 flex items-baseline gap-2">
+        <span className="t-metric text-2xl text-ink">{fmt(kpi)}</span>
+        {kpi.delta !== undefined && kpi.delta !== null && (
+          <span
+            className={`text-xs font-semibold ${
+              kpi.delta_good === true
+                ? 'text-teal'
+                : kpi.delta_good === false
+                  ? 'text-rose'
+                  : 'text-mute'
+            }`}
+            title="Change on the prior period"
+          >
+            {kpi.delta > 0 ? '▲' : kpi.delta < 0 ? '▼' : '■'}{' '}
+            {kpi.delta > 0 ? '+' : ''}
+            {kpi.delta.toFixed(1)}
+            {kpi.delta_unit === 'pp' ? ' pp' : '%'}
+          </span>
+        )}
+      </div>
       {kpi.sub && (
         <div className="mt-1 truncate text-[11px] text-faint" title={kpi.sub}>
           {kpi.sub}

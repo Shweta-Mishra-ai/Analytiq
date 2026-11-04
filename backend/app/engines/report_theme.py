@@ -39,31 +39,43 @@ def _theme(primary: str, accent: str, tint: str, label: str) -> dict:
     }
 
 
+# One corporate palette for every report: deep navy for headings, table
+# headers and the cover band, one mid blue for rules and chart marks, a pale
+# blue-grey tint. Consulting deliverables use a single restrained house
+# palette whatever the subject; the per-domain themes (orange for
+# e-commerce, green for sales, brown covers) read as a template, not a firm.
+_NAVY, _BLUE, _TINT = "#0B1F3A", "#1F5BA8", "#EEF2F7"
+
 THEMES = {
-    "Corporate Light":  _theme("#13294B", "#2E5AAC", "#EEF2FA", "BUSINESS ANALYTICS"),
-    "HR Blue":          _theme("#102A43", "#2F6690", "#EDF3F8", "HR & PEOPLE ANALYTICS"),
-    "Ecommerce Orange": _theme("#3A2414", "#C05621", "#FDF3EC", "E-COMMERCE ANALYTICS"),
-    "Sales Green":      _theme("#123524", "#2F7D59", "#EEF6F1", "SALES PERFORMANCE ANALYTICS"),
-    # Reports are printed on white. This theme used light text for a dark
-    # screen, which came out near-invisible on the page.
-    "Dark Tech":        _theme("#0D1117", "#2F81F7", "#EEF4FF", "TECHNICAL ANALYTICS"),
+    "Corporate":        _theme(_NAVY, _BLUE, _TINT, "BUSINESS ANALYTICS"),
+    # Older names still resolve, to the same palette.
+    "Corporate Light":  _theme(_NAVY, _BLUE, _TINT, "BUSINESS ANALYTICS"),
+    "HR Blue":          _theme(_NAVY, _BLUE, _TINT, "BUSINESS ANALYTICS"),
+    "Ecommerce Orange": _theme(_NAVY, _BLUE, _TINT, "BUSINESS ANALYTICS"),
+    "Sales Green":      _theme(_NAVY, _BLUE, _TINT, "BUSINESS ANALYTICS"),
+    "Dark Tech":        _theme(_NAVY, _BLUE, _TINT, "BUSINESS ANALYTICS"),
 }
 
-DOMAIN_THEMES = {
-    "hr":        "HR Blue",
-    "ecommerce": "Ecommerce Orange",
-    "sales":     "Sales Green",
-    "finance":   "Corporate Light",
-    "general":   "Corporate Light",
+# What the cover says the report is about; the colours do not change.
+DOMAIN_LABELS = {
+    "hr":        "HR & PEOPLE ANALYTICS",
+    "ecommerce": "E-COMMERCE ANALYTICS",
+    "sales":     "SALES PERFORMANCE ANALYTICS",
+    "finance":   "FINANCIAL ANALYTICS",
+    "general":   "BUSINESS ANALYTICS",
 }
+
+DOMAIN_THEMES = {d: "Corporate" for d in DOMAIN_LABELS}
 
 
 def resolve(theme_name: str = "", domain: str = "general") -> str:
-    """The theme to use: the one asked for if it exists, else the domain's."""
+    """The theme to use: the one asked for if it exists, else the house one."""
     if theme_name in THEMES:
         return theme_name
-    return DOMAIN_THEMES.get(domain, "Corporate Light")
+    return "Corporate"
 
 
 def get(theme_name: str = "", domain: str = "general") -> dict:
-    return THEMES[resolve(theme_name, domain)]
+    T = dict(THEMES[resolve(theme_name, domain)])
+    T["domain_label"] = DOMAIN_LABELS.get(domain, DOMAIN_LABELS["general"])
+    return T

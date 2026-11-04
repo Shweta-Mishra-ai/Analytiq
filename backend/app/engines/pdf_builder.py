@@ -111,6 +111,12 @@ def _styles(T: dict) -> dict:
                     textColor=HexColor("#FFFFFF")),
         "note":  ps("note", fontName=FONT_ITALIC, fontSize=7.5,
                     textColor=_c(T["text_muted"]), spaceAfter=3),
+        "detail": ps("detail", fontName=FONT_REG, fontSize=8.6, leading=12.5,
+                    textColor=_c(T["text"]), spaceAfter=1),
+        "exhibit_no": ps("exhibit_no", fontName=FONT_BOLD, fontSize=7.5, leading=10,
+                    textColor=_c(T["accent"]), spaceBefore=6, keepWithNext=1),
+        "source": ps("source", fontName=FONT_REG, fontSize=7, leading=9,
+                    textColor=_c(T["text_muted"]), spaceBefore=1),
         "warn":  ps("warn", fontName=FONT_REG,      fontSize=8.5,
                     textColor=_c(T["text"]),       leading=13,
                     backColor=_c(T["warning_bg"])),
@@ -191,9 +197,11 @@ def _build_cover(T: dict, config: dict, kpis_preview: list) -> bytes:
     cv.setFillColor(_c(T["accent"]))
     cv.rect(14*mm, 0, 1.2*mm, H, fill=1, stroke=0)
 
-    cv.setFillColor(_c(T["primary"]))
-    cv.setFont(FONT_BOLD, 12)
-    cv.drawString(x0, H - 30*mm, "Analytiq")
+    # The firm delivering the report signs the cover; the tool does not.
+    brand = (config.get("prepared_by") or "").strip()
+    if brand:
+        cv.setFillColor(_c(T["primary"]))
+        draw_mixed(cv, x0, H - 30*mm, brand[:60], FONT_BOLD, 12)
 
     logo_path = config.get("logo_path", "")
     if logo_path and os.path.exists(logo_path):
@@ -341,6 +349,20 @@ import re as _re  # noqa: E402
 _FIGURE_RE = _re.compile(r"^[-+−]?[\d.,]+\s?(%|[KMB]|x|pp)?$|^—$")
 
 
+class _Markup(str):
+    """A table cell already written as ReportLab markup (a coloured figure);
+    `plain` is its text, used to decide alignment."""
+    def __new__(cls, markup: str, plain: str):
+        obj = super().__new__(cls, markup)
+        obj.plain = plain
+        return obj
+
+
+def _coloured(text: str, colour: str, bold: bool = False) -> "_Markup":
+    inner = "<b>{}</b>".format(_clean(text)) if bold else _clean(text)
+    return _Markup('<font color="{}">{}</font>'.format(colour, inner), text)
+
+
 def _gtable(story: list, T: dict, headers: list,
             rows_data: list, col_widths: list,
             severity_col: int = -1):
@@ -348,10 +370,11 @@ def _gtable(story: list, T: dict, headers: list,
     # Figures right-aligned, text left: centring both made columns of
     # numbers impossible to compare.
     def _is_figure(v) -> bool:
-        return bool(_FIGURE_RE.match(str(v).strip()))
+        return bool(_FIGURE_RE.match(str(getattr(v, "plain", v)).strip()))
 
     def _cell(v, header=False, right=False):
-        return Paragraph(_clean(str(v)), ParagraphStyle(
+        text = str(v) if isinstance(v, _Markup) else _clean(str(v))
+        return Paragraph(text, ParagraphStyle(
             "th" if header else "td",
             fontName=FONT_BOLD if header else FONT_REG, fontSize=8.2,
             leading=11, textColor=HexColor("#FFFFFF") if header else _c(T["text"]),
@@ -577,13 +600,41 @@ class _ReportDoc(BaseDocTemplate):
 #  EXECUTIVE SUMMARY
 # ══════════════════════════════════════════════════════════
 
-def _exec_summary(story, s, T, summary, findings, risks, opps, CW):
+def _exec_summary(story, s, T, summary, findings, risks, opps, CW, scorecard=None):
+    """Key messages first, then the scorecard, then the supporting findings.
+
+    A consulting summary states the size and direction of the business and
+    the three or four things the reader must take away, each with its
+    figure; the statistical findings support them. Without a revenue-like
+    measure there is no scorecard and the summary is the analysis's own."""
     _sec(story, s, T, "Executive Summary")
-    if summary:
+    msgs = list(getattr(scorecard, "messages", []) or [])
+    if msgs:
+        story.append(Paragraph(_clean(tr("Key messages")), s["h3"]))
+        for i, m in enumerate(msgs[:4], 1):
+            block = Table([[
+                Paragraph("<b>{}</b>".format(i), ParagraphStyle(
+                    "kmn", fontName=FONT_BOLD, fontSize=13, textColor=_c(T["accent"]),
+                    alignment=TA_CENTER)),
+                [Paragraph("<b>{}</b>".format(_clean(tr(m.title))), s["body"]),
+                 Paragraph(_clean(tr(m.detail)), s["detail"])],
+            ]], colWidths=[CW * 0.07, CW * 0.93])
+            block.setStyle(TableStyle([
+                ("VALIGN",        (0,0), (-1,-1), "TOP"),
+                ("LINEBELOW",     (0,0), (-1,-1), 0.4, _c(T["border"])),
+                ("TOPPADDING",    (0,0), (-1,-1), 5),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+                ("LEFTPADDING",   (0,0), (-1,-1), 2),
+            ]))
+            story.append(KeepTogether([block]))
+        story.append(Spacer(1, 4*mm))
+    elif summary:
         _narrative_box(story, s, T, summary)
+    if getattr(scorecard, "metrics", None):
+        _scorecard_table(story, s, T, scorecard, CW)
     if findings:
-        story.append(Paragraph("Key Findings", s["h3"]))
-        for f in findings[:5]:
+        story.append(Paragraph("Further findings" if msgs else "Key Findings", s["h3"]))
+        for f in findings[:4 if msgs else 5]:
             story.append(Paragraph("• " + _clean(str(f)), s["bl"]))
         story.append(Spacer(1, 2*mm))
     if risks:
@@ -599,6 +650,38 @@ def _exec_summary(story, s, T, summary, findings, risks, opps, CW):
             story.append(Paragraph(
                 '<font color="{}">•</font> {}'.format(T["positive"], _clean(str(o))),
                 s["bl"]))
+
+
+# Measures where a rise is bad news; the rest read up = good.
+_UP_IS_BAD = {"Average discount"}
+
+
+def _scorecard_table(story, s, T, sc, CW):
+    """Headline measures, this period against the last, as one table."""
+    from app.engines.scorecard import fmt_change, fmt_value
+    from app.engines.chart_exporter import fmt
+    story.append(Paragraph(_clean(tr("Performance scorecard")), s["h3"]))
+    if sc.has_comparison:
+        headers = ["Measure", tr(sc.period), tr(sc.prior_period), "Change"]
+        rows = []
+        for m in sc.metrics:
+            prior = ("{:.1f}%".format(m.prior * 100) if m.kind == "pct"
+                     else fmt(m.prior)) if m.prior is not None else "—"
+            ch = m.change
+            colour = T["text_muted"]
+            if ch is not None and abs(ch) >= 0.05:
+                good = (ch > 0) != (m.label in _UP_IS_BAD)
+                colour = T["positive"] if good else T["negative"]
+            rows.append([tr(m.label), fmt_value(m), prior,
+                         _coloured(fmt_change(m), colour)])
+        _gtable(story, T, headers, rows, [CW*0.34, CW*0.22, CW*0.22, CW*0.22])
+        story.append(Paragraph(_clean(tr(
+            "Whole calendar months; the change for a percentage is in percentage points.")),
+            s["note"]))
+    else:
+        _gtable(story, T, ["Measure", "Value"],
+                [[tr(m.label), fmt_value(m)] for m in sc.metrics], [CW*0.6, CW*0.4])
+    story.append(Spacer(1, 4*mm))
 
 
 # ══════════════════════════════════════════════════════════
@@ -1291,14 +1374,27 @@ def _ml_section(story, s, T, ml_report, CW):
 #  CHART PAGE
 # ══════════════════════════════════════════════════════════
 
-def _charts_section(story, s, T, chart_data, CW):
-    """All charts under one heading, each at its true proportions with the
-    caption computed from its own data. Every chart used to get its own
-    page and a fixed 2:1 frame, which squashed some and stretched others."""
+def _split_caption(caption: str):
+    """(first sentence, rest) of a caption; the first sentence states the
+    exhibit's finding and becomes its title."""
+    # chr(0x964) is the Devanagari full stop that ends a Hindi sentence.
+    m = _re.match(r"(.+?[.!?" + chr(0x964) + r"])(\s+|$)(.*)", caption or "", _re.S)
+    if not m:
+        return caption or "", ""
+    return m.group(1).strip(), m.group(3).strip()
+
+
+def _charts_section(story, s, T, chart_data, CW, source: str = ""):
+    """Numbered exhibits: each titled by what it shows, at its true
+    proportions, with the rest of its computed caption and its source.
+    A descriptive title ("Total profit by region") left the reader to find
+    the point; the caption's first sentence states it."""
     if not chart_data:
         return
-    _sec(story, s, T, "Charts", "Each caption is computed from the figures plotted")
-    for i, (title, img_bytes, caption) in enumerate(chart_data, 1):
+    _sec(story, s, T, "Exhibits", "Each title states what the exhibit shows; the figures "
+                                  "are computed from the data plotted")
+    n = 0
+    for title, img_bytes, caption in chart_data:
         if not img_bytes:
             continue
         try:
@@ -1306,17 +1402,34 @@ def _charts_section(story, s, T, chart_data, CW):
             w, h = _PIL.open(io.BytesIO(img_bytes)).size
             width = CW
             height = CW * h / w
-            if height > 105 * mm:            # keep tall charts on the page
-                height = 105 * mm
+            if height > 100 * mm:            # keep tall charts on the page
+                height = 100 * mm
                 width = height * w / h
             img = Image(io.BytesIO(img_bytes), width=width, height=height)
             img.hAlign = "LEFT"
         except Exception:
             logger.warning("chart image could not be placed", exc_info=True)
             continue
-        block = [Paragraph("{}. {}".format(i, _clean(title)), s["h3"]), img]
-        if caption:
-            block.append(Paragraph(_clean(caption), s["caption"]))
+        n += 1
+        # Split in English, then translate each part: splitting the
+        # translated caption left halves no catalog entry matches.
+        # Captions are written in the report's language when the charts are
+        # drawn; only an English remainder is translated here.
+        from app.i18n import is_done, mark_done
+        headline, rest = _split_caption(caption) if caption else (title, "")
+        if caption and is_done(caption):
+            mark_done(headline, rest)
+        headline, rest = [x if (not x or is_done(x)) else tr(x) for x in (headline, rest)]
+        block = [
+            Paragraph(_clean(tr("Exhibit {n}", n=n)), s["exhibit_no"]),
+            Paragraph(_clean(headline), s["h3"]),
+            Paragraph(_clean(tr(title)), s["note"]),
+            img,
+        ]
+        if rest:
+            block.append(Paragraph(_clean(rest), s["caption"]))
+        if source:
+            block.append(Paragraph(_clean(source), s["source"]))
         block.append(Spacer(1, 5 * mm))
         story.append(KeepTogether(block))
 
@@ -1325,58 +1438,49 @@ def _charts_section(story, s, T, chart_data, CW):
 #  RECOMMENDATIONS
 # ══════════════════════════════════════════════════════════
 
-def _recommendations(story, s, T, actions, CW):
-    _sec(story, s, T, "Recommended Next Steps")
-    if not actions:
+def _recommendations(story, s, T, actions, CW, scorecard=None):
+    """One table: what to do, the finding it rests on, and its priority.
+
+    Priority is set by the share of revenue a finding concerns (High at
+    20% or more, Medium at 5%); a step that rests on a finding without a
+    revenue figure is marked "Assess" rather than given a rank it has not
+    earned."""
+    from app.engines.scorecard import priority
+    _sec(story, s, T, "Recommendations")
+    rows = []
+    msgs = list(getattr(scorecard, "messages", []) or [])
+    total = getattr(scorecard, "total_revenue", 0.0)
+    for m in msgs:
+        rows.append((tr(m.action), tr(m.title), priority(m, total)))
+    seen = {r[0] for r in rows}
+    for a in actions[:9]:
+        text = str(a)
+        for tag in ("[CRITICAL] ", "[SHORT TERM] ", "[LONG TERM] "):
+            text = text.replace(tag, "")
+        text = text.strip()
+        if text and text not in seen:
+            rows.append((text, "", "Assess"))
+            seen.add(text)
+    if not rows:
         _narrative_box(story, s, T,
                        "The data did not point to a specific action beyond the findings "
                        "above. Columns such as targets, owners or categories allow more "
                        "specific recommendations.")
-
-    pri_map = {
-        "CRITICAL":   (T["negative"],  T["critical_bg"]),
-        "SHORT TERM": (T["warning"],   T["warning_bg"]),
-        "LONG TERM":  (T["info"],      T["info_bg"]),
-    }
-
-    for n, action in enumerate(actions[:9], 1):
-        action_str = str(action)
-        # Only an explicit label sets urgency; matching the words anywhere
-        # in the text tagged "...a critical supplier..." as CRITICAL.
-        priority   = "NEXT STEP"
-        for p in ("CRITICAL", "SHORT TERM", "LONG TERM"):
-            if action_str.upper().startswith("[" + p + "]"):
-                priority = p
-                break
-
-        col, bg = pri_map.get(priority, (T["accent"], T["bg_card"]))
-        text    = _clean(action_str
-                   .replace("[CRITICAL] ", "")
-                   .replace("[SHORT TERM] ", "")
-                   .replace("[LONG TERM] ", "")
-                   .strip())
-
-        card = Table([[
-            Paragraph(str(n), ParagraphStyle(
-                "pri", fontName=FONT_BOLD, fontSize=10,
-                textColor=HexColor(col), alignment=TA_CENTER)),
-            Paragraph(text, s["body"]),
-        ]], colWidths=[CW*0.07, CW*0.93])
-        card.setStyle(TableStyle([
-            ("BACKGROUND",    (0,0), (-1,-1), HexColor(bg)),
-            ("LINEBEFORE",    (0,0), (0,-1),  3, HexColor(col)),
-            ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-            ("TOPPADDING",    (0,0), (-1,-1), 5),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 5),
-            ("LEFTPADDING",   (0,0), (-1,-1), 6),
-            ("RIGHTPADDING",  (0,0), (-1,-1), 6),
-        ]))
-        story.append(KeepTogether([card, Spacer(1, 2*mm)]))
-
+        return
+    order = {"High": 0, "Medium": 1, "Low": 2, "Assess": 3}
+    rows.sort(key=lambda r: order[r[2]])
+    colour = {"High": T["negative"], "Medium": T["warning"], "Low": T["info"],
+              "Assess": T["text_muted"]}
+    table = [["#", "Recommendation", "Basis", "Priority"]]
+    for i, (act, basis, pri) in enumerate(rows[:9], 1):
+        table.append([str(i), act, basis or tr("Finding in this report"),
+                      _coloured(tr(pri), colour[pri], bold=True)])
+    _gtable(story, T, table[0], table[1:], [CW*0.06, CW*0.46, CW*0.34, CW*0.14])
     story.append(Spacer(1, 2*mm))
     story.append(Paragraph(
-        "Each step follows from this dataset alone; check it against what the "
-        "data cannot show before acting on it.", s["note"]))
+        "Priority reflects the share of revenue each finding concerns: High at 20% or "
+        "more, Medium at 5% or more. Each step follows from this dataset alone; check "
+        "it against what the data cannot show before acting on it.", s["note"]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -1497,6 +1601,21 @@ def _appendix(story, s, T, config, CW, domain: str = "general"):
 #  MAIN PUBLIC FUNCTION  (identical signature to original)
 # ══════════════════════════════════════════════════════════
 
+def _source_line(df: pd.DataFrame, config: dict) -> str:
+    """Where an exhibit's figures come from: the file, its size and period,
+    as one translated sentence."""
+    name = (config.get("source_file") or "").strip() or tr("the supplied dataset")
+    n = "{:,}".format(len(df))
+    dates = df.select_dtypes(include="datetime")
+    if not dates.empty:
+        col = dates.notna().sum().idxmax()
+        lo, hi = dates[col].min(), dates[col].max()
+        if pd.notna(lo) and pd.notna(hi):
+            return tr("Source: {file}; {n} records, {start} to {end}", file=name, n=n,
+                      start=lo.strftime("%b %Y"), end=hi.strftime("%b %Y"))
+    return tr("Source: {file}; {n} records", file=name, n=n)
+
+
 def build_pdf(
     df: pd.DataFrame,
     config: dict,
@@ -1514,6 +1633,7 @@ def build_pdf(
     top_insights: list = None,
     attrition=None,
     domain: str = "general",
+    scorecard=None,
 ) -> bytes:
     """
     Build complete senior-analyst PDF report.
@@ -1529,11 +1649,9 @@ def build_pdf(
     top_insights    = top_insights   or []
 
     # ── Theme selection ───────────────────────────────────
-    theme_name = config.get("theme_name", "")
-    if theme_name not in THEMES:
-        auto_key  = DOMAIN_THEMES.get(domain, "Corporate Light")
-        theme_name = auto_key
-    T = THEMES[theme_name]
+    from app.engines import report_theme
+    theme_name = report_theme.resolve(config.get("theme_name", ""), domain)
+    T = report_theme.get(theme_name, domain)
     config = dict(config)
     config["domain"]     = domain
     config["theme_name"] = theme_name
@@ -1594,7 +1712,7 @@ def build_pdf(
     story.append(PageBreak())
 
     _exec_summary(story, s, T, executive_summary,
-                  findings, risks, opportunities, CW)
+                  findings, risks, opportunities, CW, scorecard=scorecard)
     _dq_note(story, s, T, df, profile, CW)
     if cleaning_summary:
         _data_prep_section(story, s, T, cleaning_summary, CW,
@@ -1604,7 +1722,7 @@ def build_pdf(
     _top_insights(story, s, T, top_insights, CW, domain=domain)
     if attrition:
         _attrition_page(story, s, T, attrition, CW)
-    _charts_section(story, s, T, chart_data, CW)
+    _charts_section(story, s, T, chart_data, CW, source=_source_line(df, config))
     _dataset_overview(story, s, T, df, profile, CW)
     if stats_report:
         _stats_section(story, s, T, stats_report, CW)
@@ -1612,7 +1730,7 @@ def build_pdf(
         _bi_section(story, s, T, bi_report, CW)
     if getattr(ml_report, "best_model", None) is not None:
         _ml_section(story, s, T, ml_report, CW)
-    _recommendations(story, s, T, recommendations, CW)
+    _recommendations(story, s, T, recommendations, CW, scorecard=scorecard)
     # No forced break: a short "Next Steps" was left alone on its page.
     _appendix(story, s, T, config, CW, domain=domain)
 

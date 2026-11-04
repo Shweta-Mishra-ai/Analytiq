@@ -154,7 +154,16 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         # the strong one. Unknown direction gets neutral wording.
         from app.engines.benchmarking import metric_direction
         direction = metric_direction(seg["num"], df[seg["num"]])
-        if direction:
+        if _is_product_mix(seg["cat"]):
+            # Product categories differ in what they sell for; "'Office
+            # Supplies' trails on sales" was a price difference reported as
+            # an underperformance risk.
+            findings.append(
+                "Median '{num}' per record differs across '{cat}' ({lo_txt} in "
+                "'{lo_seg}' to {hi_txt} in '{hi_seg}'); between product groups this "
+                "mostly reflects what each sells for, not how well it performs."
+                .format(**seg))
+        elif direction:
             weak, strong = ((seg["lo_seg"], seg["hi_seg"]) if direction > 0
                             else (seg["hi_seg"], seg["lo_seg"]))
             weak_v, strong_v = ((seg["lo_txt"], seg["hi_txt"]) if direction > 0
@@ -194,6 +203,15 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                        "'{num}'.".format(**seg))
     return {"findings": findings, "risks": risks, "opportunities": opps,
             "actions": actions, "insights": insights}
+
+
+def _is_product_mix(cat: str) -> bool:
+    """Whether a categorical column groups products (whose value per record
+    differs by price) rather than units that perform (regions, teams)."""
+    import re
+    words = [w for w in re.split(r"[^a-z0-9]+", str(cat).lower()) if w]
+    return any(w.startswith(k) for w in words for k in (
+        "product", "category", "categor", "sku", "item", "brand", "subcategor", "line"))
 
 
 def _is_obvious_segment_pair(cat: str, num: str) -> bool:
