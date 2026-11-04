@@ -853,13 +853,22 @@ def _generate_key_insights(
 
     # Cohort insights
     sig_cohorts = [c for c in report.cohorts if c.is_significant]
+    from app.engines.domains.general import _is_product_mix
     for c in sig_cohorts[:2]:
-        insights.append(
-            "'{}' significantly segments '{}': best cohort '{}' "
-            "outperforms worst '{}' by {:.1f}%.".format(
-                c.cohort_col, c.metric_col,
-                c.best_cohort, c.worst_cohort, c.gap_pct)
-        )
+        # Highest and lowest, not best and worst: for cost or delay the
+        # highest group is the weaker one. Between product groups the gap
+        # is mostly price mix.
+        if _is_product_mix(c.cohort_col):
+            insights.append(
+                "Average '{}' is highest in '{}' and lowest in '{}' ({:.0f}% apart) "
+                "across '{}'; between product groups this mostly reflects what each "
+                "sells for.".format(c.metric_col, c.best_cohort, c.worst_cohort,
+                                    c.gap_pct, c.cohort_col))
+        else:
+            insights.append(
+                "Average '{}' is highest in '{}' and lowest in '{}' ({:.0f}% apart) "
+                "across '{}', a gap larger than chance.".format(
+                    c.metric_col, c.best_cohort, c.worst_cohort, c.gap_pct, c.cohort_col))
 
     # Segment health insights
     # Only name a best and worst segment when they are meaningfully apart:

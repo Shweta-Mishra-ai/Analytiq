@@ -1763,5 +1763,17 @@
  "10–20%: {v1}%": "10–20%: {v1}%",
  "over 20%: {v1}%": "20% से अधिक: {v1}%",
  "A cohort trend of this size normally follows a change in acquisition mix, onboarding, or the offer itself.": "इतने बड़े समूह-रुझान के पीछे आमतौर पर ग्राहक-अधिग्रहण के मिश्रण, ऑनबोर्डिंग या ऑफ़र में बदलाव होता है।",
- "Ecommerce Retention": "ई-कॉमर्स ग्राहक प्रतिधारण"
+ "Ecommerce Retention": "ई-कॉमर्स ग्राहक प्रतिधारण",
+ "At Gallup's estimate of one-half to two times annual salary, replacing the {v1} leavers (median '{v2}' {v3}) costs about {v4} to {v5}.": "गैलप के अनुमान (वार्षिक वेतन का आधा से दोगुना) के अनुसार, {v1} छोड़ने वालों (माध्यिका '{v2}' {v3}) को बदलने की लागत लगभग {v4} से {v5} है।",
+ "At Gallup's estimate of one-half to two times annual salary, replacing the {v1} leavers (median '{v2}' {v3}) costs about {v4} to {v5}": "गैलप के अनुमान (वार्षिक वेतन का आधा से दोगुना) के अनुसार, {v1} छोड़ने वालों (माध्यिका '{v2}' {v3}) को बदलने की लागत लगभग {v4} से {v5} है",
+ "'{v1}' per record differs by '{v2}' (price mix)": "'{v2}' के अनुसार प्रति रिकॉर्ड '{v1}' अलग है (मूल्य-मिश्रण)",
+ "Median '{v1}' ranges from {v2} in '{v3}' to {v4} in '{v5}' across '{v6}' groups.": "'{v6}' समूहों में माध्यिका '{v1}' '{v3}' में {v2} से '{v5}' में {v4} तक है।",
+ "Between product groups this mostly reflects what each sells for, not how well it performs.": "उत्पाद समूहों में यह मुख्यतः उनकी कीमत को दर्शाता है, न कि उनके प्रदर्शन को।",
+ "Compare the '{v1}' groups on margin, volume or growth rather than on value per record.": "'{v1}' समूहों की तुलना प्रति रिकॉर्ड मूल्य के बजाय मार्जिन, मात्रा या वृद्धि पर करें।",
+ "Average '{v1}' is highest in '{v2}' and lowest in '{v3}' ({v4}% apart) across '{v5}'; between product groups this mostly reflects what each sells for.": "'{v5}' में औसत '{v1}' '{v2}' में सबसे अधिक और '{v3}' में सबसे कम है ({v4}% अंतर); उत्पाद समूहों में यह मुख्यतः उनकी कीमत को दर्शाता है।",
+ "Average '{v1}' is highest in '{v2}' and lowest in '{v3}' ({v4}% apart) across '{v5}', a gap larger than chance.": "'{v5}' में औसत '{v1}' '{v2}' में सबसे अधिक और '{v3}' में सबसे कम है ({v4}% अंतर), जो संयोग से बड़ा अंतर है।",
+ "Data Quality Risk": "डेटा गुणवत्ता जोखिम",
+ "Customer Concentration": "ग्राहक केंद्रीकरण",
+ "HIGH MISSING": "बहुत अधिक खाली",
+ "REVIEW": "समीक्षा करें"
 }

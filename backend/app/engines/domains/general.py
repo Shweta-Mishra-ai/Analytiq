@@ -133,23 +133,41 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         seg = {**seg, "lo_txt": _num(seg["lo"]), "hi_txt": _num(seg["hi"])}
         # NOTE: neutral highest/lowest labels — whether high is good or bad
         # depends on the metric (revenue vs delay), which we cannot know here.
-        insights.append(build_insight(
-            title="'{cat}' Segments Differ Significantly on '{num}'".format(**seg),
-            problem=("Median '{num}' ranges from {lo_txt} in '{lo_seg}' to {hi_txt} "
-                     "in '{hi_seg}' — a {ratio:.1f}× spread across '{cat}' segments."
-                     .format(**seg)),
-            cause="A gap this size is unlikely to be chance. What causes it is not "
-                  "in the data.",
-            evidence=("Kruskal-Wallis H={h:.1f}, {ptxt} after adjusting for {m} tests, "
-                      "{k} groups, n={n:,}. "
-                      "Highest: '{hi_seg}' (median {hi_txt}) | Lowest: '{lo_seg}' "
-                      "(median {lo_txt}).".format(**seg)),
-            action=("Find out what separates '{hi_seg}' from '{lo_seg}', and check "
-                    "whether the gap holds once record size or volume is allowed for."
-                    .format(**seg)),
-            impact="",
-            severity="warning", category="segmentation",
-        ))
+        mix = _is_product_mix(seg["cat"])
+        evidence = ("Kruskal-Wallis H={h:.1f}, {ptxt} after adjusting for {m} tests, "
+                    "{k} groups, n={n:,}. "
+                    "Highest: '{hi_seg}' (median {hi_txt}) | Lowest: '{lo_seg}' "
+                    "(median {lo_txt}).".format(**seg))
+        if mix:
+            # Product groups differ in what they sell for. Headlined as
+            # "segments differ significantly", it read as a performance gap.
+            insights.append(build_insight(
+                title="'{num}' per record differs by '{cat}' (price mix)".format(**seg),
+                problem=("Median '{num}' ranges from {lo_txt} in '{lo_seg}' to {hi_txt} "
+                         "in '{hi_seg}' across '{cat}' groups.".format(**seg)),
+                cause="Between product groups this mostly reflects what each sells for, "
+                      "not how well it performs.",
+                evidence=evidence,
+                action=("Compare the '{cat}' groups on margin, volume or growth rather "
+                        "than on value per record.".format(**seg)),
+                impact="",
+                severity="info", category="segmentation",
+            ))
+        else:
+            insights.append(build_insight(
+                title="'{cat}' Segments Differ Significantly on '{num}'".format(**seg),
+                problem=("Median '{num}' ranges from {lo_txt} in '{lo_seg}' to {hi_txt} "
+                         "in '{hi_seg}' — a {ratio:.1f}× spread across '{cat}' segments."
+                         .format(**seg)),
+                cause="A gap this size is unlikely to be chance. What causes it is not "
+                      "in the data.",
+                evidence=evidence,
+                action=("Find out what separates '{hi_seg}' from '{lo_seg}', and check "
+                        "whether the gap holds once record size or volume is allowed for."
+                        .format(**seg)),
+                impact="",
+                severity="warning", category="segmentation",
+            ))
         # Which end is weak depends on the metric: the lowest-delay segment is
         # the strong one. Unknown direction gets neutral wording.
         from app.engines.benchmarking import metric_direction
@@ -198,7 +216,7 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         actions.append("Validate the outliers flagged above before analysis or modelling")
     if any(abs(stats.get(c, {}).get("skew", 0)) > 1 for c in analysable):
         actions.append("Use the median, not the mean, for the skewed columns in executive reports")
-    if seg:
+    if seg and not _is_product_mix(seg["cat"]):
         actions.append("Find out what separates '{hi_seg}' from '{lo_seg}' on "
                        "'{num}'.".format(**seg))
     return {"findings": findings, "risks": risks, "opportunities": opps,

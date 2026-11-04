@@ -241,8 +241,32 @@ def survival_fields(ds_id: str, owner: str = Depends(current_owner)):
     event_candidates = [c for c in df.columns if _is_binary_series(df[c])]
     group_candidates = [c for c in df.columns
                          if c in measures and 2 <= df[c].nunique() <= 20]
+    # Ranked by name, and a default only when one looks like a duration:
+    # the first numeric column was pre-selected, so the page offered
+    # "time elapsed = salary" or "= Amount".
+    duration_candidates.sort(key=lambda c: not _looks_like(c, _DURATION_WORDS))
+    event_candidates.sort(key=lambda c: not _looks_like(c, _EVENT_WORDS))
+    default_duration = next((c for c in duration_candidates
+                             if _looks_like(c, _DURATION_WORDS)), None)
+    default_event = next((c for c in event_candidates
+                          if _looks_like(c, _EVENT_WORDS)), None)
     return {"duration_columns": duration_candidates, "event_columns": event_candidates,
-            "group_columns": group_candidates}
+            "group_columns": group_candidates,
+            "default_duration": default_duration, "default_event": default_event}
+
+
+_DURATION_WORDS = ("tenure", "duration", "days", "day", "months", "month", "weeks",
+                   "years", "year", "time", "lifetime", "elapsed", "since", "length")
+_EVENT_WORDS = ("attrition", "churn", "churned", "left", "exit", "exited", "quit",
+                "cancel", "cancelled", "canceled", "default", "event", "died", "death",
+                "terminated", "resigned", "lost", "returned")
+
+
+def _looks_like(col: str, words) -> bool:
+    import re
+    parts = [w for w in re.split(r"[^a-z0-9]+", re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ",
+                                                         str(col)).lower()) if w]
+    return any(p in words for p in parts)
 
 
 @router.post("/{ds_id}/survival")

@@ -160,10 +160,17 @@ def detect_rfm_columns(df: pd.DataFrame) -> Optional[RFMColumns]:
     Returns None if a customer_id or date column cannot be found —
     RFM analysis is not possible without both.
     """
+    import re as _re
+
+    def _norm(name) -> str:
+        # "Customer ID", "customer-id" and "customer_id" are one name; raw
+        # lowercase matching found only the last.
+        return _re.sub(r"[^a-z0-9]", "", str(name).lower())
+
     def _find(keywords: List[str], must_be_dtype=None) -> Optional[str]:
         for c in df.columns:
-            cl = c.lower()
-            if any(k in cl for k in keywords):
+            cl = _norm(c)
+            if any(_norm(k) in cl for k in keywords):
                 if must_be_dtype == "datetime" and not pd.api.types.is_datetime64_any_dtype(df[c]):
                     # Try to parse it — failure here is expected and common
                     # (column matched a date keyword but isn't actually a
@@ -179,8 +186,16 @@ def detect_rfm_columns(df: pd.DataFrame) -> Optional[RFMColumns]:
     customer_id = _find(["customerid", "customer_id", "custid", "cust_id",
                          "clientid", "client_id", "userid", "user_id"])
     if customer_id is None:
+        # A column simply named for the customer ("Customer", "Client") whose
+        # values repeat across rows: the buyer, not a one-row identifier.
+        for c in df.columns:
+            words = set(_re.split(r"[^a-z0-9]+", str(c).lower()))
+            if (words & {"customer", "client", "user", "member", "buyer", "account"}
+                    and 1 < df[c].nunique() < len(df) * 0.9):
+                customer_id = c
+                break
+    if customer_id is None:
         # Fall back to any low-cardinality ID-like categorical column
-        import re as _re
         for c in df.columns:
             words = set(_re.split(r"[^a-z0-9]+", _re.sub(
                 r"(?<=[a-z0-9])(?=[A-Z])", " ", str(c)).lower()))

@@ -19,6 +19,9 @@ interface Attrition {
   n_total: number
   severity: string
   cost_estimate: string
+  /** Replacement cost range, when the data has a numeric salary column. */
+  cost_low?: number | null
+  cost_high?: number | null
   interpretation: string
   n_flight_risk: number
 }
@@ -82,6 +85,14 @@ function InsightCard({ ins, n }: { ins: Insight; n: number }) {
   )
 }
 
+function compact(v: number): string {
+  const a = Math.abs(v)
+  if (a >= 1e9) return `${(v / 1e9).toFixed(1)}B`
+  if (a >= 1e6) return `${(v / 1e6).toFixed(1)}M`
+  if (a >= 1e3) return `${(v / 1e3).toFixed(0)}K`
+  return v.toFixed(0)
+}
+
 export default function InsightsPage() {
   const dataset = useApp((s) => s.dataset)
   const [story, setStory] = useState<Story | null>(null)
@@ -131,7 +142,9 @@ export default function InsightsPage() {
                 <div>
                   <div className="text-xs text-mute uppercase">Rate</div>
                   <div className="text-2xl font-bold text-rose">
-                    {(story.attrition.rate * 100).toFixed(1)}%
+                    {/* rate is already a percentage (19.6), as in the PDF;
+                        multiplying by 100 showed 1960.0% */}
+                    {story.attrition.rate.toFixed(1)}%
                   </div>
                 </div>
                 <div>
@@ -147,13 +160,18 @@ export default function InsightsPage() {
                   </div>
                 </div>
                 <div>
-                  <div className="text-xs text-mute uppercase">Est. cost</div>
+                  <div className="text-xs text-mute uppercase">Est. replacement cost</div>
                   <div className="text-2xl font-bold text-ink">
-                    {story.attrition.cost_estimate}
+                    {story.attrition.cost_low != null && story.attrition.cost_high != null
+                      ? `${compact(story.attrition.cost_low)}–${compact(story.attrition.cost_high)}`
+                      : '—'}
                   </div>
                 </div>
               </div>
               <p className="mt-3 text-xs text-mute">{story.attrition.interpretation}</p>
+              {/* The basis of the cost figure; it used to fill the figure's
+                  own slot in the large metric font. */}
+              <p className="mt-1 text-xs text-mute">{story.attrition.cost_estimate}.</p>
             </Panel>
           )}
 

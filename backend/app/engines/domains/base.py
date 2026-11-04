@@ -164,6 +164,10 @@ class AttritionAnalysis:
     flight_risk_pct:  float
     cost_estimate:    str
     interpretation:   str
+    # Replacement cost range from the data (leavers × their median salary ×
+    # Gallup's 0.5–2.0), when a numeric salary column exists; else None.
+    cost_low:         Optional[float] = None
+    cost_high:        Optional[float] = None
     # Chi-square p for "do departments differ in attrition", None when the
     # test could not be run. Without it the report labelled departments
     # HIGH or OK off a fixed threshold, whatever the test said.
