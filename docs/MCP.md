@@ -32,7 +32,35 @@ web app and returns a compact answer.
 | `train_model` | Compares prediction models on held-out rows against the naive baseline |
 | `generate_report` | The consulting-style PDF (`analysis` or `health`, English or Hindi): saved to disk locally, a one-hour download link remotely |
 
-## Option 1 — Local (Claude Desktop or Claude Code on your computer)
+## Option 1 — Claude Code plugin (simplest)
+
+In Claude Code, run:
+
+```text
+/plugin install analytiq --marketplace Shweta-Mishra-ai/Analytiq
+```
+
+On versions before 2.1.275, run `/plugin marketplace add Shweta-Mishra-ai/Analytiq` and then
+`/plugin install analytiq@analytiq`.
+
+The plugin adds the Analytiq tools and an `analyze-data` skill. It needs
+**Python 3.11 or newer** on your computer (`python3` on the `PATH`).
+
+On first use, the plugin installs its Python dependencies into a private
+environment in Claude Code's plugin data folder. This takes about a minute and
+uses about 750 MB; later sessions start immediately. If the tools are not ready
+the first time, run `/mcp` and reconnect `plugin:analytiq:analytiq` after a
+minute. Progress is logged to `install.log` in
+`~/.claude/plugins/data/analytiq-analytiq/`.
+
+The plugin leaves out XGBoost (about 700 MB with its GPU library), so
+`train_model` compares three models instead of four. Data stays on your
+machine, in `~/.analytiq`.
+
+Windows: the plugin starts the server with `python3`. If your Python is only
+available as `python` or `py`, use the manual setup below.
+
+## Option 2 — Local, manual setup (Claude Desktop or Claude Code)
 
 Your data stays on your machine. Files are read by path.
 
@@ -73,7 +101,7 @@ Your data stays on your machine. Files are read by path.
 Local datasets are stored in `~/.analytiq` unless `DATA_DIR` is set. Reports
 are saved to `~/Downloads` unless you name another path.
 
-## Option 2 — Remote (claude.ai on web and mobile, and your team)
+## Option 3 — Remote (claude.ai on web and mobile, and your team)
 
 The web app serves the same tools at `https://<your-deployment>/mcp/`. Each person
 uses their own Analytiq account and sees only their own datasets.
@@ -136,3 +164,10 @@ from your computer. You have three ways in:
 - Report links are signed, expire after one hour, and name a single file.
 - Locally the server runs as you, with your file permissions; only add it to a
   Claude you trust with the files you point it at.
+
+## Licence
+
+Analytiq is proprietary software. Anyone may install and run it, including
+through the plugin and the MCP server, for their own personal or internal
+business purposes; copying, modifying, redistributing or offering it as a
+service is not permitted. See [LICENSE](../LICENSE).

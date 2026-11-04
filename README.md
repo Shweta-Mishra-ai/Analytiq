@@ -201,6 +201,16 @@ whether each key works, and the actual error if not.
 ### 🤖 Using Analytiq from Claude (MCP)
 Analytiq's analysis is available to Claude as tools: locally for Claude Desktop and Claude Code, and remotely at `/mcp/` for claude.ai and teams. Claude receives computed summaries instead of reading the data, which is far cheaper and keeps every figure tested. Setup: [docs/MCP.md](docs/MCP.md).
 
+**Install as a Claude Code plugin** (Python 3.11+ required; dependencies install automatically on first use):
+
+```bash
+/plugin install analytiq --marketplace Shweta-Mishra-ai/Analytiq
+```
+
+On Claude Code versions before 2.1.275, add the marketplace first: `/plugin marketplace add Shweta-Mishra-ai/Analytiq`, then `/plugin install analytiq@analytiq`.
+
+Or, from a checkout of this repository:
+
 ```bash
 claude mcp add --transport stdio --env PYTHONPATH=$(pwd)/backend analytiq -- python -m app.mcp_server
 ```
