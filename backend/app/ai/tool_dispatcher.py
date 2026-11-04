@@ -48,6 +48,15 @@ def dispatch(df: pd.DataFrame, tool: str, params: dict, explanation: str = "") -
         result.explanation = explanation
         return result
     except KeyError as e:
+        missing = e.args[0] if e.args else ""
+        # A parameter the model left out raised the same KeyError as a wrong
+        # column, and was reported as "Column not found: 'value'".
+        if isinstance(missing, str) and missing not in df.columns and missing not in (
+                str(v) for v in (params or {}).values()):
+            return ToolResult(
+                success=False,
+                error=f"The request was missing '{missing}' for '{tool}'.",
+                explanation=explanation)
         return ToolResult(
             success=False,
             error=f"Column not found: {e}. Available: {list(df.columns)}",
@@ -84,7 +93,13 @@ def _aggregate(df, p):
         top, low = res.iloc[0], res.iloc[-1]
         text = (f"**{top[grp]}** has the highest {what} {val} ({fmt(top[val])}) and "
                 f"**{low[grp]}** the lowest ({fmt(low[val])}), across {len(res):,} "
-                f"{grp} groups.\n\n")
+                f"{grp} groups.")
+        p_val = _groups_differ_p(df, grp, val, agg)
+        if p_val is not None and p_val >= 0.05:
+            # The ranking was stated as a finding however small the gaps.
+            text += (f" The gaps are within what chance produces (p={p_val:.2f}), so "
+                     f"this order should not be relied on.")
+        text += "\n\n"
     else:
         text = ""
     for _, row in res.head(15).iterrows():
@@ -92,6 +107,29 @@ def _aggregate(df, p):
     if len(res) > 15:
         text += f"- … and {len(res) - 15:,} more\n"
     return ToolResult(success=True, text_output=text.strip(), dataframe=res)
+
+
+def _groups_differ_p(df, grp, val, agg):
+    """p-value for "the groups differ" on the quantity the ranking used:
+    values per row for mean/median/max/min, row counts for count, either for
+    a sum (a total is rows × value per row). None when it cannot be tested."""
+    from scipy import stats as sc
+    sub = df[[grp, val]].dropna() if agg != "count" else df[[grp]].dropna()
+    tests = []
+    try:
+        if agg in ("count", "sum"):
+            counts = sub[grp].value_counts()
+            if len(counts) >= 2:
+                tests.append(float(sc.chisquare(counts.values).pvalue))
+        if agg != "count" and pd.api.types.is_numeric_dtype(sub[val]):
+            groups = [g[val].values for _, g in sub.groupby(grp) if len(g) >= 3]
+            if len(groups) >= 2:
+                tests.append(float(sc.kruskal(*groups).pvalue))
+    except ValueError:
+        return None
+    if not tests:
+        return None
+    return min(1.0, min(tests) * len(tests))          # Bonferroni over the two
 
 
 def _filter(df, p):
@@ -136,7 +174,10 @@ def _describe_col(df, p):
     c     = s.dropna()
     blank = len(s) - len(c)
     tail  = f" {blank:,} rows are blank." if blank else ""
-    if pd.api.types.is_numeric_dtype(s) and len(c):
+    if pd.api.types.is_datetime64_any_dtype(s) and len(c):
+        text = (f"{name} runs from **{c.min().date()}** to **{c.max().date()}** "
+                f"({c.nunique():,} different dates).")
+    elif pd.api.types.is_numeric_dtype(s) and len(c):
         q1, med, q3 = (float(v) for v in c.quantile([0.25, 0.5, 0.75]))
         text = (f"A typical {name} is **{fmt(med)}** (the median); half the rows lie "
                 f"between {fmt(q1)} and {fmt(q3)}, and the full range is {fmt(c.min())} to "
@@ -158,14 +199,28 @@ def _describe_col(df, p):
 
 def _correlation(df, p):
     a, b      = p["col_a"], p["col_b"]
-    r         = df[[a, b]].dropna().corr().iloc[0, 1]
-    if abs(r) < 0.2:
-        text = f"{a} and {b} are not related in this data (r = {r:.2f})."
+    both      = df[[a, b]].dropna()
+    n         = len(both)
+    if n < 3 or both[a].nunique() < 2 or both[b].nunique() < 2:
+        # A constant or near-empty column gave r = nan, which fell through
+        # every comparison to "move in opposite directions slightly".
+        return ToolResult(success=True, text_output=(
+            f"A correlation between {a} and {b} cannot be measured: one of them has "
+            f"fewer than two different values on the {n:,} rows where both are filled."))
+    from scipy.stats import pearsonr
+    r, p_val  = (float(x) for x in pearsonr(both[a], both[b]))
+    if p_val >= 0.05:
+        # r = 0.45 on five rows is chance; the size alone was reported.
+        text = (f"There is no reliable link between {a} and {b} in this data "
+                f"(r = {r:.2f}, p = {p_val:.2f}, {n:,} rows).")
+    elif abs(r) < 0.2:
+        text = (f"{a} and {b} are barely related in this data (r = {r:.2f}, "
+                f"{n:,} rows).")
     else:
         how = "closely" if abs(r) > 0.7 else "somewhat" if abs(r) > 0.4 else "slightly"
         way = "rise together" if r > 0 else "move in opposite directions"
-        text = (f"{a} and {b} {way} {how} (r = {r:.2f}). That is a link, not proof that "
-                f"one causes the other.")
+        text = (f"{a} and {b} {way} {how} (r = {r:.2f}, {n:,} rows). That is a link, "
+                f"not proof that one causes the other.")
     return ToolResult(success=True, text_output=text)
 
 

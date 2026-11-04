@@ -274,7 +274,7 @@ export default function DeepAnalysisPage() {
 
         {/* ── Internal benchmarks ───────────────────────────── */}
         {benchmarks.length > 0 && (
-          <Panel title="Each metric vs its own best quartile">
+          <Panel title="Each metric vs its own best quarter of records">
             <div className="space-y-3">
               {benchmarks.map((b) => (
                 <div key={b.metric}>
@@ -285,10 +285,14 @@ export default function DeepAnalysisPage() {
                         {b.direction < 0 ? '(lower is better)' : '(higher is better)'}
                       </span>
                     </span>
-                    <span className={b.meets ? 'text-teal' : 'text-amber'}>
+                    {/* The best quarter's mean is out of the average's reach by
+                        construction, so the gap is a spread, not "headroom". */}
+                    <span className={b.meets ? 'text-teal' : 'text-mute'}>
                       {b.meets
-                        ? 'at or above its own benchmark'
-                        : `${Math.abs(b.headroom_pct).toFixed(1)}% headroom`}
+                        ? 'meets its target'
+                        : b.reference_kind === 'target'
+                          ? `${Math.abs(b.headroom_pct).toFixed(1)}% short of target`
+                          : `best quarter is ${Math.abs(b.headroom_pct).toFixed(1)}% ${b.direction < 0 ? 'lower' : 'higher'}`}
                     </span>
                   </div>
                   <div className="mt-1 flex items-center gap-3 text-xs">
@@ -302,7 +306,8 @@ export default function DeepAnalysisPage() {
                       />
                     </div>
                     <span className="w-32 text-right text-mute">
-                      target {num(b.reference)}
+                      {b.reference_kind === 'target' ? 'target' : 'best quarter'}{' '}
+                      {num(b.reference)}
                     </span>
                   </div>
                   <p className="mt-1 text-[11px] text-mute">{b.interpretation}</p>

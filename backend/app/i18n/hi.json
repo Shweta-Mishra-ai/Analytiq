@@ -1689,5 +1689,12 @@
  "A gap this size is unlikely to be chance.": "इतना बड़ा अंतर संयोग से होना संभावित नहीं है।",
  "What causes it is not in the data.": "इसका कारण डेटा में नहीं है।",
  "Order Value": "ऑर्डर मूल्य",
- "Segmentation": "खंड विश्लेषण"
+ "Segmentation": "खंड विश्लेषण",
+ "Average {v1} already meets the target ({v2}); higher is better here — hold and protect this level.": "औसत {v1} पहले ही लक्ष्य ({v2}) को पूरा करता है; यहाँ अधिक बेहतर है — इस स्तर को बनाए रखें।",
+ "Average {v1} already meets the target ({v2}); lower is better here — hold and protect this level.": "औसत {v1} पहले ही लक्ष्य ({v2}) को पूरा करता है; यहाँ कम बेहतर है — इस स्तर को बनाए रखें।",
+ "Average {v1} vs target {v2} — closing the gap is a {v3}% improvement (higher is better).": "औसत {v1} बनाम लक्ष्य {v2} — यह अंतर पाटना {v3}% सुधार है (अधिक बेहतर है)।",
+ "Average {v1} vs target {v2} — closing the gap is a {v3}% improvement (lower is better).": "औसत {v1} बनाम लक्ष्य {v2} — यह अंतर पाटना {v3}% सुधार है (कम बेहतर है)।",
+ "The best quarter of records average {v1}, against {v2} overall: a {v3}% spread within this data (higher is better).": "सबसे अच्छे एक-चौथाई रिकॉर्ड का औसत {v1} है, जबकि कुल औसत {v2}: इस डेटा के भीतर {v3}% का फैलाव (अधिक बेहतर है)।",
+ "The best quarter of records average {v1}, against {v2} overall: a {v3}% spread within this data (lower is better).": "सबसे अच्छे एक-चौथाई रिकॉर्ड का औसत {v1} है, जबकि कुल औसत {v2}: इस डेटा के भीतर {v3}% का फैलाव (कम बेहतर है)।",
+ "This compares records with each other, not with an outside target.": "यह रिकॉर्ड की आपस में तुलना है, किसी बाहरी लक्ष्य से नहीं।"
 }

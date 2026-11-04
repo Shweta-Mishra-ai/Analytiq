@@ -137,19 +137,23 @@ def benchmark_metric(
     headroom_pct = abs(gap) / denom * 100
 
     dir_word = "higher" if direction > 0 else "lower"
-    ref_label = "target" if kind == "target" else "top-quartile benchmark"
-    if meets:
-        interp = (
-            "Average {:.2f} already meets the {} ({:.2f}); "
-            "{} is better here — hold and protect this level.".format(
-                value, ref_label, reference, dir_word)
-        )
+    if kind == "target":
+        if meets:
+            interp = ("Average {:.2f} already meets the target ({:.2f}); {} is better "
+                      "here — hold and protect this level.".format(value, reference, dir_word))
+        else:
+            interp = ("Average {:.2f} vs target {:.2f} — closing the gap is a {:.0f}% "
+                      "improvement ({} is better).".format(
+                          value, reference, headroom_pct, dir_word))
     else:
-        interp = (
-            "Average {:.2f} vs {} {:.2f} — closing the gap is a "
-            "{:.0f}% improvement ({} is better).".format(
-                value, ref_label, reference, headroom_pct, dir_word)
-        )
+        # The reference is the mean of this column's own best quarter, which
+        # the overall average can never reach. It used to be called a
+        # "benchmark" whose gap was "a 25% improvement" — a target that is
+        # impossible by construction. It is a spread within the data.
+        interp = ("The best quarter of records average {:.2f}, against {:.2f} overall: a "
+                  "{:.0f}% spread within this data ({} is better). This compares records "
+                  "with each other, not with an outside target.".format(
+                      reference, value, headroom_pct, dir_word))
 
     return BenchmarkContext(
         metric=name, value=round(value, 4), reference=round(reference, 4),

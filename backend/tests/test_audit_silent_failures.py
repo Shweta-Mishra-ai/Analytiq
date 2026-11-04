@@ -283,3 +283,17 @@ def test_gradient_boosting_trains_on_small_multiclass_data():
                        "revenue": rng.normal(size=n), "cost": rng.normal(size=n)})
     rep = run_ml_pipeline(df, "product")
     assert {m.name: m.error for m in rep.models}["Gradient Boosting"] == ""
+
+
+# ── Benchmarks ───────────────────────────────────────────────────────────
+
+def test_the_internal_reference_is_not_presented_as_a_reachable_target():
+    from app.engines.benchmarking import benchmark_metric
+    rng = np.random.default_rng(0)
+    revenue = pd.Series(rng.normal(1000, 200, 400))
+    internal = benchmark_metric(revenue, "revenue")
+    assert internal.reference_kind == "internal top-quartile"
+    assert "improvement" not in internal.interpretation
+    assert "not with an outside target" in internal.interpretation
+    target = benchmark_metric(revenue, "revenue", target=1200)
+    assert "closing the gap is a" in target.interpretation
