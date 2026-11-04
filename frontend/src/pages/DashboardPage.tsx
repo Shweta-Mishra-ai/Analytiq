@@ -109,7 +109,12 @@ export default function DashboardPage() {
     if (!ds) return
     apiPost<{ kpis: Kpi[] }>(`/api/charts/${ds}/kpis`, { filters })
       .then((r) => setKpis(r.kpis))
-      .catch(() => {})
+      // On failure the cards used to keep the previous filters' numbers
+      // under the new filters. Clear them and say why.
+      .catch((e) => {
+        setKpis([])
+        setError(`The KPI cards could not be computed for these filters: ${e instanceof Error ? e.message : String(e)}`)
+      })
   }, [ds, filters])
 
   const loadTile = useCallback(

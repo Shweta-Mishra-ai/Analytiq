@@ -119,9 +119,9 @@ def _rating_revenue_evidence(df: pd.DataFrame, rating_col, rev_col,
         med_low, med_high = float(low.median()), float(high.median())
         p = float(_sc.mannwhitneyu(high, low, alternative="two-sided").pvalue)
         holds = med_high > med_low and p < 0.05
-        return ("Median '{}' is {:,.0f} for well-rated products against {:,.0f} for "
-                "low-rated ones (n={:,}/{:,}, Mann-Whitney p={:.3f}){}.".format(
-                    rev_col, med_high, med_low, len(high), len(low), p,
+        return ("Median '{}' is {:,.0f} where the rating is {:.1f} or higher, against "
+                "{:,.0f} where it is below {:.1f} (n={:,}/{:,}, Mann-Whitney p={:.3f}){}.".format(
+                    rev_col, med_high, high_thr, med_low, low_thr, len(high), len(low), p,
                     "" if holds else "; the difference is within chance"), holds)
     except Exception:
         logger.warning("rating-revenue evidence failed", exc_info=True)
@@ -189,15 +189,15 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         scale  = "{:.2f}/{:.0f}".format(mean_r, hi)
         n_rated = int(df[rating_col].notna().sum())
         low_pct = low_n / max(n_rated, 1) * 100
-        evidence = "Mean {:.2f} on a {:.0f}–{:.0f} scale; a quarter of products are rated " \
+        evidence = "Mean {:.2f} on a {:.0f}–{:.0f} scale; a quarter of the ratings are " \
                    "below {:.1f}. {}".format(mean_r, lo, hi, q1, rev_ev).strip()
-        impact = ("Well-rated products earn more here, so the low-rated ones are where a "
-                  "fix would show in revenue." if rev_holds else "")
+        impact = ("Revenue is higher where ratings are high, so the low-rated items are "
+                  "where a fix would show in revenue." if rev_holds else "")
 
         if mean_r < weak:
             insights.append(build_insight(
-                title="Average rating {}; {:,} products below {:.1f}".format(scale, low_n, poor),
-                problem="{:,} of {:,} products ({:.0f}%) are rated below {:.1f} on this "
+                title="Average rating {}; {:,} ratings below {:.1f}".format(scale, low_n, poor),
+                problem="{:,} of {:,} ratings ({:.0f}%) are below {:.1f} on this "
                         "{:.0f}-point scale.".format(low_n, n_rated, low_pct, poor, hi),
                 cause="The data holds the scores, not the reasons; the reviews do.",
                 evidence=evidence,
@@ -207,12 +207,12 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                 severity="critical" if (mean_r < poor or rev_holds) else "warning",
                 category="rating"
             ))
-            risks.append("{:,} products ({:.0f}%) are rated below {:.1f}.".format(
+            risks.append("{:,} ratings ({:.0f}%) are below {:.1f}.".format(
                 low_n, low_pct, poor))
         elif mean_r < good:
             insights.append(build_insight(
                 title="Average rating {}".format(scale),
-                problem="{:,} of {:,} products ({:.0f}%) are rated below {:.1f}.".format(
+                problem="{:,} of {:,} ratings ({:.0f}%) are below {:.1f}.".format(
                     low_n, n_rated, low_pct, poor),
                 cause="",
                 evidence=evidence,
@@ -223,11 +223,11 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         else:
             insights.append(build_insight(
                 title="Average rating {}".format(scale),
-                problem="Only {:,} of {:,} products are rated below {:.1f}.".format(
+                problem="Only {:,} of {:,} ratings are below {:.1f}.".format(
                     low_n, n_rated, poor),
                 cause="",
                 evidence=evidence,
-                action="Keep tracking the share of products below {:.1f} so a fall shows "
+                action="Keep tracking the share of ratings below {:.1f} so a fall shows "
                        "early.".format(poor),
                 impact="",
                 severity="positive", category="rating"
@@ -236,8 +236,7 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         if out_ct > 0:
             pct = st.get("outlier_pct",0)
             findings.append(
-                "{:,} products ({:.1f}%) have ratings far from the rest of the "
-                "catalogue.".format(out_ct, pct))
+                "{:,} ratings ({:.1f}%) are far from the rest.".format(out_ct, pct))
 
     # ── Category Performance (significance-tested, scale-aware) ──────
     if cat_col and rating_col and rating_col in df.columns and rating_col in stats:
@@ -254,7 +253,9 @@ def _insights_ecommerce(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
             gap     = cat_perf.loc[best_c, "mean"] - cat_perf.loc[worst_c, "mean"]
 
             # Is the category difference real or sampling noise? Kruskal-Wallis.
-            sig_txt, significant = "not statistically tested", True
+            # Untested is not significant: when the test could not run, the gap
+            # used to be reported as "statistically significant" regardless.
+            sig_txt, significant = "not statistically tested", False
             try:
                 from scipy import stats as _sc
                 groups = [g[rating_col].dropna().values

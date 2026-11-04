@@ -77,6 +77,13 @@ def _complete(system: str, messages: list[dict]) -> str:
     text = _local()
     if text:
         return text
+    if local_llm.is_configured():
+        # A configured model that is down or answered nothing was reported
+        # as "no language model is configured", sending people to fix
+        # settings that were already right.
+        raise HTTPException(
+            503, f"The local language model at {config.local_llm_url} did not answer "
+                 "(it may not be running, or it returned an empty reply).")
     raise HTTPException(
         503, "No language model is configured for chat — set GROQ_API_KEY, "
              "or LOCAL_LLM_URL and LOCAL_LLM_MODEL.")

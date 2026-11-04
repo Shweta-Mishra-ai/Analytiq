@@ -169,10 +169,14 @@ def _entropy(series: pd.Series) -> float:
     return float(-np.sum(vc * np.log2(vc + 1e-10)))
 
 
-def _fit_distribution(s: pd.Series) -> Tuple[str, Dict]:
-    """Try fitting common distributions, return best fit."""
+def _fit_distribution(s: pd.Series) -> Tuple[Optional[str], Dict]:
+    """Try fitting common distributions; return the best one the KS test
+    does not reject, or (None, {}) when every candidate is rejected or none
+    could be fitted. "norm" used to be returned as the default whatever the
+    data, and the normal fit itself always failed (see below), so the page
+    named a distribution no test had supported."""
     distributions = ["norm", "lognorm", "expon", "gamma", "uniform"]
-    best_dist, best_p, best_params = "norm", 0, {}
+    best_dist, best_p, best_params = None, 0.0, {}
     # Fitted on a fixed sample of 5,000. Maximum-likelihood fits on every
     # value of a 60,000-row column took 17 s of an 18 s page, and the KS test
     # on that many values rejects every distribution anyway.
@@ -182,14 +186,20 @@ def _fit_distribution(s: pd.Series) -> Tuple[str, Dict]:
         try:
             dist   = getattr(scipy_stats, dist_name)
             params = dist.fit(s)
-            _, p   = kstest(s, dist_name, args=params)
+            # The frozen distribution's cdf: passing the name with args
+            # breaks for "norm" on current SciPy (its cdf is called with
+            # loc and scale as extra positional arguments and raises).
+            _, p   = kstest(s, dist(*params).cdf)
             if p > best_p:
                 best_p      = p
                 best_dist   = dist_name
                 best_params = {"params": params, "ks_p": round(p, 4)}
         except Exception:
-            logger.debug("_fit_distribution: suppressed exception", exc_info=True)
+            logger.debug("_fit_distribution: %s could not be fitted", dist_name,
+                         exc_info=True)
             continue
+    if best_p < 0.05:
+        return None, {}
     return best_dist, best_params
 
 
@@ -240,8 +250,22 @@ def analyze_univariate(series: pd.Series) -> UnivariateResult:
                     clean.nunique(), result.top_value, result.top_pct or 0))
         return result
 
+    # ── Dates ─────────────────────────────────────────────
+    # A date column is not a quantity; it used to reach the numeric branch,
+    # fail on astype(float), and drop out of the table without a word.
+    if pd.api.types.is_datetime64_any_dtype(series):
+        lo, hi = clean.min(), clean.max()
+        result.interpretation = "Dates from {} to {} ({:,} distinct).".format(
+            lo.date(), hi.date(), clean.nunique())
+        return result
+
     # ── Numeric ───────────────────────────────────────────
     s = clean.astype(float)
+    if s.nunique() == 1:
+        result.mean = result.median = float(s.iloc[0])
+        result.interpretation = "Every value is {:,.6g}, so there is nothing to analyse.".format(
+            float(s.iloc[0]))
+        return result
 
     # Descriptive
     result.mean     = round(float(s.mean()), 6)
@@ -262,7 +286,7 @@ def analyze_univariate(series: pd.Series) -> UnivariateResult:
         mode_val   = float(s.mode().iloc[0])
         result.mode = round(mode_val, 6)
     except Exception:
-        logger.debug("analyze_univariate: suppressed exception", exc_info=True)
+        logger.warning("analyze_univariate: suppressed exception", exc_info=True)
 
     # Distribution shape
     skew = float(s.skew())
@@ -296,21 +320,21 @@ def analyze_univariate(series: pd.Series) -> UnivariateResult:
         result.shapiro_stat = round(float(sw_stat), 6)
         result.shapiro_p    = round(float(sw_p), 6)
     except Exception:
-        logger.debug("analyze_univariate: suppressed exception", exc_info=True)
+        logger.warning("analyze_univariate: suppressed exception", exc_info=True)
 
     try:
         da_stat, da_p = normaltest(s)
         result.dagostino_stat = round(float(da_stat), 6)
         result.dagostino_p    = round(float(da_p), 6)
     except Exception:
-        logger.debug("analyze_univariate: suppressed exception", exc_info=True)
+        logger.warning("analyze_univariate: suppressed exception", exc_info=True)
 
     try:
         ad_result = anderson(sample, dist="norm")
         result.anderson_stat     = round(float(ad_result.statistic), 6)
         result.anderson_critical = round(float(ad_result.critical_values[2]), 6)
     except Exception:
-        logger.debug("analyze_univariate: suppressed exception", exc_info=True)
+        logger.warning("analyze_univariate: suppressed exception", exc_info=True)
 
     # Consensus normality — majority of tests
     normal_votes = 0
@@ -360,7 +384,7 @@ def analyze_univariate(series: pd.Series) -> UnivariateResult:
         try:
             result.best_fit_dist, result.best_fit_params = _fit_distribution(s)
         except Exception:
-            logger.debug("analyze_univariate: suppressed exception", exc_info=True)
+            logger.warning("analyze_univariate: suppressed exception", exc_info=True)
 
     # Plain English interpretation
     mean_vs_median = abs(result.mean - result.median)
@@ -601,7 +625,12 @@ def analyze_vif(df: pd.DataFrame) -> List[MulticollinearityResult]:
     from sklearn.preprocessing import StandardScaler
     from sklearn.impute import SimpleImputer
 
-    num_cols = df.select_dtypes(include="number").columns.tolist()
+    # A column with no values or a single value has no variance to share:
+    # SimpleImputer drops all-empty columns (so the frame no longer matched
+    # its column list and the whole section was lost), and a constant column
+    # scored R^2=1 and was called "severe multicollinearity".
+    num_cols = [c for c in df.select_dtypes(include="number").columns
+                if df[c].nunique(dropna=True) > 1]
     if len(num_cols) < 2:
         return []
 
@@ -639,7 +668,7 @@ def analyze_vif(df: pd.DataFrame) -> List[MulticollinearityResult]:
                 verdict=verdict, interpretation=interp,
             ))
         except Exception:
-            logger.debug("analyze_vif: suppressed exception", exc_info=True)
+            logger.warning("analyze_vif: suppressed exception", exc_info=True)
             continue
 
     return sorted(results, key=lambda x: x.vif, reverse=True)
@@ -819,17 +848,21 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
                         setattr(r, attr, "")
             report.univariate[col] = r
         except Exception:
-            logger.debug("run_eda: suppressed exception", exc_info=True)
+            logger.warning("run_eda: suppressed exception", exc_info=True)
             continue
 
-    # 2. Correlations — numeric pairs
+    # 2. Correlations — numeric pairs. Only columns that vary: an empty
+    # column was reported as "no link (r=0.00)" — a coefficient invented for
+    # data that is not there — a constant one as "r=nan", and both padded
+    # the multiple-testing family that real pairs are adjusted against.
     normality = {
         col: report.univariate[col].is_normal or False
         for col in num_cols if col in report.univariate
     }
-    for i in range(len(num_cols)):
-        for j in range(i+1, min(len(num_cols), i+8)):
-            col_a, col_b = num_cols[i], num_cols[j]
+    varying = [c for c in num_cols if df[c].nunique(dropna=True) > 1]
+    for i in range(len(varying)):
+        for j in range(i+1, min(len(varying), i+8)):
+            col_a, col_b = varying[i], varying[j]
             try:
                 res = analyze_bivariate_numeric(
                     df, col_a, col_b,
@@ -838,7 +871,7 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
                 )
                 report.correlations.append(res)
             except Exception:
-                logger.debug("run_eda: suppressed exception", exc_info=True)
+                logger.warning("run_eda: suppressed exception", exc_info=True)
                 continue
 
     # Benjamini-Hochberg across the whole family of pairwise tests:
@@ -859,14 +892,14 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
     # 3. Group comparisons — top numeric vs top categorical
     useful_cats = [c for c in cat_cols if 2 <= df[c].nunique() <= 15]
     for cat in useful_cats[:3]:
-        for num in num_cols[:3]:
+        for num in varying[:3]:
             try:
                 res = analyze_group_comparison(
                     df, num, cat, normality.get(num, False)
                 )
                 report.group_comparisons.append(res)
             except Exception:
-                logger.debug("run_eda: suppressed exception", exc_info=True)
+                logger.warning("run_eda: suppressed exception", exc_info=True)
                 continue
 
     # The same correction for the group comparisons, which are also a family.
@@ -883,7 +916,7 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
         try:
             report.multicollinearity = analyze_vif(df[num_cols])
         except Exception:
-            logger.debug("run_eda: suppressed exception", exc_info=True)
+            logger.warning("run_eda: suppressed exception", exc_info=True)
 
     # 5. Time series
     if dt_cols and num_cols:
@@ -893,7 +926,7 @@ def run_eda(df: pd.DataFrame, max_rows: int = 50_000) -> EDAReport:
                     res = analyze_time_series(df, dt_col, num_col)
                     report.time_series.append(res)
                 except Exception:
-                    logger.debug("run_eda: suppressed exception", exc_info=True)
+                    logger.warning("run_eda: suppressed exception", exc_info=True)
                     continue
 
     # 6. Key findings

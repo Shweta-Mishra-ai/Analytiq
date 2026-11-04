@@ -416,6 +416,13 @@ def _get_models(task: str, n_classes: int = 2, n_rows: int = 0) -> List[Tuple[st
     # on, so on a few hundred rows the model ignored every category and
     # scored R²≈0 where the others reached 0.8.
     leaf = int(min(20, max(5, (n_rows or 0) // 100)))
+    # Early stopping holds back 10% of each cross-validation fold
+    # (stratified for classifiers). On small data that holdout had fewer
+    # rows than there are classes and the model failed to train at all; it
+    # is only switched on when the holdout can hold every class twice over.
+    # Small data trains quickly without it.
+    holdout = int(0.08 * (n_rows or 0))
+    stop_early = holdout >= (2 * max(n_classes, 2) if task != "regression" else 10)
     if task == "regression":
         models = [
             ("Ridge Regression",    Ridge(alpha=1.0)),
@@ -424,7 +431,7 @@ def _get_models(task: str, n_classes: int = 2, n_rows: int = 0) -> List[Tuple[st
                                         max_features=0.5, max_samples=per_tree,
                                         random_state=42, n_jobs=-1)),
             ("Gradient Boosting",   HistGradientBoostingRegressor(
-                                        max_iter=300, early_stopping=True,
+                                        max_iter=300, early_stopping=stop_early,
                                         min_samples_leaf=leaf, random_state=42)),
         ]
         if XGBOOST_AVAILABLE:
@@ -443,7 +450,7 @@ def _get_models(task: str, n_classes: int = 2, n_rows: int = 0) -> List[Tuple[st
                                         random_state=42, n_jobs=-1)),
             # Early stopping: a 9-class target took 18 s without it, 1 s with.
             ("Gradient Boosting",   HistGradientBoostingClassifier(
-                                        max_iter=300, early_stopping=True,
+                                        max_iter=300, early_stopping=stop_early,
                                         min_samples_leaf=leaf, random_state=42)),
         ]
         if XGBOOST_AVAILABLE and n_classes <= 10:
@@ -497,7 +504,7 @@ def _evaluate_classification(y_true, y_pred, y_prob=None) -> Dict:
                                     average="weighted")
             auc = round(auc, 4)
         except Exception:
-            logger.debug("_evaluate_classification: suppressed exception", exc_info=True)
+            logger.warning("_evaluate_classification: suppressed exception", exc_info=True)
     return {"accuracy": round(acc, 4), "f1": round(f1, 4), "roc_auc": auc}
 
 
@@ -1280,7 +1287,7 @@ def run_ml_pipeline(
                 residual_band = (float(np.quantile(resid, 0.10)),
                                  float(np.quantile(resid, 0.90)))
         except Exception:
-            logger.debug("run_ml_pipeline: suppressed exception", exc_info=True)
+            logger.warning("run_ml_pipeline: suppressed exception", exc_info=True)
 
     report = MLReport(
         task=task,

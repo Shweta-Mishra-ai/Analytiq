@@ -382,7 +382,7 @@ def _sanitize(df: pd.DataFrame, warnings: list) -> pd.DataFrame:
                 warnings.append(
                     "{:,} infinite values replaced with blank.".format(int(inf_count)))
     except Exception:
-        logger.debug("_sanitize: suppressed exception", exc_info=True)
+        logger.warning("_sanitize: suppressed exception", exc_info=True)
 
     # Try to improve dtypes for object columns (safe — won't break values)
     df = _smart_dtype_inference(df)
@@ -466,7 +466,7 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
                 df[col] = converted.where(converted.notna(), df[col])
                 continue
         except Exception:
-            logger.debug("_smart_dtype_inference: suppressed exception", exc_info=True)
+            logger.warning("_smart_dtype_inference: suppressed exception", exc_info=True)
 
         # Try datetime: a date-like name, or values that are unmistakably dates.
         named = bool(words & _DATE_WORDS)
@@ -481,7 +481,7 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
                 if ok:
                     df[col] = converted.where(converted.notna(), df[col])
             except Exception:
-                logger.debug("_smart_dtype_inference: suppressed exception", exc_info=True)
+                logger.warning("_smart_dtype_inference: suppressed exception", exc_info=True)
 
     return df
 

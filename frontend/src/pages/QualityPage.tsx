@@ -109,7 +109,10 @@ export default function QualityPage() {
       .catch((e) => setError(e.message))
     apiGet<Readiness>(`/api/datasets/${ds}/readiness`)
       .then(setReadiness)
-      .catch(() => setReadiness(null))
+      .catch((e) => {
+        setReadiness(null)
+        setError(`The ML-readiness check could not be computed: ${e instanceof Error ? e.message : String(e)}`)
+      })
   }, [ds])
   useEffect(loadProfile, [loadProfile])
 

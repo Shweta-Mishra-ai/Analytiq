@@ -5,7 +5,7 @@
  */
 import { useEffect, useState, type ReactNode } from 'react'
 import { Database, Lock, User } from 'lucide-react'
-import { apiGet, apiPost, getToken, setToken } from '../api/client'
+import { ApiError, apiGet, apiPost, getToken, setToken } from '../api/client'
 import { useApp } from '../store/app'
 
 type Status = 'checking' | 'open' | 'locked' | 'authed'
@@ -26,8 +26,11 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       try {
         await apiGet('/api/datasets')
         setStatus('authed')
-      } catch {
-        setStatus('locked')
+      } catch (e) {
+        // Only a 401 means the token is no longer valid. A server error
+        // used to send a signed-in user back to the login screen; let the
+        // page show that error instead.
+        setStatus(e instanceof ApiError && e.status === 401 ? 'locked' : 'authed')
       }
     } catch {
       // backend unreachable — let the app render its own errors

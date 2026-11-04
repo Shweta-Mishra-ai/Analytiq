@@ -297,7 +297,7 @@ class DatasetStore:
                         self._caches.setdefault(mkey, {})[key] = (rev, stored[2])
                     return stored[2]
             except Exception:
-                logger.debug("cache_get: suppressed exception", exc_info=True)
+                logger.warning("cache_get: suppressed exception", exc_info=True)
         return None
 
     def cache_set(self, owner: str, ds_id: str, key: str, obj: Any) -> None:
