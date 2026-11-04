@@ -82,7 +82,7 @@ def clean_col(col: str) -> str:
         from app.ai.prompt_builder import translate_column_name
         return translate_column_name(col)
     except Exception:
-        logger.debug("clean_col: suppressed exception", exc_info=True)
+        logger.warning("clean_col: suppressed exception", exc_info=True)
     return " ".join(w.capitalize()
                     for w in col.replace("_", " ").replace("montly", "Monthly").split())
 
@@ -159,7 +159,7 @@ def _build_raw_summary(df: pd.DataFrame, domain: str) -> str:
                 + (" [SKEWED — use median]" if abs(skew) > 0.5 else "")
             )
         except Exception:
-            logger.debug("_build_raw_summary: suppressed exception", exc_info=True)
+            logger.warning("_build_raw_summary: suppressed exception", exc_info=True)
             continue
 
     lines.append("")
@@ -172,7 +172,7 @@ def _build_raw_summary(df: pd.DataFrame, domain: str) -> str:
                 " | ".join([f"{k}: {v*100:.0f}%" for k, v in vc.items()])
             )
         except Exception:
-            logger.debug("_build_raw_summary: suppressed exception", exc_info=True)
+            logger.warning("_build_raw_summary: suppressed exception", exc_info=True)
             continue
 
     # HR-specific attrition

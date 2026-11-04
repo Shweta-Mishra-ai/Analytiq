@@ -246,7 +246,7 @@ def _profile_column(df: pd.DataFrame, col: str) -> ColumnProfile:
                 if std and std > 0:
                     skewness = round(float(pd.Series(arr).skew()), 4)
             except Exception:
-                logger.debug("_profile_column: suppressed exception", exc_info=True)
+                logger.warning("_profile_column: suppressed exception", exc_info=True)
 
             stats = {
                 "mean":   mean,   "median": median,
@@ -277,7 +277,7 @@ def _profile_column(df: pd.DataFrame, col: str) -> ColumnProfile:
                         for k, v in vc.head(20).items()
                     }
         except Exception:
-            logger.debug("_profile_column: suppressed exception", exc_info=True)
+            logger.warning("_profile_column: suppressed exception", exc_info=True)
 
         if missing_pct > 0:
             quality_issues.append("{:.1f}% missing".format(missing_pct))
@@ -296,7 +296,7 @@ def _profile_column(df: pd.DataFrame, col: str) -> ColumnProfile:
                 stats["max_date"] = str(clean_dt.max())
                 stats["date_range_days"] = (clean_dt.max() - clean_dt.min()).days
         except Exception:
-            logger.debug("_profile_column: suppressed exception", exc_info=True)
+            logger.warning("_profile_column: suppressed exception", exc_info=True)
 
     # ── Quality score ──────────────────────────────────────
     score = 100.0
@@ -489,7 +489,7 @@ def profile_dataset(df: pd.DataFrame) -> DatasetProfile:
             df[num_cols_all] = df[num_cols_all].replace(
                 [np.inf, -np.inf], np.nan)
     except Exception:
-        logger.debug("profile_dataset: suppressed exception", exc_info=True)
+        logger.warning("profile_dataset: suppressed exception", exc_info=True)
 
     # ── Dataset-level stats ────────────────────────────────
     numeric_cols     = df.select_dtypes(include="number").columns.tolist()

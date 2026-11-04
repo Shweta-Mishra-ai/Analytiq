@@ -37,6 +37,8 @@ interface HealthSummary {
   risks: string[]
   opportunities: string[]
   actions: string[]
+  /** Set when the findings could not be produced; the score still is. */
+  unavailable?: string
 }
 
 const SEVERITY_TONE: Record<string, string> = {
@@ -63,6 +65,7 @@ export default function ReportsPage() {
   // values are printed as uploaded.
   const [language, setLanguage] = useState<'en' | 'hi'>('en')
   const [health, setHealth] = useState<HealthSummary | null>(null)
+  const [healthError, setHealthError] = useState('')
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const ds = dataset?.dataset_id
@@ -70,9 +73,12 @@ export default function ReportsPage() {
   useEffect(() => {
     if (!ds) return
     setHealth(null)
+    setHealthError('')
+    // A failed preview used to be swallowed, leaving "Computing data
+    // health…" on screen for good.
     apiGet<HealthSummary>(`/api/reports/${ds}/health`)
       .then(setHealth)
-      .catch(() => setHealth(null))
+      .catch((e) => setHealthError(e instanceof Error ? e.message : String(e)))
   }, [ds])
 
   if (!dataset) return <NeedData />
@@ -244,6 +250,12 @@ export default function ReportsPage() {
                   </div>
                 </div>
 
+                {health.unavailable && (
+                  <p className="rounded-lg border border-amber/40 bg-panel2 px-3 py-2.5 text-xs text-amber">
+                    {health.unavailable}
+                  </p>
+                )}
+
                 {health.executive_summary && (
                   <p className="rounded-lg border border-edge bg-panel2 px-3 py-2.5 text-xs leading-relaxed text-ink2">
                     {health.executive_summary}
@@ -288,6 +300,8 @@ export default function ReportsPage() {
                   </ul>
                 )}
               </>
+            ) : healthError ? (
+              <ErrorBox message={`The health preview could not be computed: ${healthError}`} />
             ) : (
               <p className="text-sm text-mute">Computing data health…</p>
             )}

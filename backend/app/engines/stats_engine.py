@@ -282,7 +282,7 @@ def _correlation_analysis(
                 pearson_r, p_val = scipy_stats.pearsonr(x, y)
                 spearman_r, _    = scipy_stats.spearmanr(x, y)
             except Exception:
-                logger.debug("_correlation_analysis: suppressed exception", exc_info=True)
+                logger.warning("_correlation_analysis: suppressed exception", exc_info=True)
                 continue
 
             abs_r = abs(pearson_r)
@@ -292,11 +292,6 @@ def _correlation_analysis(
             direction = "positive" if pearson_r > 0 else "negative"
             significant = p_val < 0.05
 
-            label = "{} {} correlation between '{}' and '{}' (r={:.2f}, p={:.4f})".format(
-                strength.title(), direction, a, b,
-                round(pearson_r, 2), round(p_val, 4)
-            )
-
             insights.append(CorrelationInsight(
                 col_a=a, col_b=b,
                 pearson_r=round(float(pearson_r), 4),
@@ -305,7 +300,7 @@ def _correlation_analysis(
                 is_significant=significant,
                 strength=strength,
                 direction=direction,
-                label=label,
+                label="",
             ))
 
     # re-decide significance on BH-adjusted p across all tested pairs
@@ -315,6 +310,18 @@ def _correlation_analysis(
         for c, q in zip(insights, qvals):
             c.is_significant = bool(q < FDR_Q)
             c.p_value = round(float(q), 6)
+            # Written after the adjustment, so the p it quotes is the one the
+            # significance call was made on; a pair that is not significant
+            # is not described as a correlation at all.
+            if c.is_significant:
+                c.label = ("{} {} correlation between '{}' and '{}' "
+                           "(r={:.2f}, adjusted p={:.4f})").format(
+                    c.strength.title(), c.direction, c.col_a, c.col_b,
+                    c.pearson_r, c.p_value)
+            else:
+                c.label = ("No reliable correlation between '{}' and '{}' "
+                           "(r={:.2f}, adjusted p={:.4f})").format(
+                    c.col_a, c.col_b, c.pearson_r, c.p_value)
 
     return sorted(insights, key=lambda x: abs(x.pearson_r), reverse=True)
 

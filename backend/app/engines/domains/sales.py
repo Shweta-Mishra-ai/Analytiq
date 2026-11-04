@@ -223,7 +223,9 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
 
             # Is the regional difference real, or sampling noise? Kruskal-Wallis
             # across regions (non-parametric — revenue is skewed).
-            sig_txt, significant = "difference not statistically tested", True
+            # Untested is not significant: when the test could not run, the gap
+            # used to be reported as "statistically significant" regardless.
+            sig_txt, significant = "difference not statistically tested", False
             try:
                 from scipy import stats as _sc
                 groups = [g[rev_col].dropna().values

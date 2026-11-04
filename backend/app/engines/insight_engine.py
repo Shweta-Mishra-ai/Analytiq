@@ -9,6 +9,26 @@ logger = logging.getLogger(__name__)
 from app.services.dtypes import text_columns
 
 
+def _totals_differ(df: pd.DataFrame, cat: str, num: str) -> bool:
+    """Whether a group total leads for a reason other than chance: a total
+    is (rows × value per row), so either the row counts must depart from an
+    even split (chi-square) or the values per row must differ between the
+    groups (Kruskal-Wallis)."""
+    from scipy import stats as _sc
+    sub = df[[cat, num]].dropna()
+    counts = sub[cat].value_counts()
+    try:
+        p_counts = float(_sc.chisquare(counts.values).pvalue) if len(counts) >= 2 else 1.0
+    except ValueError:
+        p_counts = 1.0
+    groups = [g[num].values for _, g in sub.groupby(cat) if len(g) >= 3]
+    try:
+        p_vals = float(_sc.kruskal(*groups).pvalue) if len(groups) >= 2 else 1.0
+    except ValueError:
+        p_vals = 1.0
+    return min(p_counts, p_vals) < 0.025       # two tests, Bonferroni
+
+
 def generate_insights(df: pd.DataFrame) -> List[Dict]:
     insights  = []
     from app.engines.domains.base import is_id_column
@@ -59,7 +79,15 @@ def generate_insights(df: pd.DataFrame) -> List[Dict]:
             continue
         change = (second - first) / abs(first) * 100
 
-        if abs(change) > 15:
+        # A 15% swing between halves is ordinary on small or noisy data, so
+        # the halves must also differ by more than chance (Mann-Whitney,
+        # Bonferroni over the columns checked).
+        try:
+            from scipy.stats import mannwhitneyu
+            p_half = float(mannwhitneyu(series.iloc[:mid], series.iloc[mid:]).pvalue)
+        except ValueError:
+            p_half = 1.0
+        if abs(change) > 15 and p_half < 0.05 / max(len(num_cols[:3]), 1):
             direction = "higher" if change > 0 else "lower"
             insights.append({
                 "title": f"'{col}' is {direction} in the later half of the period",
@@ -82,15 +110,28 @@ def generate_insights(df: pd.DataFrame) -> List[Dict]:
                     and top_two.iloc[0] > top_two.iloc[1]):
                 top     = grp.idxmax()
                 pct     = grp.max() / total * 100
-                insights.append({
-                    "title": f"'{top}' has the largest total {num_cols[0]}",
-                    "body":  (f"{pct:.1f}% of the total across {len(grp)} "
-                              f"'{cat_cols[0]}' values."),
-                    "type":  "info",
-                    "icon":  "🏆"
-                })
+                if _totals_differ(df, cat_cols[0], num_cols[0]):
+                    insights.append({
+                        "title": f"'{top}' has the largest total {num_cols[0]}",
+                        "body":  (f"{pct:.1f}% of the total across {len(grp)} "
+                                  f"'{cat_cols[0]}' values."),
+                        "type":  "info",
+                        "icon":  "🏆"
+                    })
+                else:
+                    # A leader by a margin chance would produce is not one.
+                    insights.append({
+                        "title": f"'{num_cols[0]}' is spread about evenly across "
+                                 f"'{cat_cols[0]}'",
+                        "body":  (f"'{top}' has the most ({pct:.1f}% of the total "
+                                  f"across {len(grp)} values), but neither the "
+                                  f"number of rows nor the values per row differ "
+                                  f"between them by more than chance."),
+                        "type":  "info",
+                        "icon":  "📊"
+                    })
         except Exception:
-            logger.debug("generate_insights: suppressed exception", exc_info=True)
+            logger.warning("generate_insights: suppressed exception", exc_info=True)
 
     # ── 4. Strong correlation ─────────────────────────────
     if len(num_cols) >= 2:
@@ -104,7 +145,14 @@ def generate_insights(df: pd.DataFrame) -> List[Dict]:
         if not vals.empty:
             pair = vals.abs().idxmax()
             r    = vals[pair]
-            if abs(r) > 0.7:
+            # |r| > 0.7 happens by chance on a handful of rows; the strongest
+            # of many pairs must also pass a test corrected for all of them.
+            both = df[[pair[0], pair[1]]].dropna()
+            p_r = 1.0
+            if len(both) >= 10:
+                from scipy.stats import pearsonr
+                p_r = float(pearsonr(both[pair[0]], both[pair[1]]).pvalue)
+            if abs(r) > 0.7 and p_r < 0.05 / len(vals):
                 direction = "positively" if r > 0 else "negatively"
                 insights.append({
                     "title": f"Strong correlation: '{pair[0]}' & '{pair[1]}'",

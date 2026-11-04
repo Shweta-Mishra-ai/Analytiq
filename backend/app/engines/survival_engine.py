@@ -340,23 +340,33 @@ def run_survival_analysis(
                         sub[duration_col].values.astype(float),
                         sub["_event"].values.astype(int),
                     )
-                    is_sig = p < 0.05
                     curve_a = next(c for c in group_curves if c.label == str(baseline_label))
                     curve_b = next(c for c in group_curves if c.label == str(label))
-                    verdict = (
-                        f"'{label}' vs '{baseline_label}': survival curves differ "
-                        f"significantly (p={p:.4f})." if is_sig else
-                        f"'{label}' vs '{baseline_label}': no significant "
-                        f"difference in survival (p={p:.4f})."
-                    )
                     pairwise.append(GroupComparisonResult(
                         group_a=str(baseline_label), group_b=str(label),
                         curve_a=curve_a, curve_b=curve_b,
-                        logrank_stat=round(chi2, 4), p_value=round(p, 6),
-                        is_significant=is_sig, verdict=verdict,
+                        logrank_stat=round(chi2, 4), p_value=float(p),
+                        is_significant=False, verdict="",
                     ))
                 except Exception:
                     logger.warning("Log-rank test failed for group '%s'", label, exc_info=True)
+
+            # Every group is tested against the largest, so with many groups
+            # some p<0.05 turn up by chance alone. The decision and the p
+            # shown are adjusted across the comparisons (Benjamini-Hochberg).
+            if pairwise:
+                from app.services.stat_guards import bh_adjust
+                adjusted = len(pairwise) > 1
+                for c, q in zip(pairwise, bh_adjust([c.p_value for c in pairwise])):
+                    c.p_value = round(float(q), 6)
+                    c.is_significant = bool(q < 0.05)
+                    ptxt = ("adjusted p={:.4f}" if adjusted else "p={:.4f}").format(q)
+                    c.verdict = (
+                        f"'{c.group_b}' vs '{c.group_a}': survival curves differ "
+                        f"significantly ({ptxt})." if c.is_significant else
+                        f"'{c.group_b}' vs '{c.group_a}': no significant "
+                        f"difference in survival ({ptxt})."
+                    )
 
     # ── Narrative summary ────────────────────────────────────────────────────
     event_rate = overall_curve.n_events / overall_curve.n_total * 100
@@ -380,8 +390,8 @@ def run_survival_analysis(
         if n_sig > 0:
             parts.append(
                 f"{n_sig} of {len(pairwise)} group comparison(s) show a "
-                f"statistically significant difference in survival — some "
-                f"groups are retained meaningfully longer than others."
+                f"statistically significant difference in survival: the event "
+                f"comes sooner in some groups than in others."
             )
         else:
             parts.append(

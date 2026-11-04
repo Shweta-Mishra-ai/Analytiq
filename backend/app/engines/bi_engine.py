@@ -268,7 +268,7 @@ def analyze_root_cause(
                     "dtype":     "numeric",
                 })
         except Exception:
-            logger.debug("analyze_root_cause: suppressed exception", exc_info=True)
+            logger.warning("analyze_root_cause: suppressed exception", exc_info=True)
             continue
 
     # Categorical features — compare distributions
@@ -328,7 +328,7 @@ def analyze_root_cause(
                 "dtype":       "categorical",
             })
         except Exception:
-            logger.debug("analyze_root_cause: suppressed exception", exc_info=True)
+            logger.warning("analyze_root_cause: suppressed exception", exc_info=True)
             continue
 
     # Multiple-comparison correction across the whole driver scan.
@@ -582,43 +582,55 @@ def analyze_cohort(
         p_val, test_used = 1.0, "N/A"
 
     is_sig = p_val < 0.05
-
-    # Highest and lowest, not best and worst: for cost or absence the
-    # highest group is the worse one, and with no real difference neither
-    # is either.
-    from app.engines.chart_exporter import fmt
-    p_txt = "<0.001" if p_val < 0.001 else "{:.2f}".format(p_val)
-    if is_sig:
-        interp = ("Average '{}' is highest in '{}' ({}) and lowest in '{}' ({}) — a {:.0f}% "
-                  "gap across {} groups that is larger than chance (p={}).".format(
-                      metric_col, best_cohort, fmt(cohorts[0]["mean"]), worst_cohort,
-                      fmt(cohorts[-1]["mean"]), gap_pct, len(valid), p_txt))
-    else:
-        interp = ("Average '{}' ranges from {} in '{}' to {} in '{}' across {} groups, a "
-                  "{:.0f}% gap that chance alone could produce (p={}).".format(
-                      metric_col, fmt(cohorts[-1]["mean"]), worst_cohort,
-                      fmt(cohorts[0]["mean"]), best_cohort, len(valid), gap_pct, p_txt))
-
-    recs = []
-    if is_sig:
-        recs.append(
-            "Compare '{}' with '{}' on what else differs between them before deciding "
-            "which end is the one to copy.".format(best_cohort, worst_cohort))
-    else:
-        recs.append(
-            "This data cannot tell the '{}' groups apart on '{}' — not the same as "
-            "showing they are alike, but no ranking of them should be relied "
-            "on.".format(cohort_col, metric_col))
-
-    return CohortResult(
+    result = CohortResult(
         cohort_col=cohort_col, metric_col=metric_col,
         cohorts=cohorts[:15],
         best_cohort=best_cohort, worst_cohort=worst_cohort,
         gap=round(gap, 4), gap_pct=round(gap_pct, 2),
         is_significant=is_sig, p_value=round(float(p_val), 6),
-        test_used=test_used, interpretation=interp,
-        recommendations=recs,
+        test_used=test_used, interpretation="",
+        recommendations=[],
     )
+    _describe_cohort(result, len(valid))
+    return result
+
+
+def _describe_cohort(r: CohortResult, n_groups: int, adjusted: bool = False) -> None:
+    """Write the cohort's sentence and advice from its (possibly adjusted)
+    significance, so the words and the p they quote always agree.
+
+    Highest and lowest, not best and worst: for cost or absence the highest
+    group is the worse one, and with no real difference neither is either."""
+    from app.engines.chart_exporter import fmt
+    if not r.cohorts:
+        return
+    hi, lo = r.cohorts[0], r.cohorts[-1]
+    p_txt = "<0.001" if r.p_value < 0.001 else "{:.2f}".format(r.p_value)
+    if r.is_significant:
+        tpl = ("Average '{}' is highest in '{}' ({}) and lowest in '{}' ({}) — a {:.0f}% "
+               "gap across {} groups that is larger than chance (adjusted p={})."
+               if adjusted else
+               "Average '{}' is highest in '{}' ({}) and lowest in '{}' ({}) — a {:.0f}% "
+               "gap across {} groups that is larger than chance (p={}).")
+        r.interpretation = tpl.format(
+            r.metric_col, r.best_cohort, fmt(hi["mean"]), r.worst_cohort,
+            fmt(lo["mean"]), r.gap_pct, n_groups, p_txt)
+        r.recommendations = [
+            "Compare '{}' with '{}' on what else differs between them before deciding "
+            "which end is the one to copy.".format(r.best_cohort, r.worst_cohort)]
+    else:
+        tpl = ("Average '{}' ranges from {} in '{}' to {} in '{}' across {} groups, a "
+               "{:.0f}% gap that chance alone could produce (adjusted p={})."
+               if adjusted else
+               "Average '{}' ranges from {} in '{}' to {} in '{}' across {} groups, a "
+               "{:.0f}% gap that chance alone could produce (p={}).")
+        r.interpretation = tpl.format(
+            r.metric_col, fmt(lo["mean"]), r.worst_cohort,
+            fmt(hi["mean"]), r.best_cohort, n_groups, r.gap_pct, p_txt)
+        r.recommendations = [
+            "This data cannot tell the '{}' groups apart on '{}' — not the same as "
+            "showing they are alike, but no ranking of them should be relied "
+            "on.".format(r.cohort_col, r.metric_col)]
 
 
 # ══════════════════════════════════════════════════════════
@@ -900,7 +912,7 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
         try:
             report.benchmarks.append(analyze_benchmark(df, col))
         except Exception:
-            logger.debug("run_bi: suppressed exception", exc_info=True)
+            logger.warning("run_bi: suppressed exception", exc_info=True)
             continue
 
     # 2. Root cause — metrics with a known good direction first: "what
@@ -912,7 +924,7 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
             report.root_causes.append(
                 analyze_root_cause(df, col, threshold_pct=25))
         except Exception:
-            logger.debug("run_bi: suppressed exception", exc_info=True)
+            logger.warning("run_bi: suppressed exception", exc_info=True)
             continue
 
     # 3. Cohort analysis — top cat × top numeric
@@ -921,8 +933,18 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
             try:
                 report.cohorts.append(analyze_cohort(df, cat, num))
             except Exception:
-                logger.debug("run_bi: suppressed exception", exc_info=True)
+                logger.warning("run_bi: suppressed exception", exc_info=True)
                 continue
+    # Up to four comparisons are a family: each was judged at p<0.05 on its
+    # own, so on random data one in five reports had a "larger than chance"
+    # gap. Re-decided on Benjamini-Hochberg adjusted p.
+    tested = [c for c in report.cohorts if c.test_used != "N/A" and c.cohorts]
+    if len(tested) > 1:
+        from app.services.stat_guards import bh_adjust
+        for c, q in zip(tested, bh_adjust([c.p_value for c in tested])):
+            c.p_value = round(float(q), 6)
+            c.is_significant = bool(q < 0.05)
+            _describe_cohort(c, len(c.cohorts), adjusted=True)
 
     # 4. Pareto — top cat × top numeric
     # Shares of a total only exist for additive, non-negative measures and
@@ -941,7 +963,7 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
             try:
                 report.pareto.append(analyze_pareto(df, cat, num, "sum"))
             except Exception:
-                logger.debug("run_bi: suppressed exception", exc_info=True)
+                logger.warning("run_bi: suppressed exception", exc_info=True)
                 continue
 
     # 5. Segment health
@@ -950,7 +972,7 @@ def run_bi(df: pd.DataFrame, max_rows: int = 50_000) -> BIReport:
             report.segments = analyze_segment_health(
                 df, cat_cols[0], num_cols[:4])
         except Exception:
-            logger.debug("run_bi: suppressed exception", exc_info=True)
+            logger.warning("run_bi: suppressed exception", exc_info=True)
 
     # 6. Key insights + brief
     report.key_insights, report.executive_brief = _generate_key_insights(report, df)

@@ -140,7 +140,8 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                      .format(**seg)),
             cause="A gap this size is unlikely to be chance. What causes it is not "
                   "in the data.",
-            evidence=("Kruskal-Wallis H={h:.1f}, {ptxt}, {k} groups, n={n:,}. "
+            evidence=("Kruskal-Wallis H={h:.1f}, {ptxt} after adjusting for {m} tests, "
+                      "{k} groups, n={n:,}. "
                       "Highest: '{hi_seg}' (median {hi_txt}) | Lowest: '{lo_seg}' "
                       "(median {lo_txt}).".format(**seg)),
             action=("Find out what separates '{hi_seg}' from '{lo_seg}', and check "
@@ -217,15 +218,22 @@ def _is_obvious_segment_pair(cat: str, num: str) -> bool:
 
 def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
     """
-    Find the categorical × numeric pair with the strongest, statistically
-    significant group difference (Kruskal-Wallis, p<0.01). Returns a dict of
-    display fields, or None when nothing defensible exists. Skips mechanically
-    obvious pairs (age-by-seniority) so the report never headlines a truism.
+    Find the categorical × numeric pair with the strongest group difference
+    that survives a correction for the number of pairs tested. Returns a
+    dict of display fields, or None when nothing defensible exists. Skips
+    mechanically obvious pairs (age-by-seniority) so the report never
+    headlines a truism.
+
+    Up to 30 pairs are tested. Taking the best of 30 raw p-values at 0.01
+    found a "significant" segment in about a quarter of pure-noise datasets
+    and made it the report's headline; the p-values are now adjusted
+    (Benjamini-Hochberg) across every pair that was tested.
     """
     from scipy import stats as scipy_stats
+    from app.services.stat_guards import bh_adjust
     cat_cols = [c for c in df.select_dtypes(include=["object", "string"]).columns
                 if 2 <= df[c].nunique(dropna=True) <= 12]
-    best = None
+    tested = []
     for cat in cat_cols[:5]:
         for num in num_cols[:6]:
             if _is_obvious_segment_pair(cat, num):
@@ -238,40 +246,47 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
                 if len(groups) < 2:
                     continue
                 h, p = scipy_stats.kruskal(*groups)
-                if np.isnan(h) or p >= 0.01:
+                if np.isnan(h):
                     continue
-                med = sub.groupby(cat)[num].median().sort_values()
-                lo, hi = float(med.iloc[0]), float(med.iloc[-1])
-                if hi == lo:
-                    continue
-                ratio = abs(hi / lo) if lo != 0 else float("inf")
-
-                # Significance alone is not a finding. On a few hundred
-                # rows Kruskal-Wallis returns p<0.001 for a 6% median
-                # difference, and the report then says one segment
-                # "underperforms" over a gap nobody would act on — often
-                # produced by a handful of outliers in the other group.
-                # The effect has to be large enough to matter as well as
-                # unlikely enough to be real.
-                spread = float(sub[num].std())
-                if spread <= 0:
-                    continue
-                standardised = abs(hi - lo) / spread
-                if ratio < MIN_SEGMENT_RATIO and standardised < MIN_SEGMENT_EFFECT:
-                    continue
-                score = float(h)
-                if best is None or score > best["h"]:
-                    best = {
-                        "cat": cat, "num": num, "h": float(h),
-                        "ptxt": "p<0.001" if p < 0.001 else "p={:.3f}".format(p),
-                        "k": len(groups), "n": len(sub),
-                        "lo_seg": str(med.index[0])[:30], "hi_seg": str(med.index[-1])[:30],
-                        "lo": lo, "hi": hi,
-                        "ratio": min(ratio, 999.0),
-                    }
+                tested.append((cat, num, sub, len(groups), float(h), float(p)))
             except Exception:
                 logger.warning("segment difference test failed (%s × %s)",
                                cat, num, exc_info=True)
+    if not tested:
+        return None
+    qvals = bh_adjust([t[5] for t in tested])
+    best = None
+    for (cat, num, sub, k, h, _p), q in zip(tested, qvals):
+        if q >= 0.01:
+            continue
+        med = sub.groupby(cat)[num].median().sort_values()
+        lo, hi = float(med.iloc[0]), float(med.iloc[-1])
+        if hi == lo:
+            continue
+        ratio = abs(hi / lo) if lo != 0 else float("inf")
+
+        # Significance alone is not a finding. On a few hundred rows
+        # Kruskal-Wallis returns p<0.001 for a 6% median difference, and
+        # the report then says one segment "underperforms" over a gap nobody
+        # would act on — often produced by a handful of outliers in the
+        # other group. The effect has to be large enough to matter as well
+        # as unlikely enough to be real.
+        spread = float(sub[num].std())
+        if spread <= 0:
+            continue
+        standardised = abs(hi - lo) / spread
+        if ratio < MIN_SEGMENT_RATIO and standardised < MIN_SEGMENT_EFFECT:
+            continue
+        if best is None or h > best["h"]:
+            best = {
+                "cat": cat, "num": num, "h": h,
+                "ptxt": "p<0.001" if q < 0.001 else "p={:.3f}".format(q),
+                "m": len(tested),
+                "k": k, "n": len(sub),
+                "lo_seg": str(med.index[0])[:30], "hi_seg": str(med.index[-1])[:30],
+                "lo": lo, "hi": hi,
+                "ratio": min(ratio, 999.0),
+            }
     return best
 
 

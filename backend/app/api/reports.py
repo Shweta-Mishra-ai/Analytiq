@@ -225,17 +225,30 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
     from app.engines.pdf_builder import build_pdf
     from app.engines.chart_exporter import build_report_charts
 
+    # Every section that could not be produced is named in the report
+    # itself. These steps used to fail quietly (some logged at debug level)
+    # and the PDF simply came out shorter, with nothing to tell the reader
+    # that the analysis they asked for was missing.
+    omitted: list = []
+
+    def _failed(step: str, sentence: str):
+        logger.error("generate_pdf: %s failed", step, exc_info=True)
+        omitted.append(sentence)
+
     # 1. profile
     try:
         profile = profile_dataset(df)
     except Exception:
         profile = None
+        _failed("profile", "The column profile could not be computed.")
 
     # 2. domain
     try:
         domain_name, _ = detect_domain(df)
     except Exception:
         domain_name = "general"
+        _failed("domain", "The subject of the data could not be recognised, so only "
+                          "general analysis is included.")
 
     # 3. story
     story_obj = None
@@ -247,8 +260,8 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
         risks = story_obj.business_risks
         opportunities = story_obj.opportunities
         actions = story_obj.recommended_actions
-    except Exception as e:
-        logger.warning(f"story_engine failed: {e}")
+    except Exception:
+        _failed("story", "The summary, risks and next steps could not be produced.")
 
     # 4. structured insights
     top_insights = []
@@ -259,8 +272,8 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
             attrition=getattr(story_obj, "attrition", None),
             avg_salary_k=float(req.avg_salary_k),
         )
-    except Exception as e:
-        logger.warning(f"insights_builder failed: {e}")
+    except Exception:
+        _failed("insights", "The detailed findings could not be produced.")
 
     # 5. stats
     stats_report = None
@@ -272,7 +285,7 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
                 stats_report = analyze(df)
                 store.cache_set(owner, ds_id, "stats", stats_report)
             except Exception:
-                logger.debug("generate_pdf: suppressed exception", exc_info=True)
+                _failed("stats", "The statistical analysis could not be computed.")
 
     # 6. BI
     bi_report = None
@@ -284,10 +297,13 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
                 bi_report = run_bi(df)
                 store.cache_set(owner, ds_id, "bi", bi_report)
             except Exception:
-                logger.debug("generate_pdf: suppressed exception", exc_info=True)
+                _failed("bi", "The group comparisons and drivers could not be computed.")
 
     # 7. ML (only if previously trained)
     ml_report = store.cache_get(owner, ds_id, "ml_last") if req.include_ml else None
+    if req.include_ml and getattr(ml_report, "best_model", None) is None:
+        omitted.append("No prediction model has been trained on this data, so there is "
+                       "no model section.")
 
     # 8. charts, each captioned from the numbers it plots. The text used to
     # be written separately, by guessing the chart's columns back from its
@@ -299,7 +315,7 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
         chart_data = [(c.title, c.png, c.caption) for c in build_report_charts(
             df, theme_name, domain_name, max_charts=req.max_charts)]
     except Exception:
-        logger.warning("chart export failed", exc_info=True)
+        _failed("charts", "The charts could not be drawn.")
 
     # 9. build PDF
     pdf_config = {
@@ -315,6 +331,7 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
         "prepared_by": req.prepared_by.strip(),
         "source_table": table_name_from_filename(
             getattr(store.get_meta(owner, ds_id), "filename", "")),
+        "omitted": omitted,
     }
     try:
         pdf_bytes = build_pdf(
@@ -355,13 +372,18 @@ def health_summary(ds_id: str, owner: str = Depends(current_owner)):
     except Exception:
         logger.warning("detect_domain failed for health summary", exc_info=True)
         domain_name = "general"
+    unavailable = ""
     try:
         payload = build_report_payload(df, domain_name)
     except Exception:
         logger.exception("health report payload failed")
         payload = {"executive_summary": "", "insights": [], "key_findings": [],
                    "risks": [], "opportunities": [], "actions": []}
+        # Said, not implied: empty lists alone read as "nothing found".
+        unavailable = ("The findings could not be produced for this data, so the "
+                       "preview shows the quality score only.")
     return {"domain": domain_name, "health": to_jsonable(health),
+            "unavailable": unavailable,
             **{k: to_jsonable(v) for k, v in payload.items()}}
 
 

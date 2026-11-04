@@ -516,6 +516,28 @@ def _basis_box(story, s, T, config):
         ("LINEBEFORE",    (0,0), (0,-1), 2.5, _c(T["accent"])),
     ]))
     story.append(disc)
+    _omitted_box(story, s, T, config.get("omitted") or [])
+
+
+def _omitted_box(story, s, T, omitted):
+    """Name every part of the analysis that could not be produced, where the
+    reader looks first. A report that silently comes out shorter reads as
+    "nothing to say" when the truth is "this part failed"."""
+    if not omitted:
+        return
+    story.append(Spacer(1, 4*mm))
+    box = Table([[Paragraph("<b>{}</b><br/>".format(_clean(tr("Not in this report")))
+                            + "<br/>".join("• " + _clean(tr(x)) for x in omitted),
+                            s["body"])]], colWidths=["100%"])
+    box.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0), (-1,-1), _c(T["bg_light"])),
+        ("TOPPADDING",    (0,0), (-1,-1), 10),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 10),
+        ("LEFTPADDING",   (0,0), (-1,-1), 12),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 12),
+        ("LINEBEFORE",    (0,0), (0,-1), 2.5, _c(T["warning"])),
+    ]))
+    story.append(box)
 
 
 def _bind_headings(story: list) -> list:

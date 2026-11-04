@@ -102,7 +102,10 @@ export default function DeepAnalysisPage() {
         setDomain(r.domain)
         setIndustry(r.benchmarks)
       })
-      .catch(() => setIndustry([]))
+      .catch((e) => {
+        setIndustry([])
+        setError(`Industry reference ranges could not be loaded: ${e instanceof Error ? e.message : String(e)}`)
+      })
 
     // The outcome is the user's choice among the two-value columns; the
     // drivers request follows the selection (effect below).
@@ -127,7 +130,10 @@ export default function DeepAnalysisPage() {
         setDriverCol(r.numeric_columns[0] ?? '')
         setTargetCol(r.numeric_columns[1] ?? r.numeric_columns[0] ?? '')
       })
-      .catch(() => setNumericCols([]))
+      .catch((e) => {
+        setNumericCols([])
+        setError(`The scenario columns could not be loaded: ${e instanceof Error ? e.message : String(e)}`)
+      })
   }, [ds])
 
   useEffect(() => {

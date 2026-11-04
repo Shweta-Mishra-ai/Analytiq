@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Brain, FlaskConical } from 'lucide-react'
-import { apiGet, apiPost } from '../api/client'
+import { ApiError, apiGet, apiPost } from '../api/client'
 import { useApp } from '../store/app'
 import { Btn, ErrorBox, NeedData, PageHeader, Panel, Spinner } from '../components/Ui'
 
@@ -242,7 +242,11 @@ export default function MlPage() {
         setReport(r)
         setSelected(r.target_col)
       })
-      .catch(() => {})
+      // 404 means no model has been trained yet; anything else is a real
+      // failure and is shown, not swallowed.
+      .catch((e) => {
+        if (!(e instanceof ApiError && e.status === 404)) setError(e.message)
+      })
   }, [ds])
 
   if (!dataset) return <NeedData />

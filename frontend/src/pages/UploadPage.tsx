@@ -26,7 +26,7 @@ export default function UploadPage() {
   const refresh = useCallback(() => {
     apiGet<{ datasets: DatasetMeta[] }>('/api/datasets')
       .then((r) => setRecent(r.datasets))
-      .catch(() => {})
+      .catch((e) => setError(`Your saved datasets could not be listed: ${e instanceof Error ? e.message : String(e)}`))
   }, [])
   useEffect(refresh, [refresh])
 
@@ -34,7 +34,10 @@ export default function UploadPage() {
     if (dataset)
       apiGet<TableData>(`/api/datasets/${dataset.dataset_id}/preview?rows=50`)
         .then(setPreview)
-        .catch(() => setPreview(null))
+        .catch((e) => {
+          setPreview(null)
+          setError(`The preview could not be loaded: ${e instanceof Error ? e.message : String(e)}`)
+        })
   }, [dataset])
 
   const doUpload = async (file: File) => {
