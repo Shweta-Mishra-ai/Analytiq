@@ -151,6 +151,7 @@ The application remains fully functional locally without keys (AI modules degrad
 | `CLEANUP_INTERVAL_HOURS` | you choose | How often the expiry sweep runs in the background. Default `6`. A sweep also runs once at startup, and can be triggered manually via `POST /api/admin/cleanup`. |
 | `APP_SECRET` | you choose | Signs client login tokens. Optional — auto-generated and persisted to `DATA_DIR/.secret_key` if unset. Set explicitly if you run multiple backend instances behind a load balancer, so they all validate the same tokens. |
 | `TOKEN_TTL_DAYS` | you choose | How long a client's login session lasts before they must sign in again. Default `30`. |
+| `APP_PUBLIC_URL` | your deployment | Public base URL (e.g. `https://analytiq.example.com`) used in report download links returned by the remote MCP endpoint. Optional; the request's host is used if unset. |
 | `LLM_PRIVACY_MODE` | you choose | `1` forbids sending client data to any cloud model: narratives, AI chat and RAG answers use only the local model (`LOCAL_LLM_URL` / `LOCAL_LLM_MODEL`), and RAG indexes documents with the local embedder. Chat answers 503 if no local model is configured. |
 
 ### 🎬 Video-to-dataset extraction
@@ -196,6 +197,13 @@ It makes one minimal real call to each provider and tells you plainly
 whether each key works, and the actual error if not.
 
 
+
+### 🤖 Using Analytiq from Claude (MCP)
+Analytiq's analysis is available to Claude as tools: locally for Claude Desktop and Claude Code, and remotely at `/mcp/` for claude.ai and teams. Claude receives computed summaries instead of reading the data, which is far cheaper and keeps every figure tested. Setup: [docs/MCP.md](docs/MCP.md).
+
+```bash
+claude mcp add --transport stdio --env PYTHONPATH=$(pwd)/backend analytiq -- python -m app.mcp_server
+```
 
 ---
 

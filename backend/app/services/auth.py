@@ -49,6 +49,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if (not path.startswith("/api")
                 or path in PUBLIC_PATHS
+                # Signed, expiring report links (app/mcp_server.py); the
+                # route verifies the signature itself.
+                or path.startswith("/api/mcp-reports/")
                 or request.method == "OPTIONS"):
             return await call_next(request)
 
