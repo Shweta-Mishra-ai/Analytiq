@@ -155,3 +155,16 @@ def test_a_column_name_that_is_also_a_value_is_left_alone():
     with i18n.use_language("hi", **i18n.data_context(df)):
         assert i18n.column_name("salary") == "salary"       # also a value
         assert i18n.column_name("team") == "टीम"
+
+
+def test_the_hindi_contents_page_lists_the_sections(client):
+    """Devanagari headings are set in an "h2-shaped" copy of the style;
+    the contents page matched only "h2" and printed ReportLab's
+    placeholder (a single entry on page 0) instead of the sections."""
+    ds = _upload(client, _hindi_df())
+    r = client.post(f"/api/reports/{ds}/pdf", json={"language": "hi"})
+    assert r.status_code == 200, r.text
+    import pypdf
+    contents = pypdf.PdfReader(io.BytesIO(r.content)).pages[1].extract_text()
+    pages = re.findall(r"(\d+)\s*$", contents, flags=re.M)
+    assert len([p for p in pages if int(p) > 1]) >= 4, contents

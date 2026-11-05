@@ -596,7 +596,11 @@ class _ReportDoc(BaseDocTemplate):
     """Registers every section heading on the contents page."""
 
     def afterFlowable(self, flowable):
-        if isinstance(flowable, Paragraph) and flowable.style.name == "h2":
+        # A heading with Devanagari in it is set in a copy of the style
+        # named "h2-shaped" (pdf_fonts). Matching only "h2" left a Hindi
+        # report's contents page empty but for ReportLab's placeholder.
+        if isinstance(flowable, Paragraph) and \
+                flowable.style.name.split("-shaped")[0] == "h2":
             self.notify("TOCEntry", (0, flowable.getPlainText(), self.page))
 
 
