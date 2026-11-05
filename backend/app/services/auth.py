@@ -139,12 +139,20 @@ class LoginThrottle:
                 return 0
             return max(1, int(self.window_sec - (now - recent[0])))
 
+    _MAX_KEYS = 10_000
+
     def record_failure(self, username: str) -> None:
         key = username.strip().lower()
         now = time.time()
         with self._lock:
             self._recent(key, now)
             self._failures.setdefault(key, []).append(now)
+            # A key is pruned only when that username is tried again, so one
+            # failed attempt each on a stream of made-up usernames grew this
+            # without bound. Drop every expired entry once it gets large.
+            if len(self._failures) > self._MAX_KEYS:
+                for k in list(self._failures):
+                    self._recent(k, now)
 
     def record_success(self, username: str) -> None:
         with self._lock:

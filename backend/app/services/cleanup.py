@@ -41,6 +41,14 @@ def sweep_expired(ttl_days: int | None = None) -> CleanupResult:
     cutoff = time.time() - ttl * 86400
     result = CleanupResult()
 
+    try:
+        # Expired MCP download files go whatever the dataset TTL is: their
+        # links stop working after an hour.
+        from app.mcp_server import sweep_reports
+        sweep_reports()
+    except Exception as e:  # the MCP package is optional
+        logger.debug("report sweep skipped: %s", e)
+
     if ttl <= 0:
         return result  # 0 or negative disables expiry entirely
 
