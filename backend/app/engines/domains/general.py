@@ -284,6 +284,11 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
                 groups = [g[num].values for _, g in sub.groupby(cat) if len(g) >= 15]
                 if len(groups) < 2:
                     continue
+                # A value fixed for each group (a rep's quota, a region's
+                # tax rate) is an attribute of the group, not an outcome
+                # that differs between them.
+                if all(np.unique(g).size == 1 for g in groups):
+                    continue
                 h, p = scipy_stats.kruskal(*groups)
                 if np.isnan(h):
                     continue

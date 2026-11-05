@@ -29,6 +29,7 @@ from app.engines.domains.hr        import _insights_hr, _run_attrition
 from app.engines.domains.ecommerce import _insights_ecommerce
 from app.engines.domains.sales     import _insights_sales
 from app.engines.domains.finance   import _insights_finance
+from app.engines.domains.marketing import _insights_marketing
 from app.engines.domains.general   import _insights_general
 
 logger = logging.getLogger(__name__)
@@ -327,6 +328,8 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
         raw = _insights_sales(df, all_stats, corrs)
     elif domain == "finance":
         raw = _insights_finance(df, all_stats, corrs)
+    elif domain == "marketing":
+        raw = _insights_marketing(df, all_stats, corrs)
     else:
         raw = _insights_general(df, all_stats, corrs)
 
