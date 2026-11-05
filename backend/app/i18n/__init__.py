@@ -166,6 +166,7 @@ class _Template:
         self.english = english
         self.target = target
         parts, names, translate, pos = [], [], set(), 0
+        sentence = len(_PLACEHOLDER.split(english, maxsplit=1)[0]) >= 3
         for m in _PLACEHOLDER.finditer(english):
             parts.append(re.escape(english[pos:m.start()]))
             name = m.group(1)
@@ -177,7 +178,14 @@ class _Template:
             # A value never runs on into the next sentence: a template
             # ending in a placeholder would otherwise swallow the rest
             # of a paragraph and pass it through untranslated.
-            parts.append(f"(?P<{name}>(?:(?![.!?।]\\s+\\S).)+?)")
+            # A plain value is one figure or name, so it never spans the
+            # list separator either: "Spend {v1}" took a whole " · " list
+            # and left every item after the first in English. Only a
+            # translated part ({vN:t}) of a sentence template may hold a
+            # list; in an item template ("{v1:t}: {v2} deals, {v3}") it
+            # swallowed the sentence's own opening and the items before.
+            guard = "" if m.group(2) and sentence else "(?!\\s·\\s)"
+            parts.append(f"(?P<{name}>(?:(?![.!?।]\\s+\\S){guard}.)+?)")
             pos = m.end()
         parts.append(re.escape(english[pos:]))
         self.regex = re.compile("".join(parts), re.S)
@@ -220,10 +228,14 @@ class _Catalog:
             self.months.append((re.compile(r"\b%s\b" % re.escape(name)), target))
 
     def match(self, text: str) -> Optional[Tuple[_Template, Dict[str, str]]]:
+        """The matching template with the most fixed wording; on a tie, one
+        that starts with words (a sentence) over one starting with a
+        placeholder (a list item)."""
         best = None
         for tpl in self.by_key.get(text[:3], []) + self.wild:
             m = tpl.regex.fullmatch(text)
-            if m and (best is None or tpl.literal > best[0].literal):
+            if m and (best is None or (tpl.literal, bool(tpl.key))
+                      > (best[0].literal, bool(best[0].key))):
                 best = (tpl, m.groupdict())
         return best
 
@@ -334,7 +346,7 @@ def _translate(text: str, cat: _Catalog) -> str:
         # Engines join sentences; translate them one at a time.
         parts = _SENTENCE.split(core)
         if len(parts) > 1:
-            done = [_core(p, cat) for p in parts]
+            parts, done = _sentence_runs(parts, cat)
             if all(d is not None for d in done):
                 return lead + " ".join(done) + tail
             for p, d in zip(parts, done):
@@ -345,6 +357,28 @@ def _translate(text: str, cat: _Catalog) -> str:
         _miss(core)
         return text
     return lead + out + tail
+
+
+_MAX_RUN = 4
+
+
+def _sentence_runs(parts: List[str], cat: _Catalog):
+    """Translate split sentences, letting a template that spans several
+    sentences ("{v1} reps with >=3 records. Top 20% of reps generate …")
+    match them together: one by one, none of them matched."""
+    groups, done, i = [], [], 0
+    while i < len(parts):
+        for j in range(min(len(parts), i + _MAX_RUN), i, -1):
+            text = " ".join(parts[i:j])
+            out = _core(text, cat) if j - i > 1 and cat.match(_norm(text)) else None
+            if out is not None or j == i + 1:
+                if out is None:
+                    out = _core(text, cat)
+                groups.append(text)
+                done.append(out)
+                i = j
+                break
+    return groups, done
 
 
 def _core(text: str, cat: _Catalog) -> Optional[str]:
@@ -360,11 +394,18 @@ def _core(text: str, cat: _Catalog) -> Optional[str]:
         return _data_value(n)             # a list of the data's own names
     if n in cat.exact:
         return cat.exact[n]
-    if _ITEMS.search(n):
+    # A sentence template with real wording of its own ("Flags: {v1:t}.")
+    # comes before splitting on the list separator: split first, the
+    # sentence's own opening was matched as a list item by a short template
+    # and came out scrambled.
+    hit = cat.match(n)
+    if _ITEMS.search(n) and not (hit and hit[0].key) and len(_SENTENCE.split(n)) == 1:
+        # Only a template that starts with its own words (a sentence) beats
+        # list splitting; one starting with a placeholder ("{v1} {v2} on
+        # {v3}") is an item template and would swallow the whole list.
         listed = _items(n, cat)
         if listed is not None:
             return listed
-    hit = cat.match(n)
     if hit is None:
         return None
     tpl, vals = hit
@@ -421,7 +462,9 @@ def _items(text: str, cat: _Catalog) -> Optional[str]:
             t = _data_value(piece)
         changed |= t != piece
         out.append(t)
-    return "".join(out) if changed else None
+    # A list of the data's own names and figures needs no translation.
+    return "".join(out) if changed or all(
+        _only_data(p) for i, p in enumerate(pieces) if not i % 2 and p) else None
 
 
 _DATA_WORDS: Dict[frozenset, frozenset] = {}
