@@ -144,6 +144,7 @@ The application remains fully functional locally without keys (AI modules degrad
 
 | Environment Variable | Source | Functionality |
 |---|---|---|
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) | Claude answers AI Chat, writes report narratives and answers knowledge-base questions, tried before the other providers (which remain fallbacks). `CLAUDE_MODEL` defaults to `claude-opus-5-5`. Paid per use; refused in `LLM_PRIVACY_MODE` like every cloud model. |
 | `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) | Powering the AI Chat copilot and chart generation narratives |
 | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com) | Powering image/video analysis, RAG indexing, and executive summaries |
 | `APP_ADMIN_KEY` | you choose | Master key for account management (`/api/admin/*`). Unset + zero accounts created = open/no-auth (local dev only). `APP_PASSWORD` also works as a fallback name. |

@@ -13,6 +13,11 @@ class AppConfig(BaseSettings):
     # ── LLM providers ────────────────────────────────────
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
+    # Anthropic Claude: tried first for chat, narratives and knowledge-base
+    # answers when the key is set.
+    anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    claude_model: str = Field(default="claude-opus-5-5", alias="CLAUDE_MODEL")
+    claude_timeout_sec: int = Field(default=90, alias="CLAUDE_TIMEOUT")
     llm_model: str = "llama-3.3-70b-versatile"
     # Both of these were already-deprecated/shut-down models as of this
     # update — gemini-2.0-flash retired June 1, 2026, text-embedding-004

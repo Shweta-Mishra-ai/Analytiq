@@ -141,6 +141,8 @@ async def health():
         "version": config.app_version,
         "auth_required": not _open_mode(),
         "groq_configured": bool(config.groq_api_key),
+        "claude_configured": bool(config.anthropic_api_key),
+        "claude_model": config.claude_model if config.anthropic_api_key else None,
         "gemini_configured": bool(config.gemini_api_key),
         # What will actually happen to a narrative request, so a client
         # running in privacy mode can confirm it from outside the app.
