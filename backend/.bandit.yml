@@ -1,0 +1,7 @@
+# Bandit configuration (run: bandit -c .bandit.yml -r app -ll)
+#
+# B608 (SQL built from strings) is skipped: the app has no database and
+# executes no SQL. The only SQL in the code is the text the data-cleaning
+# section prints so a client's team can reproduce each step themselves.
+# If a database is ever added, remove this skip.
+skips: ["B608"]

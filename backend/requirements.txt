@@ -180,7 +180,7 @@ pyjwt==2.15.1
     # via mcp
 pyparsing==3.3.3
     # via matplotlib
-pypdf==6.21.3
+pypdf==6.21.4
     # via -r requirements.in
 pypdfium2==5.14.0
     # via -r requirements.in
