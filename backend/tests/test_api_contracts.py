@@ -144,9 +144,13 @@ def test_charts_group_on_a_column_mixing_numbers_and_text(client):
 def test_kpi_strip_does_not_sum_identifiers(client):
     df = pd.DataFrame({"customer_id": range(1, 61), "revenue": [10.0] * 60})
     ds = _upload(client, df)
-    labels = [k["label"] for k in client.post(f"/api/charts/{ds}/kpis", json={"filters": []}).json()["kpis"]]
-    assert "Total revenue" in labels
-    assert not any("customer" in label.lower() for label in labels)
+    cards = {k["label"]: k for k in
+             client.post(f"/api/charts/{ds}/kpis", json={"filters": []}).json()["kpis"]}
+    assert cards["Revenue"]["value"] == 600
+    # Customers are counted (60 distinct), never added up (1 + 2 + … + 60).
+    assert cards["Customers"]["value"] == 60
+    assert not any(label.lower().startswith(("total customer", "average customer"))
+                   for label in cards)
 
 
 def test_a_partial_final_month_is_not_drawn_as_a_collapse(client):

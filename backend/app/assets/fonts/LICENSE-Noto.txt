@@ -91,3 +91,13 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+
+-----------------------------------------------------------
+Modification notice (Analytiq)
+-----------------------------------------------------------
+NotoSansSC-Regular.ttf in this directory is a subset of Noto Sans SC,
+reduced with fontTools to the characters of GB2312 (simplified Chinese)
+and JIS X 0208 (Japanese), plus CJK and full-width punctuation, kana,
+Latin and general punctuation: 10,490 characters. The original is
+available from https://github.com/notofonts/noto-cjk. The subset is
+distributed under the same SIL Open Font License, Version 1.1.

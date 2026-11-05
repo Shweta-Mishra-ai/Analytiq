@@ -1,6 +1,8 @@
 import logging
 import re
 import pandas as pd
+
+from app.engines.domains.base import is_id_column
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
@@ -277,7 +279,12 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
 
     # ── 5a. Strip string whitespace ────────────────────────
     if is_text_dtype(s):
-        stripped = s.str.strip() if hasattr(s.str, "strip") else s
+        # Only strings are stripped. A column can mix text and numbers (an
+        # invoice number is 489434 on a sale and "C489449" on a
+        # cancellation), and `.str.strip()` returns NaN for every
+        # non-string: it blanked a million invoice numbers, and the next
+        # step dropped the column as "98% missing".
+        stripped = s.map(lambda v: v.strip() if isinstance(v, str) else v)
         # NA != NA is True, so comparing the two series directly counts every
         # null as a whitespace fix and reports a number the reader can check
         # and find wrong. Only non-null values can have been trimmed.
@@ -355,6 +362,21 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
                             "SELECT {c} IS NULL AS is_missing, COUNT(*)\n"
                             "FROM {{table}} GROUP BY 1;").format(c=_q(col)))
 
+        elif is_id_column(col, s):
+            # An identifier is never imputed. The median "Customer ID" is a
+            # real customer, and filling with it gave one account every
+            # anonymous sale in the file; "Unknown" on a text ID merges all
+            # the blanks into one fictitious customer the same way.
+            report.add(col,
+                       "{} missing identifiers ({:.1f}%)".format(missing, missing_pct),
+                       "left as missing — an identifier cannot be imputed; "
+                       "per-{} figures cover only rows that have one".format(col),
+                       "{} nulls".format(missing), "{} nulls".format(missing), 0,
+                       sql=("-- {c} is an identifier and is deliberately NOT imputed.\n"
+                            "SELECT COUNT(*) AS missing_ids FROM {{table}} "
+                            "WHERE {c} IS NULL;").format(c=_q(col)))
+            return
+
         elif (pd.api.types.is_numeric_dtype(s)
                 and not pd.api.types.is_bool_dtype(s)):
             # Numeric → fill with median. Booleans are excluded: pandas
@@ -380,7 +402,11 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
         else:
             # Categorical → fill with mode or "Unknown"
             mode_vals = s.mode()
-            if len(mode_vals) > 0 and missing_pct < 20:
+            # The most common value is a fair guess for a short list of
+            # categories (region, plan). For a product description with
+            # thousands of values it names one real product and gives it
+            # every blank line.
+            if len(mode_vals) > 0 and missing_pct < 20 and s.nunique() <= 50:
                 fill_val = mode_vals[0]
                 df[col] = s.fillna(fill_val)
                 report.add(col,

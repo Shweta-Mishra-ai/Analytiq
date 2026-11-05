@@ -123,8 +123,9 @@ def _groq_generate(system: str, user: str, max_tokens: int = 2048) -> Optional[s
         return None
     try:
         from app.ai.llm_client import get_client
+        # force: Claude was already tried by _generate; don't call it twice.
         return get_client(config.groq_api_key).chat_task(
-            system, user, task="default", max_tokens=max_tokens)
+            system, user, task="default", max_tokens=max_tokens, force="groq")
     except Exception as e:
         logger.warning(f"Groq generation failed: {e}")
         return None
@@ -159,13 +160,15 @@ def _generate(system: str, user: str, max_tokens: int = 2048) -> str:
                 "sent anywhere.")
         return text
 
+    from app.ai import claude_client
     text = (_local_generate(system, user, max_tokens)
+            or claude_client.generate(system, user, max_tokens, effort="medium")
             or _gemini_generate(system, user, max_tokens)
             or _groq_generate(system, user, max_tokens))
     if not text:
         raise NoModelAvailable(
-            "No LLM available — set LOCAL_LLM_URL, GEMINI_API_KEY or "
-            "GROQ_API_KEY")
+            "No LLM available — set LOCAL_LLM_URL, ANTHROPIC_API_KEY, "
+            "GEMINI_API_KEY or GROQ_API_KEY")
     return text
 
 

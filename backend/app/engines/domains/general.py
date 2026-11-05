@@ -52,23 +52,26 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         median  = st.get("median", 0)
 
         if out_pct > 10:
-            # A high-outlier column is a genuine data-quality RISK — count it.
-            risks.append(
-                "'{}' has {:.0f}% outliers — verify before using it in any "
-                "decision; extremes distort averages and models.".format(col, out_pct))
+            # More than a tenth of the values cannot all be entry errors:
+            # that is a long tail (a minority of large orders, a few big
+            # accounts), the shape of the data. Calling it a data-quality
+            # risk told a retailer to "verify" every bulk order line.
             insights.append(build_insight(
-                title="'{}': {:.0f}% of values lie far from the rest".format(col, out_pct),
-                problem="{:.0f}% of '{}' values fall outside 1.5 times the interquartile "
-                        "range.".format(out_pct, col),
-                cause="They may be entry errors or genuine extremes; the data alone "
-                      "cannot say which",
-                evidence="IQR method: {:.0f}% outliers. Range: {:.2f} to {:.2f}".format(
-                    out_pct, st.get("min", 0), st.get("max", 0)),
-                action="Look at the outlying records and correct any that are errors; "
-                       "keep genuine extremes and report the median beside the mean.",
-                impact="Averages and correlations that use '{}' are pulled by these "
-                       "values.".format(col),
-                severity="warning", category="data_quality"
+                title="'{}' has a long tail: {:.0f}% of values are far from the "
+                      "typical one".format(col, out_pct),
+                problem="{:.0f}% of '{}' values fall outside 1.5 times the "
+                        "interquartile range; the median is {}, the range {} to "
+                        "{}.".format(out_pct, col, _num(median),
+                                     _num(st.get("min", 0)), _num(st.get("max", 0))),
+                cause="At this share the values are mostly the shape of the data, "
+                      "not entry errors, though the most extreme few may be",
+                evidence="IQR method: {:.0f}% beyond the fences.".format(out_pct),
+                action="Check the most extreme records by hand; report the median "
+                       "beside the mean and split any analysis of '{}' into typical "
+                       "and large values.".format(col),
+                impact="Averages that use '{}' describe the large values more than "
+                       "the typical one.".format(col),
+                severity="info", category="data_quality"
             ))
         if abs(skew) > 1.5:
             findings.append(
@@ -128,33 +131,82 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     # ── Segment-difference insight — works on ANY dataset ────────────────
     # Best categorical × numeric pair, tested with Kruskal-Wallis so the
     # report can say "segment X outperforms Y" with a defensible p-value.
-    seg = _best_segment_difference(df, num_cols)
+    seg, mixed = _best_segment_difference(df, num_cols)
+    if mixed:
+        mixed = {**mixed, "lo_txt": _num(mixed["lo"]), "hi_txt": _num(mixed["hi"])}
+        insights.append(build_insight(
+            title="'{num}' gap between '{hi_seg}' and '{lo_seg}' reverses within "
+                  "'{z}'".format(**mixed),
+            problem=("Overall, median '{num}' is {hi_txt} in '{hi_seg}' against "
+                     "{lo_txt} in '{lo_seg}', but within every '{z}' group with "
+                     "enough records '{lo_seg}' is the higher of the two.".format(**mixed)),
+            cause=("The overall gap comes from how the two are spread across '{z}' "
+                   "(Simpson's paradox), not from a difference between them."
+                   .format(**mixed)),
+            evidence=("Pooled: Kruskal-Wallis {ptxt} after adjusting for {m} tests, "
+                      "n={n:,}. Within '{z}': the order reverses in every group holding "
+                      "10 or more of each.".format(**mixed)),
+            action=("Compare '{hi_seg}' and '{lo_seg}' within each '{z}' group, never "
+                    "on the pooled figure.".format(**mixed)),
+            impact="",
+            severity="warning", category="segmentation",
+        ))
+        findings.append(
+            "'{hi_seg}' leads '{lo_seg}' on '{num}' overall but trails it within every "
+            "'{z}' group: the pooled gap is a mix effect.".format(**mixed))
     if seg:
         seg = {**seg, "lo_txt": _num(seg["lo"]), "hi_txt": _num(seg["hi"])}
         # NOTE: neutral highest/lowest labels — whether high is good or bad
         # depends on the metric (revenue vs delay), which we cannot know here.
-        insights.append(build_insight(
-            title="'{cat}' Segments Differ Significantly on '{num}'".format(**seg),
-            problem=("Median '{num}' ranges from {lo_txt} in '{lo_seg}' to {hi_txt} "
-                     "in '{hi_seg}' — a {ratio:.1f}× spread across '{cat}' segments."
-                     .format(**seg)),
-            cause="A gap this size is unlikely to be chance. What causes it is not "
-                  "in the data.",
-            evidence=("Kruskal-Wallis H={h:.1f}, {ptxt} after adjusting for {m} tests, "
-                      "{k} groups, n={n:,}. "
-                      "Highest: '{hi_seg}' (median {hi_txt}) | Lowest: '{lo_seg}' "
-                      "(median {lo_txt}).".format(**seg)),
-            action=("Find out what separates '{hi_seg}' from '{lo_seg}', and check "
-                    "whether the gap holds once record size or volume is allowed for."
-                    .format(**seg)),
-            impact="",
-            severity="warning", category="segmentation",
-        ))
+        mix = _is_product_mix(seg["cat"])
+        evidence = ("Kruskal-Wallis H={h:.1f}, {ptxt} after adjusting for {m} tests, "
+                    "{k} groups, n={n:,}. "
+                    "Highest: '{hi_seg}' (median {hi_txt}) | Lowest: '{lo_seg}' "
+                    "(median {lo_txt}).".format(**seg))
+        if mix:
+            # Product groups differ in what they sell for. Headlined as
+            # "segments differ significantly", it read as a performance gap.
+            insights.append(build_insight(
+                title="'{num}' per record differs by '{cat}' (price mix)".format(**seg),
+                problem=("Median '{num}' ranges from {lo_txt} in '{lo_seg}' to {hi_txt} "
+                         "in '{hi_seg}' across '{cat}' groups.".format(**seg)),
+                cause="Between product groups this mostly reflects what each sells for, "
+                      "not how well it performs.",
+                evidence=evidence,
+                action=("Compare the '{cat}' groups on margin, volume or growth rather "
+                        "than on value per record.".format(**seg)),
+                impact="",
+                severity="info", category="segmentation",
+            ))
+        else:
+            insights.append(build_insight(
+                title="'{cat}' Segments Differ Significantly on '{num}'".format(**seg),
+                problem=("Median '{num}' ranges from {lo_txt} in '{lo_seg}' to {hi_txt} "
+                         "in '{hi_seg}' — a {ratio:.1f}× spread across '{cat}' segments."
+                         .format(**seg)),
+                cause="A gap this size is unlikely to be chance. What causes it is not "
+                      "in the data.",
+                evidence=evidence,
+                action=("Find out what separates '{hi_seg}' from '{lo_seg}', and check "
+                        "whether the gap holds once record size or volume is allowed for."
+                        .format(**seg)),
+                impact="",
+                severity="warning", category="segmentation",
+            ))
         # Which end is weak depends on the metric: the lowest-delay segment is
         # the strong one. Unknown direction gets neutral wording.
         from app.engines.benchmarking import metric_direction
         direction = metric_direction(seg["num"], df[seg["num"]])
-        if direction:
+        if _is_product_mix(seg["cat"]):
+            # Product categories differ in what they sell for; "'Office
+            # Supplies' trails on sales" was a price difference reported as
+            # an underperformance risk.
+            findings.append(
+                "Median '{num}' per record differs across '{cat}' ({lo_txt} in "
+                "'{lo_seg}' to {hi_txt} in '{hi_seg}'); between product groups this "
+                "mostly reflects what each sells for, not how well it performs."
+                .format(**seg))
+        elif direction:
             weak, strong = ((seg["lo_seg"], seg["hi_seg"]) if direction > 0
                             else (seg["hi_seg"], seg["lo_seg"]))
             weak_v, strong_v = ((seg["lo_txt"], seg["hi_txt"]) if direction > 0
@@ -189,11 +241,20 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         actions.append("Validate the outliers flagged above before analysis or modelling")
     if any(abs(stats.get(c, {}).get("skew", 0)) > 1 for c in analysable):
         actions.append("Use the median, not the mean, for the skewed columns in executive reports")
-    if seg:
+    if seg and not _is_product_mix(seg["cat"]):
         actions.append("Find out what separates '{hi_seg}' from '{lo_seg}' on "
                        "'{num}'.".format(**seg))
     return {"findings": findings, "risks": risks, "opportunities": opps,
             "actions": actions, "insights": insights}
+
+
+def _is_product_mix(cat: str) -> bool:
+    """Whether a categorical column groups products (whose value per record
+    differs by price) rather than units that perform (regions, teams)."""
+    import re
+    words = [w for w in re.split(r"[^a-z0-9]+", str(cat).lower()) if w]
+    return any(w.startswith(k) for w in words for k in (
+        "product", "category", "categor", "sku", "item", "brand", "subcategor", "line"))
 
 
 def _is_obvious_segment_pair(cat: str, num: str) -> bool:
@@ -214,6 +275,32 @@ def _is_obvious_segment_pair(cat: str, num: str) -> bool:
     if len(stem) >= 4 and stem in c.replace("_", "").replace(" ", ""):
         return True
     return False
+
+
+def _reverses_within(df: pd.DataFrame, seg: dict, min_rows: int = 10) -> str | None:
+    """Another column within every group of which the two segments trade
+    places: '{hi_seg}' leads overall but '{lo_seg}' leads in each group.
+    Returns that column, or None. At least two groups must hold enough of
+    both segments for the comparison to mean anything."""
+    cat, num, hi, lo = seg["cat"], seg["num"], seg["hi_key"], seg["lo_key"]
+    sub = df[df[cat].astype("string").isin([hi, lo])]
+    for z in df.select_dtypes(include=["object", "string"]).columns:
+        if z == cat or not 2 <= df[z].nunique(dropna=True) <= 8:
+            continue
+        try:
+            compared, reversed_ = 0, 0
+            for _, g in sub[[z, cat, num]].dropna().groupby(z, observed=True):
+                a = g.loc[g[cat].astype("string") == hi, num]
+                b = g.loc[g[cat].astype("string") == lo, num]
+                if len(a) < min_rows or len(b) < min_rows:
+                    continue
+                compared += 1
+                reversed_ += float(b.median()) > float(a.median())
+            if compared >= 2 and reversed_ == compared:
+                return str(z)
+        except Exception:
+            logger.warning("reversal check failed (%s)", z, exc_info=True)
+    return None
 
 
 def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
@@ -245,6 +332,11 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
                 groups = [g[num].values for _, g in sub.groupby(cat) if len(g) >= 15]
                 if len(groups) < 2:
                     continue
+                # A value fixed for each group (a rep's quota, a region's
+                # tax rate) is an attribute of the group, not an outcome
+                # that differs between them.
+                if all(np.unique(g).size == 1 for g in groups):
+                    continue
                 h, p = scipy_stats.kruskal(*groups)
                 if np.isnan(h):
                     continue
@@ -253,9 +345,9 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
                 logger.warning("segment difference test failed (%s × %s)",
                                cat, num, exc_info=True)
     if not tested:
-        return None
+        return None, None
     qvals = bh_adjust([t[5] for t in tested])
-    best = None
+    best = reversal = None
     for (cat, num, sub, k, h, _p), q in zip(tested, qvals):
         if q >= 0.01:
             continue
@@ -277,17 +369,27 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
         standardised = abs(hi - lo) / spread
         if ratio < MIN_SEGMENT_RATIO and standardised < MIN_SEGMENT_EFFECT:
             continue
+        cand = {
+            "cat": cat, "num": num, "h": h,
+            "ptxt": "p<0.001" if q < 0.001 else "p={:.3f}".format(q),
+            "m": len(tested),
+            "k": k, "n": len(sub),
+            "lo_seg": str(med.index[0])[:30], "hi_seg": str(med.index[-1])[:30],
+            "lo_key": str(med.index[0]), "hi_key": str(med.index[-1]),
+            "lo": lo, "hi": hi,
+            "ratio": min(ratio, 999.0),
+        }
+        # A gap that reverses inside every group of another column is a mix
+        # effect (Simpson's paradox); headlined, it named the wrong segment
+        # as the weak one.
+        z = _reverses_within(df, cand)
+        if z:
+            if reversal is None or h > reversal["h"]:
+                reversal = {**cand, "z": z}
+            continue
         if best is None or h > best["h"]:
-            best = {
-                "cat": cat, "num": num, "h": h,
-                "ptxt": "p<0.001" if q < 0.001 else "p={:.3f}".format(q),
-                "m": len(tested),
-                "k": k, "n": len(sub),
-                "lo_seg": str(med.index[0])[:30], "hi_seg": str(med.index[-1])[:30],
-                "lo": lo, "hi": hi,
-                "ratio": min(ratio, 999.0),
-            }
-    return best
+            best = cand
+    return best, reversal
 
 
 # ══════════════════════════════════════════════════════════

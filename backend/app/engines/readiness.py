@@ -175,9 +175,14 @@ def _date_share(s: pd.Series) -> float:
 
 
 def _check_types(df: pd.DataFrame, issues: List[ReadinessIssue]) -> None:
+    from app.engines.transactions import order_column
+    # An invoice number is text on purpose: "C489449" marks a cancellation,
+    # and converting the column to numbers would erase that. It is an
+    # identifier, not a measure stored as text.
+    order = order_column(df)
     for col in text_columns(df):
         s = df[col]
-        if is_id_column(col, s):
+        if col == order or is_id_column(col, s):
             continue
         if _numeric_share(s) >= NUMERIC_TEXT_SHARE:
             issues.append(ReadinessIssue(

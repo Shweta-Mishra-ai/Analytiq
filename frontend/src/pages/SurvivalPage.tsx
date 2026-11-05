@@ -10,6 +10,9 @@ interface Fields {
   duration_columns: string[]
   event_columns: string[]
   group_columns: string[]
+  /** Set only when a column's name reads as a duration / an event. */
+  default_duration?: string | null
+  default_event?: string | null
 }
 
 interface SurvivalPoint {
@@ -72,8 +75,10 @@ export default function SurvivalPage() {
     apiGet<Fields>(`/api/analytics/${ds}/survival/fields`)
       .then((f) => {
         setFields(f)
-        setDuration(f.duration_columns[0] ?? '')
-        setEvent(f.event_columns[0] ?? '')
+        // Only a column that looks like a duration is pre-selected; the
+        // first numeric column gave "time elapsed = salary".
+        setDuration(f.default_duration ?? '')
+        setEvent(f.default_event ?? f.event_columns[0] ?? '')
         setGroup('')
       })
       .catch((e) => setError(e.message))
@@ -146,7 +151,8 @@ export default function SurvivalPage() {
             label="Time elapsed"
             value={duration}
             onChange={setDuration}
-            options={fields?.duration_columns ?? []}
+            options={['', ...(fields?.duration_columns ?? [])]}
+            placeholder="— choose a duration —"
           />
           <Select
             label="Event happened"
@@ -308,12 +314,14 @@ function Select({
   label,
   value,
   onChange,
+  placeholder,
   options,
 }: {
   label: string
   value: string
   onChange: (v: string) => void
   options: string[]
+  placeholder?: string
 }) {
   return (
     <div className="min-w-44">
@@ -325,7 +333,7 @@ function Select({
       >
         {options.map((o) => (
           <option key={o} value={o}>
-            {o === '' ? '— none —' : o}
+            {o === '' ? (placeholder ?? '— none —') : o}
           </option>
         ))}
       </select>

@@ -39,6 +39,8 @@ class RFMColumns:
                                           # quantity_col to derive monetary
                                           # value when no direct total/revenue
                                           # column exists
+    order_col:    Optional[str] = None   # order / invoice number: frequency
+                                          # counts distinct orders, not lines
 
 
 @dataclass
@@ -160,10 +162,17 @@ def detect_rfm_columns(df: pd.DataFrame) -> Optional[RFMColumns]:
     Returns None if a customer_id or date column cannot be found —
     RFM analysis is not possible without both.
     """
+    import re as _re
+
+    def _norm(name) -> str:
+        # "Customer ID", "customer-id" and "customer_id" are one name; raw
+        # lowercase matching found only the last.
+        return _re.sub(r"[^a-z0-9]", "", str(name).lower())
+
     def _find(keywords: List[str], must_be_dtype=None) -> Optional[str]:
         for c in df.columns:
-            cl = c.lower()
-            if any(k in cl for k in keywords):
+            cl = _norm(c)
+            if any(_norm(k) in cl for k in keywords):
                 if must_be_dtype == "datetime" and not pd.api.types.is_datetime64_any_dtype(df[c]):
                     # Try to parse it — failure here is expected and common
                     # (column matched a date keyword but isn't actually a
@@ -179,8 +188,16 @@ def detect_rfm_columns(df: pd.DataFrame) -> Optional[RFMColumns]:
     customer_id = _find(["customerid", "customer_id", "custid", "cust_id",
                          "clientid", "client_id", "userid", "user_id"])
     if customer_id is None:
+        # A column simply named for the customer ("Customer", "Client") whose
+        # values repeat across rows: the buyer, not a one-row identifier.
+        for c in df.columns:
+            words = set(_re.split(r"[^a-z0-9]+", str(c).lower()))
+            if (words & {"customer", "client", "user", "member", "buyer", "account"}
+                    and 1 < df[c].nunique() < len(df) * 0.9):
+                customer_id = c
+                break
+    if customer_id is None:
         # Fall back to any low-cardinality ID-like categorical column
-        import re as _re
         for c in df.columns:
             words = set(_re.split(r"[^a-z0-9]+", _re.sub(
                 r"(?<=[a-z0-9])(?=[A-Z])", " ", str(c)).lower()))
@@ -208,9 +225,11 @@ def detect_rfm_columns(df: pd.DataFrame) -> Optional[RFMColumns]:
         # never on its own.
         price_col = _find(["unitprice", "unit_price", "price"])
 
+    from app.engines.transactions import order_column
     return RFMColumns(customer_id=customer_id, date_col=date_col,
                       monetary_col=monetary_col, quantity_col=quantity_col,
-                      price_col=price_col)
+                      price_col=price_col,
+                      order_col=order_column(df, exclude=(customer_id,)))
 
 
 # ══════════════════════════════════════════════════════════
@@ -251,6 +270,12 @@ def run_rfm(
         cols_to_load.append(columns.monetary_col)
     elif need_price_qty:
         cols_to_load += [columns.price_col, columns.quantity_col]
+    # The order number (frequency counts orders) and the quantity (a
+    # negative one marks a cancellation) were left behind here, so the
+    # order count below never ran and frequency stayed a count of lines.
+    for extra in (getattr(columns, "order_col", None), columns.quantity_col):
+        if extra and extra in df.columns and extra not in cols_to_load:
+            cols_to_load.append(extra)
     work = df[cols_to_load].copy()
 
     # Parse dates
@@ -313,6 +338,17 @@ def run_rfm(
 
     cust = work.groupby(columns.customer_id).agg(agg_dict)
     cust.columns = ["_last_date", "_frequency"] + (["_monetary"] if has_monetary else [])
+    order_col = getattr(columns, "order_col", None)
+    if order_col and order_col in work.columns:
+        # Frequency is orders. An order of twelve products is one purchase,
+        # and counting its lines put "138.7 orders per customer" in a report
+        # on a shop whose customers place about six. A cancellation is not a
+        # purchase either (its value still nets off monetary, above).
+        from app.engines.transactions import cancellation_mask
+        cancelled = cancellation_mask(work)
+        placed = work if cancelled is None else work[~cancelled]
+        orders = placed.groupby(columns.customer_id)[order_col].nunique()
+        cust["_frequency"] = orders.reindex(cust.index).fillna(0).astype(int)
     cust = cust.reset_index()
 
     if not has_monetary:

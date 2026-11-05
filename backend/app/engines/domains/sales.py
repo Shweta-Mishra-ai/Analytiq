@@ -119,14 +119,22 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                        and df[c].nunique()<=25), None)
     product_col= next((c for c in df.select_dtypes(include=["object", "string"]).columns
                        if any(k in c.lower() for k in ["product","category","segment"])
+                       # "Forecast Category" and "Stage" describe the deal's
+                       # status, not what was sold.
+                       and not any(k in c.lower() for k in ["forecast", "stage", "status"])
                        and df[c].nunique()<=30), None)
     rep_col    = next((c for c in df.select_dtypes(include=["object", "string"]).columns
                        if any(k in c.lower() for k in ["rep","salesperson","agent","owner",
                                                        "employee","seller","account manager"])
                        and 2 <= df[c].nunique() <= 200), None)
 
+    # An opportunity export's amounts include open and lost deals, so they
+    # are not revenue; the pipeline engine reports won value instead.
+    from app.engines.domains.pipeline import detect_columns as _pipeline_cols
+    is_pipeline = _pipeline_cols(df).usable
+
     # ── Revenue Analysis ───────────────────────────────────
-    if rev_col and rev_col in stats:
+    if rev_col and rev_col in stats and not is_pipeline:
         st   = stats[rev_col]
         skew = st.get("skew",0)
         mean = st.get("mean",0)
@@ -172,10 +180,24 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                 "it (median {:.0f} vs mean {:.0f}).".format(top_share, med, mean))
 
     # ── Target/Quota Analysis ──────────────────────────────
+    # An opportunity export (a stage column) is handled by the pipeline
+    # engine, which counts each rep's quota once and only won deals against
+    # it. Here a quota repeated on every deal row was summed per row and
+    # set against open and lost deals too: "13% achievement" for a team
+    # that had met quota.
+    if is_pipeline:
+        target_col = None
     if target_col and rev_col and target_col in stats and rev_col in stats:
-        target_mean = stats[target_col].get("mean",0)
-        rev_mean    = stats[rev_col].get("mean",0)
-        achievement = (rev_mean / target_mean * 100) if target_mean > 0 else 0
+        # Attainment is total revenue over total target. The mean-over-mean
+        # this used to be is the same number only when every row carries an
+        # equal target; per-rep rows with different targets made it wrong.
+        r_all = pd.to_numeric(df[rev_col], errors="coerce")
+        t_all = pd.to_numeric(df[target_col], errors="coerce")
+        both = r_all.notna() & t_all.notna()
+        target_mean = float(t_all[both].mean()) if both.any() else 0.0
+        rev_mean = float(r_all[both].mean()) if both.any() else 0.0
+        t_sum = float(t_all[both].sum())
+        achievement = (float(r_all[both].sum()) / t_sum * 100) if t_sum > 0 else 0
 
         if achievement < 80:
             insights.append(build_insight(
@@ -184,8 +206,9 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                 problem="Average {:.0f}% quota achievement — team missing targets significantly".format(achievement),
                 cause="Possible drivers to investigate (not yet confirmed): targets set "
                       "too high, pipeline quality, or sales-process gaps.",
-                evidence="Avg revenue={:.0f} vs avg target={:.0f}. Achievement={:.0f}%.".format(
-                    rev_mean, target_mean, achievement),
+                evidence="Total revenue over total target across {:,} rows: {:.0f}% "
+                         "(average row: revenue {:.0f}, target {:.0f}).".format(
+                             int(both.sum()), achievement, rev_mean, target_mean),
                 action="1. Check whether targets are realistic against your own historical "
                        "attainment  2. Pipeline quality audit — qualification issues  "
                        "3. Sales-process coaching for bottom-quartile reps",
@@ -378,6 +401,8 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
 
     # ── Outcome-level analysis: rep win rates, cycle by outcome ─
     run_sales_performance(df, insights, findings, risks, opps)
+    from app.engines.domains.pipeline import run_pipeline
+    run_pipeline(df, insights, findings, risks, opps)
 
     # Only actions this data can support: these were a fixed list, so a
     # transactions file with no pipeline, rep or target columns was told to

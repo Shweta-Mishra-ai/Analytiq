@@ -90,7 +90,7 @@ def _local_embed(texts: List[str]) -> np.ndarray:
     out = np.zeros((len(texts), _LOCAL_DIM), dtype=np.float32)
     for i, text in enumerate(texts):
         for tok in _tokens(text):
-            h = int(hashlib.md5(tok.encode()).hexdigest(), 16)
+            h = int(hashlib.md5(tok.encode(), usedforsecurity=False).hexdigest(), 16)
             out[i, h % _LOCAL_DIM] += 1.0
     norms = np.linalg.norm(out, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
@@ -171,7 +171,8 @@ class KnowledgeBase:
     @staticmethod
     def load(path: str) -> "KnowledgeBase":
         with open(path, "rb") as f:
-            return pickle.load(f)
+            # A file this server wrote to its own data dir; uploads are never unpickled.
+            return pickle.load(f)  # nosec B301
 
     # ops -----------------------------------------------------------------
     def add_chunks(self, chunks: List[dict], filename: str, kind: str):

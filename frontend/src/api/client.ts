@@ -178,4 +178,9 @@ export interface Kpi {
   format: 'int' | 'pct' | 'num'
   /** One line of context under the figure ("median 59.8K", "98 of 500 are 'Yes'"). */
   sub?: string
+  /** Change on the prior period: % for amounts, percentage points for a rate. */
+  delta?: number
+  delta_unit?: '%' | 'pp'
+  /** Whether the change is good news; null when it is too small to call. */
+  delta_good?: boolean | null
 }

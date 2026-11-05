@@ -144,6 +144,7 @@ The application remains fully functional locally without keys (AI modules degrad
 
 | Environment Variable | Source | Functionality |
 |---|---|---|
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) | Claude answers AI Chat, writes report narratives and answers knowledge-base questions, tried before the other providers (which remain fallbacks). `CLAUDE_MODEL` defaults to `claude-opus-5-5`. Paid per use; refused in `LLM_PRIVACY_MODE` like every cloud model. |
 | `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) | Powering the AI Chat copilot and chart generation narratives |
 | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com) | Powering image/video analysis, RAG indexing, and executive summaries |
 | `APP_ADMIN_KEY` | you choose | Master key for account management (`/api/admin/*`). Unset + zero accounts created = open/no-auth (local dev only). `APP_PASSWORD` also works as a fallback name. |
@@ -151,6 +152,8 @@ The application remains fully functional locally without keys (AI modules degrad
 | `CLEANUP_INTERVAL_HOURS` | you choose | How often the expiry sweep runs in the background. Default `6`. A sweep also runs once at startup, and can be triggered manually via `POST /api/admin/cleanup`. |
 | `APP_SECRET` | you choose | Signs client login tokens. Optional — auto-generated and persisted to `DATA_DIR/.secret_key` if unset. Set explicitly if you run multiple backend instances behind a load balancer, so they all validate the same tokens. |
 | `TOKEN_TTL_DAYS` | you choose | How long a client's login session lasts before they must sign in again. Default `30`. |
+| `APP_PUBLIC_URL` | your deployment | Public base URL (e.g. `https://analytiq.example.com`) used in report download links returned by the remote MCP endpoint. Optional; the request's host is used if unset. |
+| `CLAMD_HOST` / `CLAMD_PORT` / `CLAMD_SOCKET` | your ClamAV daemon | Optional antivirus scan of every upload (e.g. the `clamav/clamav` Docker image on port 3310). Content checks — renamed programs, macro workbooks, compression bombs, encrypted workbooks — always run; with these set, each file is also scanned and refused if flagged. A configured scanner that is down makes uploads fail closed (503). |
 | `LLM_PRIVACY_MODE` | you choose | `1` forbids sending client data to any cloud model: narratives, AI chat and RAG answers use only the local model (`LOCAL_LLM_URL` / `LOCAL_LLM_MODEL`), and RAG indexes documents with the local embedder. Chat answers 503 if no local model is configured. |
 
 ### 🎬 Video-to-dataset extraction
@@ -196,6 +199,23 @@ It makes one minimal real call to each provider and tells you plainly
 whether each key works, and the actual error if not.
 
 
+
+### 🤖 Using Analytiq from Claude (MCP)
+Analytiq's analysis is available to Claude as tools: locally for Claude Desktop and Claude Code, and remotely at `/mcp/` for claude.ai and teams. Claude receives computed summaries instead of reading the data, which is far cheaper and keeps every figure tested. Setup: [docs/MCP.md](docs/MCP.md).
+
+**Install as a Claude Code plugin** (Python 3.11+ required; dependencies install automatically on first use):
+
+```bash
+/plugin install analytiq --marketplace Shweta-Mishra-ai/Analytiq
+```
+
+On Claude Code versions before 2.1.275, add the marketplace first: `/plugin marketplace add Shweta-Mishra-ai/Analytiq`, then `/plugin install analytiq@analytiq`.
+
+Or, from a checkout of this repository:
+
+```bash
+claude mcp add --transport stdio --env PYTHONPATH=$(pwd)/backend analytiq -- python -m app.mcp_server
+```
 
 ---
 

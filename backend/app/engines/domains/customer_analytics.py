@@ -77,7 +77,17 @@ def find_date_col(df: pd.DataFrame) -> Optional[str]:
 
 
 def find_value_col(df: pd.DataFrame) -> Optional[str]:
+    """What a customer spent per row. A unit price is not that: summed per
+    customer it gave "revenue" of 3.0M on a book that sold 19.3M. With a
+    quantity and a unit price and no amount, the upload adds a Revenue
+    column (engines/transactions.py), which this finds."""
+    from app.engines.transactions import revenue_column
+    found = revenue_column(df)
+    if found is not None:
+        return found
     for c in df.columns:
+        if "price" in _norm(c):
+            continue
         if (any(k in _norm(c) for k in _VALUE_KW)
                 and pd.api.types.is_numeric_dtype(df[c])
                 and not any(x in _norm(c) for x in ("_id", "count", "qty", "quantity"))):
@@ -121,6 +131,17 @@ def _reorder_window(work: pd.DataFrame, cust: str) -> tuple:
     typical = int(np.median(gaps))
     return max(1, min(typical, 6)), max(1, typical)
 
+def _last_full_month(dates: pd.Series):
+    """The last calendar month the dates cover in full: the final month
+    counts when the data reaches within three days of its end (the same
+    allowance the scorecard and the trend charts use)."""
+    last = dates.max()
+    month = last.to_period("M")
+    if (month.end_time.normalize() - last.normalize()).days <= 3:
+        return month
+    return month - 1
+
+
 def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
                      risks: List, opps: List) -> None:
     """Do customers acquired in one month come back in later months?
@@ -158,18 +179,29 @@ def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
                         .apply(lambda p: p.n if p is not pd.NaT else np.nan))
 
         cohort_size = work.groupby("_cohort")[cust].nunique()
-        # Cohorts too small to give a rate, and the final cohort, which has
-        # had no chance to return yet.
-        usable = cohort_size[cohort_size >= MIN_COHORT_CUSTOMERS]
-        if len(usable) < 2:
-            return
-        usable = usable.iloc[:-1] if len(usable) > 2 else usable
-
         # Month 1 is the right window only for a business people buy from
         # monthly. On a quarterly reorder cycle every cohort returns 0% at
         # month 1, and "retention averages 0.0%, ranging 0.0% to 0.0%"
         # reads as a broken report rather than as the wrong measure.
         window, typical_gap = _reorder_window(work, cust)
+
+        # Only cohorts that are what the rate says they are:
+        #  * not the first month of the data: everyone already buying when
+        #    the extract starts lands in it, so it is the existing customer
+        #    base, not new customers, and its "retention" is the loyal
+        #    base's. Comparing it with later cohorts reported a decline
+        #    that was an artefact of where the extract began.
+        #  * only cohorts whose return month the data covers in full. A
+        #    return month cut off part-way (an extract ending on the 9th)
+        #    counts a third of the returns and reads as a collapse.
+        #  * cohorts large enough to give a rate.
+        last_full = _last_full_month(work[date])
+        first_month = work["_month"].min()
+        usable = cohort_size[(cohort_size >= MIN_COHORT_CUSTOMERS)
+                             & (cohort_size.index > first_month)
+                             & (cohort_size.index + window <= last_full)]
+        if len(usable) < 2:
+            return
         cadence_note = (
             "" if window == 1 else
             " Measured at month {} rather than month 1 because customers here "
@@ -190,6 +222,21 @@ def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
         overall = float(rates.mean())
         newest, oldest = float(rates.iloc[-1]), float(rates.iloc[0])
         drift = newest - oldest
+        # First cohort against last compares different seasons: a cohort
+        # won in October returns into the Christmas peak, one won in January
+        # into the quietest month, and the gap between them was reported as
+        # retention "improving 11.7 points". With more than a year of
+        # cohorts, compare each with the same month a year earlier.
+        yoy = None
+        if len(rates) >= 13:
+            pairs = [(k, k - 12) for k in rates.index if (k - 12) in rates.index]
+            if len(pairs) >= 3:
+                recent = [k for k, _ in pairs]
+                year_ago = [j for _, j in pairs]
+                newest = float(rates[recent].mean())
+                oldest = float(rates[year_ago].mean())
+                drift = newest - oldest
+                yoy = (year_ago[0], year_ago[-1], recent[0], recent[-1])
 
         findings.append(
             "{} retention averages {:.1f}% across {} monthly cohorts "
@@ -204,13 +251,23 @@ def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
             sev = ("high" if drift <= -10 else "warning" if drift < 0 else "positive")
             detail = "; ".join(
                 "{}: {:.1f}%".format(str(k), v) for k, v in rates.items())
+            if yoy:
+                basis = ("averaged over the cohorts of {} to {} against the same "
+                         "months a year earlier ({} to {})").format(
+                             yoy[2], yoy[3], yoy[0], yoy[1])
+                first_label, last_label = "{}–{}".format(yoy[0], yoy[1]), \
+                    "{}–{}".format(yoy[2], yoy[3])
+            else:
+                basis = "first cohort against the last"
+                first_label, last_label = str(rates.index[0]), str(rates.index[-1])
+            detail = detail + "; compared " + basis
             if drift < 0:
                 risks.append(
                     "{} retention has {} {:.1f} points across the cohorts in "
                     "this data, from {:.1f}% ({}) to {:.1f}% ({}). Later cohorts "
                     "are returning less often than earlier ones.".format(
-                        label, direction, abs(drift), oldest, str(rates.index[0]),
-                        newest, str(rates.index[-1])))
+                        label, direction, abs(drift), oldest, first_label,
+                        newest, last_label))
             else:
                 opps.append(
                     "{} retention has {} {:.1f} points across cohorts, from "
@@ -223,14 +280,16 @@ def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
                     label, direction, oldest, newest),
                 problem="Customers acquired in {} returned within {} month(s) "
                         "{:.1f}% of the time; for {} it was {:.1f}%.".format(
-                            str(rates.index[0]), window, oldest,
-                            str(rates.index[-1]), newest),
+                            first_label, window, oldest, last_label, newest),
                 cause="A cohort trend of this size normally follows a change in "
                       "acquisition mix, onboarding, or the offer itself. Which one "
                       "applies is not established by this data — it needs the "
                       "channel or campaign behind each cohort.",
                 evidence="{} retention by cohort — {} (cohorts of "
-                         "{}+ customers only)".format(
+                         "{}+ customers; the first month of the data, which "
+                         "holds customers acquired before it, and cohorts "
+                         "whose return month the data does not fully cover "
+                         "are left out)".format(
                              label, detail, MIN_COHORT_CUSTOMERS),
                 action="1. Split the weakest and strongest cohorts by acquisition "
                        "channel  2. Compare first-order contents between them  "
@@ -264,19 +323,31 @@ def rfm_segments(df: pd.DataFrame, insights: List, findings: List,
     if not (cust and date and value):
         return
     try:
-        work = df[[cust, date, value]].copy()
+        from app.engines.transactions import cancellation_mask, order_column
+        order = order_column(df, exclude=(cust,))
+        cols = [cust, date, value] + ([order] if order else [])
+        work = df[cols].copy()
         work[date] = _as_datetime(work[date])
-        work = work.dropna()
-        work = work[work[value] > 0]
+        work = work.dropna(subset=[cust, date, value])
         if work[cust].nunique() < MIN_CUSTOMERS:
             return
+        cancelled = cancellation_mask(work)
+        if cancelled is None:
+            cancelled = pd.Series(False, index=work.index)
+        placed = work[~cancelled]
 
         asof = work[date].max()
-        agg = work.groupby(cust).agg(
-            recency=(date, lambda s: (asof - s.max()).days),
-            frequency=(cust, "size"),
-            monetary=(value, "sum"),
-        )
+        span_years = (work[date].max() - work[date].min()).days / 365.25
+        # Monetary is net of returns; frequency is orders placed — distinct
+        # order numbers when the file has them (an order of twelve products
+        # is one purchase, not twelve), never cancellations.
+        agg = pd.DataFrame({
+            "recency": placed.groupby(cust)[date].max().rsub(asof).dt.days,
+            "frequency": (placed.groupby(cust)[order].nunique() if order
+                          else placed.groupby(cust).size()),
+            "monetary": work.groupby(cust)[value].sum(),
+        }).dropna()
+        agg = agg[agg["monetary"] > 0]
         if len(agg) < MIN_CUSTOMERS:
             return
 
@@ -313,7 +384,7 @@ def rfm_segments(df: pd.DataFrame, insights: List, findings: List,
             insights.append(build_insight(
                 title="{:,} lapsed repeat customers hold {:.0f}% of revenue history".format(
                     len(at_risk), share),
-                problem="{:,} customers who bought {:.0f}+ times have not ordered for "
+                problem="{:,} customers who placed {:.0f}+ orders have not ordered for "
                         "a median of {:.0f} days.".format(
                             len(at_risk), float(at_risk["frequency"].median()), median_gap),
                 cause="Lapse after repeat purchasing is usually a service, stock or "
@@ -326,9 +397,13 @@ def rfm_segments(df: pd.DataFrame, insights: List, findings: List,
                 action="1. Export the at-risk list and check for open service issues  "
                        "2. Contact the top decile by historical value first  "
                        "3. Measure reactivation against a held-back control group",
-                impact="Recovering a quarter of this group would return roughly "
-                       "{:,.0f} of annualised revenue at their historical rate.".format(
-                           lapsed_value * 0.25),
+                impact=(("Recovering a quarter of this group would return about "
+                         "{:,.0f} a year at their historical rate.").format(
+                             lapsed_value * 0.25 / span_years)
+                        if span_years >= 1 else
+                        ("Recovering a quarter of this group would return about "
+                         "{:,.0f}, their historical spend over the period "
+                         "covered.").format(lapsed_value * 0.25)),
                 severity="high" if share > 15 else "warning",
                 category="ecommerce_rfm",
             ))
@@ -378,10 +453,17 @@ def revenue_concentration(df: pd.DataFrame, insights: List, findings: List,
         idx = np.arange(1, n + 1)
         gini = float((2 * (idx * vals).sum()) / (n * vals.sum()) - (n + 1) / n)
 
+        unnamed = float(pd.to_numeric(df.loc[df[cust].isna(), value],
+                                      errors="coerce").sum())
+        whole = float(pd.to_numeric(df[value], errors="coerce").sum())
+        caveat = ("" if whole <= 0 or unnamed / whole < 0.05 else
+                  " Shares are of the revenue on lines with a customer "
+                  "identifier; the {:.0f}% of revenue on lines without one "
+                  "cannot be attributed.".format(unnamed / whole * 100))
         findings.append(
             "Revenue concentration: the top 10% of customers ({:,} of {:,}) "
-            "account for {:.0f}% of revenue (Gini {:.2f}).".format(
-                top_n, n, top_share, gini))
+            "account for {:.0f}% of revenue (Gini {:.2f}).{}".format(
+                top_n, n, top_share, gini, caveat))
 
         if top_share >= 50:
             largest = float(per.iloc[0]) / total * 100

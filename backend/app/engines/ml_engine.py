@@ -688,14 +688,21 @@ def get_feature_importance(
     scoring = "r2" if task == "regression" else "accuracy"
     if task == "classification" and hasattr(pipe, "predict_proba"):
         scoring = "neg_log_loss"
+    # Each repeat re-scores the model once per column, so the cost grows
+    # with columns x repeats: five repeats over 120 columns took 80 of a
+    # 100-second training run. Fewer repeats on wide data keep the ranking
+    # (the top columns separate after one or two shuffles) at a fraction of
+    # the time; narrow data keeps five for steadier shares.
+    n_cols = X_test.shape[1]
+    repeats = 5 if n_cols <= 20 else 3 if n_cols <= 50 else 2
     try:
-        perm = permutation_importance(pipe, Xs, ys, scoring=scoring, n_repeats=5,
+        perm = permutation_importance(pipe, Xs, ys, scoring=scoring, n_repeats=repeats,
                                       random_state=42, n_jobs=1)
     except Exception:
         logger.info("permutation importance with %s failed; using accuracy", scoring,
                     exc_info=True)
         try:
-            perm = permutation_importance(pipe, Xs, ys, scoring=None, n_repeats=5,
+            perm = permutation_importance(pipe, Xs, ys, scoring=None, n_repeats=repeats,
                                           random_state=42, n_jobs=1)
         except Exception:
             logger.warning("permutation importance failed", exc_info=True)

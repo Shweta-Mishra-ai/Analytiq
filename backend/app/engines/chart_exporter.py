@@ -92,10 +92,16 @@ def fmt(x: float, money: bool = False) -> str:
     if x is None or not np.isfinite(x):
         return "—"
     a = abs(x)
+    # "9.3M" is English shorthand; another language spells the magnitude
+    # out in its own words (from the catalogue).
+    from app import i18n
+    english = i18n.current() == i18n.DEFAULT
     if a >= 1e9:
-        s = "{:.1f}B".format(x / 1e9)
+        s = ("{:.1f}B".format(x / 1e9) if english
+             else tr("{n} billion", n="{:.1f}".format(x / 1e9)))
     elif a >= 1e6:
-        s = "{:.1f}M".format(x / 1e6)
+        s = ("{:.1f}M".format(x / 1e6) if english
+             else tr("{n} million", n="{:.1f}".format(x / 1e6)))
     elif a >= 1e4:
         s = "{:,.0f}".format(x)
     elif a >= 100:
@@ -233,10 +239,14 @@ def _group_column(df: pd.DataFrame, exclude=()) -> Optional[str]:
         if c in exclude or is_id_column(c, df[c]):
             continue
         k = df[c].nunique(dropna=True)
-        if not 2 <= k <= 30:
+        named = bool(_words(c) & _GROUP_WORDS)
+        # A named grouping can have many members (a shop selling to 43
+        # countries); the chart shows the 12 largest. An unnamed text column
+        # with that many values is more often free text.
+        if not 2 <= k <= (60 if named else 30):
             continue
         vc = df[c].value_counts()
-        if vc.iloc[-1] < 5 and k > 12:
+        if vc.iloc[-1] < 5 and k > 12 and not named:
             continue
         score = (10 if _words(c) & _GROUP_WORDS else 0) + (5 if 3 <= k <= 12 else 0) \
             - (3 if k == 2 else 0)
@@ -470,12 +480,20 @@ def _distribution(df, T, metric) -> Optional[ReportChart]:
 
 
 def _correlations(df, T, measures) -> Optional[ReportChart]:
+    from app.engines.story_engine import _is_tautological_pair
     cols = measures[:8]
     if len(cols) < 3:
         return None
     corr = df[cols].corr(method="spearman")
     off = corr.where(~np.eye(len(cols), dtype=bool))
-    pairs = off.abs().stack().sort_values(ascending=False)
+    # dropna: pandas 3 keeps the masked diagonal in stack(), and a NaN
+    # pair fails every comparison, so "Quantity and quantity (r=1.00)"
+    # passed the threshold below.
+    pairs = off.abs().stack().dropna().sort_values(ascending=False)
+    # Pairs that are arithmetic (revenue against the quantity it is
+    # computed from) say nothing about the business; a grid made only of
+    # them is an exhibit with no finding.
+    pairs = pairs[[not _is_tautological_pair(str(a), str(b)) for a, b in pairs.index]]
     if pairs.empty or pairs.iloc[0] < 0.3:
         return None            # a grid of zeros tells the reader nothing
     n = len(cols)
@@ -500,6 +518,8 @@ def _correlations(df, T, measures) -> Optional[ReportChart]:
         png = _png(fig)
     seen, lines = set(), []
     for (a, b), _ in pairs.items():
+        if a == b:
+            continue
         if (b, a) in seen or len(lines) >= 3:
             continue
         seen.add((a, b))
@@ -517,6 +537,69 @@ def _correlations(df, T, measures) -> Optional[ReportChart]:
                        kind="correlation", columns=tuple(cols))
 
 
+_ITEM_WORDS = {"product", "description", "item", "sku", "title", "name", "article",
+               "stockcode", "model"}
+
+
+def _item_column(df: pd.DataFrame) -> Optional[str]:
+    """What is sold: a product or description column with many values."""
+    for c in text_columns(df):
+        w = _words(c)
+        if not w & _ITEM_WORDS or w & {"customer", "client", "user", "first", "last"}:
+            continue
+        k = df[c].nunique(dropna=True)
+        if 15 <= k <= len(df) * 0.5:
+            return c
+    return None
+
+
+_SERVICE_LINES = (r"\b(?:postage|shipping|delivery|carriage|freight|fee|fees|charges?|"
+                  r"manual|adjust(?:ment)?|discount|bank charges|samples?|"
+                  r"cruk commission|amazon fee)\b")
+
+
+def _plural_items(item) -> str:
+    """What a reader calls the things in an item column: a "Description"
+    column holds products, not "descriptions"."""
+    w = _words(item)
+    if w & {"description", "title", "name", "article", "stockcode", "sku", "product"}:
+        return tr("products")
+    label = _label(item).lower()
+    return label if label.endswith("s") else label + "s"
+
+
+def _top_items(df, T, metric, item) -> Optional[ReportChart]:
+    """The ten items with the largest total, and their share of it."""
+    data = df[[item, metric]].dropna()
+    # Postage, fees and manual adjustments are lines on an invoice, not
+    # things sold: "DOTCOM POSTAGE" ranked second among a retailer's
+    # "products". They stay in every total, only out of this ranking.
+    service = data[item].astype(str).str.contains(_SERVICE_LINES, case=False, regex=True)
+    n_service = int(data.loc[service, item].nunique())
+    data = data[~service]
+    agg = data.groupby(item)[metric].sum()
+    total = float(agg[agg > 0].sum())
+    if total <= 0 or len(agg) < 15:
+        return None
+    top = agg.sort_values(ascending=False).iloc[:10]
+    labels = [str(x)[:38] for x in top.index]
+    m_lbl = _label(metric).lower()
+    png = _bars(T, labels, top.values, tr("Total {measure}", measure=m_lbl))
+    share = float(top.sum()) / total * 100
+    items = _plural_items(item)
+    caption = tr("The ten largest of {n} {items} bring {share} of total {measure}; the "
+                 "largest, {first}, brings {first_share}.",
+                 n=fmt(len(agg)), items=items, share=_pct(share),
+                 measure=m_lbl, first=labels[0],
+                 first_share=_pct(float(top.iloc[0]) / total * 100))
+    if n_service:
+        caption += " " + tr("Postage, fees and manual adjustments are not products and "
+                            "are left out of the ranking, not the totals.")
+    return ReportChart(title=tr("Top ten {items} by {measure}", items=items,
+                                measure=m_lbl),
+                       png=png, caption=caption, kind="top_items", columns=(metric, item))
+
+
 def build_report_charts(df: pd.DataFrame, theme_name: str = "", domain: str = "general",
                         max_charts: int = 5) -> List[ReportChart]:
     """The charts worth printing for this dataset, most useful first."""
@@ -531,10 +614,13 @@ def build_report_charts(df: pd.DataFrame, theme_name: str = "", domain: str = "g
     plan = []
     if outcome and group:
         plan.append(lambda: _rate_by_group(df, T, outcome, group))
-    if primary and group:
-        plan.append(lambda: _by_group(df, T, primary, group))
+    item = _item_column(df)
     if primary and date_col:
         plan.append(lambda: _trend(df, T, primary, date_col))
+    if primary and group:
+        plan.append(lambda: _by_group(df, T, primary, group))
+    if primary and item and is_additive(primary):
+        plan.append(lambda: _top_items(df, T, primary, item))
     if primary:
         plan.append(lambda: _distribution(df, T, primary))
     if len(measures) >= 3:

@@ -59,6 +59,7 @@ export default function DashboardPage() {
   const { dataset, filters, addFilter } = useApp()
   const [fields, setFields] = useState<Field[]>([])
   const [kpis, setKpis] = useState<Kpi[]>([])
+  const [period, setPeriod] = useState('')
   const [tiles, setTiles] = useState<TileSpec[]>([])
   const [tileState, setTileState] = useState<Record<string, TileState>>({})
   const [layout, setLayout] = useState<LayoutItem[]>([])
@@ -107,12 +108,16 @@ export default function DashboardPage() {
   // ── refetch KPIs + all tiles when filters change ──────
   const loadKpis = useCallback(() => {
     if (!ds) return
-    apiPost<{ kpis: Kpi[] }>(`/api/charts/${ds}/kpis`, { filters })
-      .then((r) => setKpis(r.kpis))
+    apiPost<{ kpis: Kpi[]; period?: string }>(`/api/charts/${ds}/kpis`, { filters })
+      .then((r) => {
+        setKpis(r.kpis)
+        setPeriod(r.period ?? '')
+      })
       // On failure the cards used to keep the previous filters' numbers
       // under the new filters. Clear them and say why.
       .catch((e) => {
         setKpis([])
+        setPeriod('')
         setError(`The KPI cards could not be computed for these filters: ${e instanceof Error ? e.message : String(e)}`)
       })
   }, [ds, filters])
@@ -199,6 +204,12 @@ export default function DashboardPage() {
         <FilterBar />
       </div>
 
+      {period && (
+        <p className="mb-2 text-xs text-mute">
+          {period}
+          {filters.length > 0 && ' · for the rows the filters keep'}
+        </p>
+      )}
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
         {kpis.map((k) => (
           <KpiCard key={k.label} kpi={k} />
@@ -338,12 +349,32 @@ function TileBuilder({
   const sel =
     'w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink'
 
+  // Escape and a click outside close the dialog; before, only the X did,
+  // and a keyboard user was left with the page behind it blocked.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-96 rounded-2xl border border-edge bg-panel p-5">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div
+        className="w-96 rounded-2xl border border-edge bg-panel p-5"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-tile-title"
+      >
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="font-semibold text-ink">Add tile</h3>
-          <button onClick={onClose} className="text-mute hover:text-ink">
+          <h3 id="add-tile-title" className="font-semibold text-ink">Add tile</h3>
+          <button onClick={onClose} className="text-mute hover:text-ink" aria-label="Close">
             <X className="h-4 w-4" />
           </button>
         </div>

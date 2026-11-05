@@ -29,6 +29,7 @@ from app.engines.domains.hr        import _insights_hr, _run_attrition
 from app.engines.domains.ecommerce import _insights_ecommerce
 from app.engines.domains.sales     import _insights_sales
 from app.engines.domains.finance   import _insights_finance
+from app.engines.domains.marketing import _insights_marketing
 from app.engines.domains.general   import _insights_general
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,13 @@ def _is_tautological_pair(a: str, b: str) -> bool:
         return True
     # Both money/price-like
     if has(a, price) and has(b, price):
+        return True
+    # Units against price or money on an order line: revenue is units times
+    # price, and cheap items sell in larger quantities. Arithmetic and
+    # catalogue shape, not a finding about the business.
+    qty = ("quantity", "qty", "units", "volume")
+    if (has(a, qty) and has(b, price + ("sales", "total"))) or \
+            (has(b, qty) and has(a, price + ("sales", "total"))):
         return True
     # Both are counts of the same thing
     if ("count" in a and "count" in b) or ("total" in a and "total" in b):
@@ -289,8 +297,9 @@ def _build_narrative_summary(
             None,
         )
         if top is not None and abs(top["r"]) >= 0.25:
+            how = "rise together" if top["r"] > 0 else "move in opposite directions"
             support.append(
-                f"'{top['col_a']}' and '{top['col_b']}' move together "
+                f"'{top['col_a']}' and '{top['col_b']}' {how} "
                 f"(r={top['r']:+.2f}, {top['strength']})."
             )
 
@@ -319,8 +328,19 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
         raw = _insights_sales(df, all_stats, corrs)
     elif domain == "finance":
         raw = _insights_finance(df, all_stats, corrs)
+    elif domain == "marketing":
+        raw = _insights_marketing(df, all_stats, corrs)
     else:
         raw = _insights_general(df, all_stats, corrs)
+
+    # A month that breaks from the ones before it matters whatever the data
+    # is about; the general engine runs this check itself.
+    if domain != "general":
+        from app.engines.domains.general_depth import unusual_months
+        for key in ("findings", "risks", "opportunities", "insights"):
+            raw.setdefault(key, [])
+        unusual_months(df, raw["insights"], raw["findings"], raw["risks"],
+                       raw["opportunities"])
 
     # Top up from the general engine only where the domain engine came back
     # thin. Previously this merged unconditionally, which meant the general

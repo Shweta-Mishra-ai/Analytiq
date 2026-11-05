@@ -118,9 +118,13 @@ def analyze(df: pd.DataFrame) -> DatasetStats:
     # ── Correlations with significance ─────────────────────
     if len(num_cols) >= 2:
         ds.correlations = _correlation_analysis(df, num_cols)
+        from app.engines.story_engine import _is_tautological_pair
+        # Arithmetic pairs (revenue and the quantity it is computed from)
+        # stay in the full matrix but are not reported as findings.
         ds.top_correlations = [
             c for c in ds.correlations
             if c.is_significant and c.strength in ("strong", "moderate")
+            and not _is_tautological_pair(str(c.col_a), str(c.col_b))
         ][:8]
         ds.has_strong_correlations = any(
             c.strength == "strong" for c in ds.correlations if c.is_significant

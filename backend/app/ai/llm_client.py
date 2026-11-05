@@ -123,6 +123,9 @@ class LLMClient:
         # A local model runs on the client's own hardware, so it is both
         # the only permitted provider under privacy mode and a working
         # fallback when the cloud providers are down or out of quota.
+        from app.ai import claude_client
+        if claude_client.is_configured() and not force:
+            order = ["claude"] + order
         if local_llm.privacy_mode():
             order = ["local"]
         elif local_llm.is_configured():
@@ -132,6 +135,8 @@ class LLMClient:
             try:
                 if prov == "local":
                     result = local_llm.generate(system, user, max_tokens)
+                elif prov == "claude":
+                    result = claude_client.generate(system, user, max_tokens)
                 elif prov == "groq":
                     result = self._groq_report(system, user, max_tokens)
                 elif prov == "gemini" and gemini_client.is_configured():
@@ -147,7 +152,9 @@ class LLMClient:
         return None
 
     def status(self) -> dict:
+        from app.ai import claude_client
         return {
+            **claude_client.status(),
             "groq":         True,
             "gemini":       gemini_client.is_configured(),
             "groq_model":   self.model,
