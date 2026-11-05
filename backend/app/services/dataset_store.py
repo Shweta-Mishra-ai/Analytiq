@@ -84,6 +84,11 @@ class DatasetStore:
     def create(self, owner: str, df_raw: pd.DataFrame, filename: str, size_mb: float,
                sheet_names: Optional[list] = None,
                warnings: Optional[list] = None) -> DatasetMeta:
+        # Every upload path (file, image, video, MCP) arrives here, so an
+        # order-line file without a revenue column gets one in one place.
+        from app.engines.transactions import derive_line_revenue
+        df_raw, derived = derive_line_revenue(df_raw)
+        warnings = list(warnings or []) + ([derived] if derived else [])
         ds_id = uuid.uuid4().hex[:12]
         meta = DatasetMeta(
             dataset_id=ds_id,

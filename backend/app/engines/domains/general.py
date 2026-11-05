@@ -52,23 +52,26 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         median  = st.get("median", 0)
 
         if out_pct > 10:
-            # A high-outlier column is a genuine data-quality RISK — count it.
-            risks.append(
-                "'{}' has {:.0f}% outliers — verify before using it in any "
-                "decision; extremes distort averages and models.".format(col, out_pct))
+            # More than a tenth of the values cannot all be entry errors:
+            # that is a long tail (a minority of large orders, a few big
+            # accounts), the shape of the data. Calling it a data-quality
+            # risk told a retailer to "verify" every bulk order line.
             insights.append(build_insight(
-                title="'{}': {:.0f}% of values lie far from the rest".format(col, out_pct),
-                problem="{:.0f}% of '{}' values fall outside 1.5 times the interquartile "
-                        "range.".format(out_pct, col),
-                cause="They may be entry errors or genuine extremes; the data alone "
-                      "cannot say which",
-                evidence="IQR method: {:.0f}% outliers. Range: {:.2f} to {:.2f}".format(
-                    out_pct, st.get("min", 0), st.get("max", 0)),
-                action="Look at the outlying records and correct any that are errors; "
-                       "keep genuine extremes and report the median beside the mean.",
-                impact="Averages and correlations that use '{}' are pulled by these "
-                       "values.".format(col),
-                severity="warning", category="data_quality"
+                title="'{}' has a long tail: {:.0f}% of values are far from the "
+                      "typical one".format(col, out_pct),
+                problem="{:.0f}% of '{}' values fall outside 1.5 times the "
+                        "interquartile range; the median is {}, the range {} to "
+                        "{}.".format(out_pct, col, _num(median),
+                                     _num(st.get("min", 0)), _num(st.get("max", 0))),
+                cause="At this share the values are mostly the shape of the data, "
+                      "not entry errors, though the most extreme few may be",
+                evidence="IQR method: {:.0f}% beyond the fences.".format(out_pct),
+                action="Check the most extreme records by hand; report the median "
+                       "beside the mean and split any analysis of '{}' into typical "
+                       "and large values.".format(col),
+                impact="Averages that use '{}' describe the large values more than "
+                       "the typical one.".format(col),
+                severity="info", category="data_quality"
             ))
         if abs(skew) > 1.5:
             findings.append(

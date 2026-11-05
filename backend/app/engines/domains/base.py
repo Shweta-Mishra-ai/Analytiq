@@ -69,6 +69,15 @@ def is_id_column(col: str, series=None) -> bool:
     tokens = set(_re.split(r'[^a-z0-9]+', name))
     if tokens & set(_ID_NAME_TOKENS):
         return True
+    # An order or invoice number named only for what it numbers ("Invoice",
+    # "Order", "Receipt") is still an identifier when its values are text.
+    # Not "Invoice Amount" or "Order Total": a measure word makes it one.
+    if (len(tokens - {""}) == 1 and tokens & {"invoice", "order", "receipt",
+                                              "transaction", "booking"}
+            and series is not None):
+        from app.services.dtypes import is_text_dtype
+        if is_text_dtype(series):
+            return True
     # Value-based: only a near-perfect consecutive INTEGER sequence (1,2,3,…)
     # is treated as an identifier. A continuous measure can be all-unique too,
     # so 'all distinct' alone must NOT flag it — that mislabels real metrics.

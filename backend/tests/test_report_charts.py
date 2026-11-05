@@ -99,7 +99,10 @@ def test_no_correlation_grid_when_nothing_correlates():
 def test_charts_are_drawn_in_the_report_colours(domain):
     accent = report_theme.get("", domain)["accent"].lstrip("#")
     target = np.array([int(accent[i:i + 2], 16) for i in (0, 2, 4)])
-    chart = build_report_charts(_orders(), domain=domain)[0]
+    # A bar chart: a trend line, which a report now leads with, is mostly
+    # white space by design.
+    chart = next(c for c in build_report_charts(_orders(), domain=domain)
+                 if c.kind == "by_group")
     px = np.asarray(Image.open(io.BytesIO(chart.png)).convert("RGB")).reshape(-1, 3)
     share = (np.abs(px.astype(int) - target).sum(axis=1) < 30).mean()
     assert share > 0.03, f"accent {accent} covers only {share:.1%} of the chart"

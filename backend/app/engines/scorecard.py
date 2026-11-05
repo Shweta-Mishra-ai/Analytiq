@@ -192,7 +192,8 @@ def build_scorecard(df: pd.DataFrame, bounds=None) -> Scorecard:
     qty = _measure(df, _QTY, exclude=("price",))
     disc = _measure(df, _DISCOUNT, exclude=("amount", "value", "price", "cost"))
     customer = _key_column(df, _CUSTOMER)
-    order = _key_column(df, _ORDER)
+    from app.engines.transactions import cancellation_mask, order_column
+    order = order_column(df, exclude=(customer,)) or _key_column(df, _ORDER)
     dates = df.select_dtypes(include="datetime")
     if not dates.empty:
         sc.date_col = dates.notna().sum().idxmax()
@@ -201,6 +202,10 @@ def build_scorecard(df: pd.DataFrame, bounds=None) -> Scorecard:
     data[rev] = pd.to_numeric(data[rev], errors="coerce")
     data = data[data[rev].notna()]
     sc.total_revenue = float(data[rev].sum())
+    # Lines that reverse a sale: they net off revenue but are not orders.
+    cancelled = cancellation_mask(data) if order else None
+    data["_cancel"] = (cancelled if cancelled is not None
+                       else pd.Series(False, index=data.index))
 
     def figures(part: pd.DataFrame) -> dict:
         r = float(part[rev].sum())
@@ -210,13 +215,16 @@ def build_scorecard(df: pd.DataFrame, bounds=None) -> Scorecard:
             out["Profit"] = ("money", p)
             if r > 0:
                 out["Profit margin"] = ("pct", p / r)
-        n_orders = part[order].nunique() if order else len(part)
+        # A cancellation invoice is not an order: counting "C489449" beside
+        # 489449 put orders down 10% in a year they fell 4%.
+        n_orders = part.loc[~part["_cancel"], order].nunique() if order else len(part)
         out["Orders" if order else "Records"] = ("count", float(n_orders))
         if n_orders:
             out["Average order value" if order else "Revenue per record"] = (
                 "money", r / n_orders)
         if customer:
-            out["Customers"] = ("count", float(part[customer].nunique()))
+            out["Customers"] = ("count", float(
+                part.loc[~part["_cancel"], customer].nunique()))
         if qty:
             out["Units"] = ("count", float(part[qty].sum()))
         if disc:
@@ -273,6 +281,12 @@ def _messages(sc, data, rev, profit, disc, customer, periods):
             detail += " Profit margin {} from {:.1f}% to {:.1f}%.".format(
                 "rose" if pm.change > 0 else "fell" if pm.change < 0 else "held",
                 pm.prior * 100, pm.value * 100)
+        o, aov = by.get("Orders"), by.get("Average order value")
+        if o and aov and o.change is not None and aov.change is not None:
+            # Volume or value: the first question about any revenue change.
+            detail += " Orders {} {:.1f}% and average order value {} {:.1f}%.".format(
+                "rose" if o.change >= 0 else "fell", abs(o.change),
+                "rose" if aov.change >= 0 else "fell", abs(aov.change))
         drivers = _growth_drivers(data, rev, periods)
         if drivers:
             detail += " " + drivers
@@ -286,6 +300,11 @@ def _messages(sc, data, rev, profit, disc, customer, periods):
                     "price."),
             at_stake=abs(r.value - r.prior), kind="positive" if up else "negative",
             lead=True))
+
+    # 1b. Returns and cancellations, which a net figure hides.
+    msg = _returns_message(data, rev, periods, sc)
+    if msg:
+        sc.messages.append(msg)
 
     # 2. Discounting and margin.
     if disc and profit:
@@ -307,14 +326,69 @@ def _messages(sc, data, rev, profit, disc, customer, periods):
             k = max(1, int(round(len(per) * 0.2)))
             share = float(per.iloc[:k].sum() / per.sum() * 100)
             if share >= 50:
+                unnamed = float(data.loc[data[customer].isna(), rev].sum())
+                caveat = ("" if unnamed / total < 0.05 else
+                          " {:.0f}% of revenue is on lines with no customer and is "
+                          "not in either figure.".format(unnamed / total * 100))
+                span = _span_text(data)
                 sc.messages.append(Message(
                     title="The top 20% of customers bring {:.0f}% of revenue".format(share),
-                    detail="{:,} of {:,} customers account for {} of {}.".format(
-                        k, len(per), fmt(per.iloc[:k].sum()), fmt(per.sum())),
+                    detail="{:,} of {:,} customers account for {} of {}{}.{}".format(
+                        k, len(per), fmt(per.iloc[:k].sum()), fmt(per.sum()),
+                        " over " + span if span else "", caveat),
                     action="Put an account plan and a retention check on the largest "
                            "customers; losing a few would move the total.",
                     at_stake=float(per.iloc[:k].sum()) * 0.25, kind="warning"))
     del total
+
+
+def _span_text(data) -> str:
+    dates = data.select_dtypes(include="datetime")
+    if dates.empty:
+        return ""
+    col = dates.notna().sum().idxmax()
+    lo, hi = dates[col].min(), dates[col].max()
+    if pd.isna(lo) or pd.isna(hi):
+        return ""
+    from app.i18n import month_year
+    return "{} to {}".format(month_year(lo), month_year(hi))
+
+
+def _returns_message(data, rev, periods, sc) -> Optional[Message]:
+    """What returns and cancellations took off gross sales. Net revenue is
+    the right headline, but on its own it hides a returns rate that is the
+    first thing a retailer's finance lead asks about."""
+    from app.engines.chart_exporter import fmt
+    part = data[periods[0]] if periods else data
+    neg = part[rev] < 0
+    if not (neg.any() and part["_cancel"].any()):
+        return None
+    returned = -float(part.loc[neg, rev].sum())
+    gross = float(part.loc[~neg, rev].sum())
+    if gross <= 0:
+        return None
+    rate = returned / gross * 100
+    if rate < 1:
+        return None
+    where = sc.period if periods else "period covered"
+    detail = ("Gross sales of {} less {} of returns and cancellations ({:,} lines) "
+              "give net revenue of {}.").format(
+                  fmt(gross), fmt(returned), int(neg.sum()), fmt(gross - returned))
+    if periods:
+        prior = data[periods[1]]
+        pneg = prior[rev] < 0
+        pgross = float(prior.loc[~pneg, rev].sum())
+        if pgross > 0:
+            prate = -float(prior.loc[pneg, rev].sum()) / pgross * 100
+            detail += " The rate was {:.1f}% in the {}.".format(prate, sc.prior_period)
+    return Message(
+        title="Returns and cancellations took {:.1f}% off gross sales in the {}".format(
+            rate, where),
+        detail=detail,
+        action="Break returns down by product and customer: a few lines usually "
+               "carry most of the value, and each is either a quality, a "
+               "description or an ordering problem.",
+        at_stake=returned, kind="warning" if rate >= 5 else "info")
 
 
 def _growth_drivers(data, rev, periods) -> str:
@@ -352,10 +426,14 @@ def _main_category(data) -> Optional[str]:
     best = None
     for c in text_columns(data):
         n = data[c].nunique()
-        if 2 <= n <= 12 and not is_id_column(c, data[c]):
-            words = _words(c)
-            score = (2 if any(w in ("region", "segment", "category", "channel", "market",
-                                    "country", "division") for w in words) else 1)
+        words = _words(c)
+        named = any(w in ("region", "segment", "category", "channel", "market",
+                          "country", "division", "territory", "state") for w in words)
+        # A named grouping may have many members (43 countries); the
+        # largest rise and fall are still readable. An unnamed text column
+        # with that many values is more likely a description.
+        if 2 <= n <= (60 if named else 12) and not is_id_column(c, data[c]):
+            score = 2 if named else 1
             if best is None or score > best[0]:
                 best = (score, c)
     return best[1] if best else None

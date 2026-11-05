@@ -462,7 +462,15 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
             if converted.notna().sum() / max(len(df), 1) <= 0.80:
                 converted = decorated_numbers(df[col])
             success_rate = converted.notna().sum() / max(len(df), 1)
-            if success_rate > 0.80 and not zero_padded:
+            # The values that did not convert say what the column is. When
+            # they are codes — a letter prefix and digits, as in "C489449"
+            # among invoice numbers 489434, 489435 — the column is an
+            # identifier, and converting it left a mix of floats and text
+            # ("489434.0" beside "C489449") that matched nothing upstream.
+            failed = df[col][converted.isna() & df[col].notna()]
+            coded = (len(failed) > 0 and float(failed.astype(str).str.strip()
+                     .str.fullmatch(r"[A-Za-z]{1,3}[-/]?\d+").mean()) > 0.9)
+            if success_rate > 0.80 and not zero_padded and not coded:
                 df[col] = converted.where(converted.notna(), df[col])
                 continue
         except Exception:

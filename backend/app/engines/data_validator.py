@@ -3,6 +3,7 @@ data_validator.py
 Validates DataFrame before analysis.
 Catches garbage data early — never let bad data reach analysis layer.
 """
+import os
 import logging
 import pandas as pd
 import numpy as np
@@ -14,7 +15,10 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────
 MAX_FILE_MB       = 200
-MAX_ROWS          = 1_000_000
+# Two years of a mid-sized shop's order lines is about a million rows; the
+# old 1,000,000 cap refused that export and told the client to sample it,
+# which breaks every total in a business report. Override with MAX_ROWS.
+MAX_ROWS          = int(os.environ.get("MAX_ROWS", "2000000"))
 MIN_ROWS          = 2
 MIN_COLS          = 1
 MAX_COLS          = 500

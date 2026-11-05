@@ -211,7 +211,9 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
     meta = store.get_meta(owner, ds_id)
     data = i18n.data_context(
         df, getattr(meta, "filename", ""), _typed(req.title, "Data Analysis Report"),
-        req.subtitle, _typed(req.client_name, "Client"), req.prepared_by)
+        req.subtitle, _typed(req.client_name, "Client"), req.prepared_by,
+        # The table the cleaning SQL names is the client's object, not English.
+        table_name_from_filename(getattr(meta, "filename", "")))
     with i18n.use_language(lang, **data):
         pdf_bytes = _generate_pdf(df, owner, ds_id, req)
     return Response(
@@ -220,6 +222,7 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
 
 
 def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
+    from app.engines.transactions import is_derivation_note
     from app.engines.data_profiler import profile_dataset
     from app.engines.story_engine import detect_domain, generate_story
     from app.engines.pdf_builder import build_pdf
@@ -341,6 +344,10 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
             getattr(store.get_meta(owner, ds_id), "filename", "")),
         "omitted": omitted,
         "source_file": getattr(store.get_meta(owner, ds_id), "filename", "") or "",
+        # How the figures were derived where the file did not hold them
+        # (a revenue column computed from quantity and price).
+        "data_notes": [w for w in getattr(store.get_meta(owner, ds_id), "warnings", []) or []
+                       if is_derivation_note(w)],
     }
     try:
         pdf_bytes = build_pdf(

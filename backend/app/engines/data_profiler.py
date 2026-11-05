@@ -385,11 +385,18 @@ def _generate_recommendations(
     id_cols     = []
     const_cols  = []
 
+    from app.engines.domains.base import is_id_column
+    id_gaps = []
     for p in profiles:
         if p.is_constant:
             const_cols.append(p.name)
-        elif p.is_id_like:
+        elif p.is_id_like or is_id_column(p.name):
+            # "Customer ID" stored as a number with blanks is still an
+            # identifier: "fill it with the median" would hand the blank
+            # rows to a customer who never placed them.
             id_cols.append(p.name)
+            if p.missing_pct > 1:
+                id_gaps.append((p.name, p.missing_pct))
         elif p.missing_pct > 50:
             drop_cols.append((p.name, p.missing_pct))
         elif p.missing_pct > 5:
@@ -398,6 +405,13 @@ def _generate_recommendations(
             outlier_cols.append((p.name, p.outlier_count, p.outlier_pct))
         if p.skewness and abs(p.skewness) > 2:
             skew_cols.append((p.name, p.skewness))
+
+    for col, pct in id_gaps[:3]:
+        recs.append(
+            "'{}' is blank on {:.1f}% of rows. An identifier cannot be filled "
+            "in — any value would assign those rows to someone they do not "
+            "belong to — so figures per '{}' cover only the rows that have "
+            "one.".format(col, pct, col))
 
     # Constant columns
     if const_cols:

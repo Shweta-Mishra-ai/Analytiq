@@ -136,7 +136,8 @@ def _shape_when_needed():
         return
 
     def __init__(self, text, style=None, *args, **kwargs):
-        if isinstance(text, str):
+        # Code (the cleaning SQL) is never translated.
+        if isinstance(text, str) and not str(getattr(style, "name", "")).endswith("mono"):
             text = translate_markup(text)
         if style is not None and not getattr(style, "shaping", 0) \
                 and isinstance(text, str) and _DEVANAGARI.search(text):

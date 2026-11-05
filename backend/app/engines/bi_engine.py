@@ -220,8 +220,12 @@ def analyze_root_cause(
 
     # Numeric features — compare means
     from app.engines.domains.base import is_id_column
+    from app.engines.story_engine import _is_tautological_pair
+    # A column the target is computed from is not a cause of it: "low
+    # revenue lines have a lower quantity" is the definition of revenue.
     num_cols = [c for c in df.select_dtypes(include="number").columns
-                if c != target_col and not is_id_column(c, df[c])]
+                if c != target_col and not is_id_column(c, df[c])
+                and not _is_tautological_pair(str(c), str(target_col))]
     for col in num_cols[:15]:
         try:
             low_vals  = low_df[col].dropna()

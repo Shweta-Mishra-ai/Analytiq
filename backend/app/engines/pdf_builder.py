@@ -524,10 +524,14 @@ def _basis_box(story, s, T, config):
         "indicative and should be validated against the organisation's own "
         "sector and prior periods before it informs a decision. "
         "Recommendations assume the data is complete and accurate as "
-        "supplied.{}".format(
+        "supplied.{}{}".format(
             _clean(config.get("client_name", "Client")),
             date_text(datetime.now()),
-            _prepared_by_line(config)),
+            _prepared_by_line(config),
+            # Each note on a line of its own: a separate run, so it is
+            # translated as the sentence it is rather than as a fragment
+            # of the paragraph around it.
+            "".join("<br/>" + _clean(n) for n in config.get("data_notes") or [])),
         s["body"])]],
         colWidths=["100%"])
     disc.setStyle(TableStyle([
@@ -765,13 +769,17 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
 
     if dupes > 0:
         dup_pct = dupes / max(raw_rows, 1) * 100
+        # The profile is of the data this report analyses, so duplicates it
+        # counts are still in it. This used to say the analysis "uses the
+        # deduplicated dataset" whether or not anything had been removed.
         warn_t = Table([[Paragraph(
-            "<b>Deduplication Alert:</b> "
-            "{:,} exact duplicate rows ({:.1f}%) were detected in the raw data. "
-            "All analysis in this report uses the deduplicated dataset "
-            "({:,} clean rows). "
-            "If comparing to any prior report on the raw file, numbers will differ — "
-            "this is expected and correct.".format(dupes, dup_pct, len(df)),
+            "<b>Duplicate rows:</b> "
+            "{:,} rows ({:.1f}%) repeat another row in every column and are "
+            "included in the figures that follow. In order-line data a repeat "
+            "can be genuine (the same item keyed twice on one order) or an "
+            "export fault; the source system decides which. Removing them "
+            "(Data Quality, Clean) would change totals by their "
+            "share.".format(dupes, dup_pct),
             s["warn"])]],
             colWidths=["100%"])
         warn_t.setStyle(TableStyle([
@@ -787,7 +795,8 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
     # KPI strip
     _kpi_row(story, s, T, [
         {"label": "TOTAL ROWS",    "value": "{:,}".format(len(df)),
-         "sub": "After deduplication", "color": T["accent"]},
+         "sub": "As analysed" if dupes else "No repeated rows",
+         "color": T["accent"]},
         {"label": "COLUMNS",       "value": str(df.shape[1]),
          "sub": "{} num · {} cat".format(
              len(df.select_dtypes(include="number").columns),
@@ -1253,10 +1262,12 @@ def _stats_section(story, s, T, stats_report, CW):
                 rows, [CW * x for x in (0.30, 0.20, 0.32, 0.18)])
 
     # Correlations
+    from app.engines.story_engine import _is_tautological_pair
     corrs = getattr(stats_report, "correlations", [])
     sig   = [c for c in corrs
              if getattr(c, "is_significant", False)
-             and abs(getattr(c, "pearson_r", 0)) >= 0.15]
+             and abs(getattr(c, "pearson_r", 0)) >= 0.15
+             and not _is_tautological_pair(str(c.col_a), str(c.col_b))]
     if sig:
         story.append(Spacer(1, 2*mm))
         story.append(Paragraph("Measures that move together", s["h3"]))
