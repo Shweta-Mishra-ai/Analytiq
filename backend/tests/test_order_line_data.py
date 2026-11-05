@@ -170,3 +170,11 @@ def test_postage_and_fees_are_not_ranked_as_products():
                if c.kind == "top_items")
     assert "POSTAGE" not in top.caption.split("Postage")[0]
     assert "left out of the ranking" in top.caption
+
+
+def test_root_cause_does_not_name_a_column_the_target_is_computed_from():
+    from app.engines.bi_engine import analyze_root_cause
+    df, _ = tx.derive_line_revenue(_lines(n_customers=200))
+    res = analyze_root_cause(df, "Revenue")
+    factors = {d["factor"] for d in res.drivers}
+    assert not factors & {"Quantity", "Price"}

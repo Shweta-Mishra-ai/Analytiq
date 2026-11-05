@@ -36,7 +36,6 @@ from reportlab.platypus import (
     Paragraph, Spacer, Table, TableStyle,
     Image, HRFlowable, PageBreak, KeepTogether, CondPageBreak,
 )
-from reportlab.platypus.tableofcontents import TableOfContents
 from reportlab.pdfgen import canvas as CV
 from app.engines.report_blueprints import blueprint_for
 from app.services.dtypes import is_text_dtype, text_columns
@@ -502,12 +501,63 @@ def _toc(story, s, T, CW):
         "toc_title", parent=s["h2"], keepWithNext=0)))
     story.append(HRFlowable(width="100%", thickness=0.8, color=_c(T["accent"]),
                             spaceBefore=2, spaceAfter=8))
-    toc = TableOfContents()
-    toc.dotsMinLevel = 0
-    toc.levelStyles = [ParagraphStyle(
-        "toc0", fontName=FONT_REG, fontSize=10.5, leading=20,
-        textColor=_c(T["text"]), leftIndent=0, firstLineIndent=0)]
-    story.append(toc)
+    story.append(_Contents(T, CW))
+
+
+from reportlab.platypus.doctemplate import IndexingFlowable  # noqa: E402
+
+
+class _Contents(IndexingFlowable):
+    """The contents page, as a table of ordinary paragraphs.
+
+    ReportLab's TableOfContents draws each title with plain canvas text, so
+    Hindi headings came out unshaped (conjuncts broken apart). Here every
+    title is a Paragraph, shaped like the rest of the report. multiBuild
+    reruns the layout until the page numbers stop changing."""
+
+    def __init__(self, T, width):
+        super().__init__()
+        self.T, self.width = T, width
+        self._entries, self._last = [], []
+        self._table = None
+
+    def beforeBuild(self):
+        self._last, self._entries = self._entries, []
+
+    def isSatisfied(self):
+        return self._entries == self._last
+
+    def notify(self, kind, stuff):
+        if kind == "TOCEntry":
+            self._entries.append((stuff[1], stuff[2]))
+
+    def _build(self):
+        style = ParagraphStyle("toc0", fontName=FONT_REG, fontSize=10.5, leading=14,
+                               textColor=_c(self.T["text"]))
+        num = ParagraphStyle("toc0n", parent=style, alignment=TA_RIGHT)
+        rows = [[Paragraph(title, style), Paragraph(str(page), num)]
+                for title, page in (self._last or [("", "")])]
+        t = Table(rows, colWidths=[self.width - 14 * mm, 14 * mm])
+        t.setStyle(TableStyle([
+            ("LINEBELOW", (0, 0), (-1, -1), 0.4, _c(self.T["border"])),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        return t
+
+    def wrap(self, aw, ah):
+        self._table = self._build()
+        return self._table.wrap(aw, ah)
+
+    def split(self, aw, ah):
+        self._table = self._build()
+        return self._table.split(aw, ah)
+
+    def drawOn(self, canvas, x, y, _sW=0):
+        self._table.drawOn(canvas, x, y, _sW)
 
 
 def _basis_box(story, s, T, config):
@@ -603,7 +653,9 @@ class _ReportDoc(BaseDocTemplate):
                 flowable.style.name.split("-shaped")[0] == "h2":
             # getPlainText drops the <font> that sets Hindi in a face that
             # has it; put it back or the contents line prints as boxes.
-            self.notify("TOCEntry", (0, _clean(flowable.getPlainText()), self.page))
+            src = getattr(flowable, "source_markup", None)
+            self.notify("TOCEntry", (0, src if isinstance(src, str)
+                                     else _clean(flowable.getPlainText()), self.page))
 
 
 # ══════════════════════════════════════════════════════════

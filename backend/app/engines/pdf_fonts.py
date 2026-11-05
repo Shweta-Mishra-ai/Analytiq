@@ -144,6 +144,9 @@ def _shape_when_needed():
             from reportlab.lib.styles import ParagraphStyle
             style = ParagraphStyle(style.name + "-shaped", parent=style, shaping=1)
         original(self, text, style, *args, **kwargs)
+        # The markup as given: once shaped, getPlainText returns glyph
+        # codes, and a contents entry made from them breaks apart.
+        self.source_markup = text
 
     __init__._shapes_devanagari = True
     _p.Paragraph.__init__ = __init__
