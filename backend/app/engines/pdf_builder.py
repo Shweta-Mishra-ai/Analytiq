@@ -831,13 +831,17 @@ def _dq_note(story, s, T, df: pd.DataFrame, profile, CW):
         # counts are still in it. This used to say the analysis "uses the
         # deduplicated dataset" whether or not anything had been removed.
         warn_t = Table([[Paragraph(
-            "<b>Duplicate rows:</b> "
-            "{:,} rows ({:.1f}%) repeat another row in every column and are "
-            "included in the figures that follow. In order-line data a repeat "
-            "can be genuine (the same item keyed twice on one order) or an "
-            "export fault; the source system decides which. Removing them "
-            "(Data Quality, Clean) would change totals by their "
-            "share.".format(dupes, dup_pct),
+            "<b>Duplicate rows:</b> " + (
+                "1 row ({:.1f}%) repeats another row in every column and is "
+                "included in the figures that follow.".format(dup_pct) if dupes == 1 else
+                "{:,} rows ({:.1f}%) repeat another row in every column and are "
+                "included in the figures that follow.".format(dupes, dup_pct)) +
+            " In order-line data a repeat can be genuine (the same item keyed "
+            "twice on one order) or an export fault; the source system decides "
+            "which. " + ("Removing it (Data Quality, Clean) would change totals by "
+                         "its share." if dupes == 1 else
+                         "Removing them (Data Quality, Clean) would change totals by "
+                         "their share."),
             s["warn"])]],
             colWidths=["100%"])
         warn_t.setStyle(TableStyle([
