@@ -464,7 +464,7 @@ def _generate_recommendations(
             "{} column(s) are heavily skewed — {}. Report their median rather "
             "than the mean.".format(
                 len(skew_cols),
-                ", ".join(["'{}' (skew={:.1f})".format(c,s) for c,s in skew_cols[:3]]))
+                " · ".join(["'{}' (skew={:.1f})".format(c,s) for c,s in skew_cols[:3]]))
         )
 
     # ID columns

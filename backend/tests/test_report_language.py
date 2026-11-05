@@ -168,3 +168,15 @@ def test_the_hindi_contents_page_lists_the_sections(client):
     contents = pypdf.PdfReader(io.BytesIO(r.content)).pages[1].extract_text()
     pages = re.findall(r"(\d+)\s*$", contents, flags=re.M)
     assert len([p for p in pages if int(p) > 1]) >= 4, contents
+
+
+def test_english_carried_through_a_placeholder_is_recorded():
+    """A placeholder matches any text, so a sentence could come out half
+    English ("16.4 मिलियन over Dec 2009 to Dec 2011") with no miss."""
+    with i18n.use_language("hi"):
+        i18n.clear_misses()
+        i18n.tr("Exit rate by department: rose sharply over the winter months.")
+        assert i18n.misses()
+        i18n.clear_misses()
+        i18n.tr("Exit rate by department: 12%.")
+        assert not i18n.misses()

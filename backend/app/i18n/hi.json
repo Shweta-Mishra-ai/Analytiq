@@ -1574,7 +1574,6 @@
  "{v1} cohort(s) below average: {v2}. Prioritize improvement in these segments.": "{v1} समूह औसत से नीचे: {v2}। इन खंडों में सुधार को प्राथमिकता दें।",
  "{v1} cohorts compared on '{v2}'. Best: '{v3}' (mean={v4}), Worst: '{v5}' (mean={v6}). Gap: {v7}% ({v8:t} difference, {v9:t} p={v10}).": "'{v2}' पर {v1} समूहों की तुलना। सर्वश्रेष्ठ: '{v3}' (औसत={v4}), सबसे कमज़ोर: '{v5}' (औसत={v6})। अंतर: {v7}% ({v8} अंतर, {v9} p={v10})।",
  "{v1} column(s)": "{v1} कॉलम",
- "{v1} column(s) are heavily skewed — {v2}. Report their median rather than the mean.": "{v1} कॉलम बहुत अधिक झुके हुए हैं — {v2}। इनके लिए औसत के बजाय माध्यिका बताएँ।",
  "{v1} column(s) contain notable outliers; most in '{v2}' ({v3} values, {v4}%). Check whether they are entry errors or genuine extremes before removing any.": "{v1} कॉलम में उल्लेखनीय असामान्य मान हैं; सबसे अधिक '{v2}' में ({v3} मान, {v4}%)। किसी को हटाने से पहले जाँचें कि वे दर्ज करने की त्रुटियाँ हैं या वास्तविक चरम मान।",
  "{v1} column(s) have >30% missing data": "{v1} कॉलम में 30% से अधिक डेटा अनुपलब्ध है",
  "{v1} column(s) have missing values — imputation method depends on distribution shape.": "{v1} कॉलम में अनुपलब्ध मान हैं — भरने का तरीका वितरण के आकार पर निर्भर है।",
@@ -1838,5 +1837,7 @@
  "filled with '{v1}'": "'{v1}' से भरा गया",
  "{n} million": "{n} मिलियन",
  "{n} billion": "{n} बिलियन",
- "Postage, fees and manual adjustments are not products and are left out of the ranking, not the totals.": "डाक, शुल्क और हाथ से किए गए समायोजन उत्पाद नहीं हैं; वे इस क्रम से बाहर हैं, योगों से नहीं।"
+ "Postage, fees and manual adjustments are not products and are left out of the ranking, not the totals.": "डाक, शुल्क और हाथ से किए गए समायोजन उत्पाद नहीं हैं; वे इस क्रम से बाहर हैं, योगों से नहीं।",
+ "{v1} of {v2} customers account for {v3} of {v4} over {v5} to {v6}.": "{v5} से {v6} तक {v2} में से {v1} ग्राहकों का हिस्सा {v4} में से {v3} है।",
+ "{v1} column(s) are heavily skewed — {v2:t}. Report their median rather than the mean.": "{v1} कॉलम बहुत अधिक झुके हुए हैं — {v2}। इनके लिए औसत के बजाय माध्यिका बताएँ।"
 }

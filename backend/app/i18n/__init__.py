@@ -267,6 +267,8 @@ def tr(text, **values) -> str:
     if not values and done is not None and _norm(text) in done:
         return text
     out = _tr(text, values, cat)
+    if out != text:
+        _check_value(out, text)
     if done is not None and len(done) < 20000:
         done.add(_norm(out))
     return out
@@ -377,6 +379,24 @@ def _core(text: str, cat: _Catalog) -> Optional[str]:
         else:
             out[k] = _months(v, cat)
     return tpl.render(out)
+
+
+# Latin-script words a translation may keep: names and notation.
+_KEPT_WORDS = {"SQL", "Analytiq", "Unknown", "Gini", "Kruskal", "Wallis", "Mann",
+               "Whitney", "Spearman", "Pearson", "Iglewicz", "Hoaglin", "COGS",
+               "RFM", "IQR", "ROC", "AUC", "MAE", "RMSE", "XGBoost", "True", "False"}
+
+
+def _check_value(out: str, source: str) -> None:
+    """Record a finished translation that still carries English words. A
+    placeholder matches any text, so "{v4}" could take "16.4M over Dec 2009
+    to Dec 2011" whole and the sentence came out half English with nothing
+    recorded. The data's own names and values are allowed."""
+    words = [w for w in re.findall(r"[A-Za-z]{3,}", _ENTITY.sub("", out))
+             if w not in _KEPT_WORDS]
+    if not words or _only_data(" ".join(words)):
+        return
+    _miss(source)
 
 
 _QUOTED = re.compile(r"'([^']+)'")

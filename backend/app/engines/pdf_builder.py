@@ -601,7 +601,9 @@ class _ReportDoc(BaseDocTemplate):
         # report's contents page empty but for ReportLab's placeholder.
         if isinstance(flowable, Paragraph) and \
                 flowable.style.name.split("-shaped")[0] == "h2":
-            self.notify("TOCEntry", (0, flowable.getPlainText(), self.page))
+            # getPlainText drops the <font> that sets Hindi in a face that
+            # has it; put it back or the contents line prints as boxes.
+            self.notify("TOCEntry", (0, _clean(flowable.getPlainText()), self.page))
 
 
 # ══════════════════════════════════════════════════════════
