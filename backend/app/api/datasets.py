@@ -68,11 +68,22 @@ async def read_capped(file: UploadFile, limit_mb: int) -> bytes:
     return b"".join(chunks)
 
 
+def guard_upload(filename: str, data: bytes) -> None:
+    """Refuse a file whose bytes are not what its name says, that carries
+    macros or a compression bomb, or that the virus scanner flags."""
+    from app.services.upload_guard import UploadRejected, check
+    try:
+        check(filename, data)
+    except UploadRejected as e:
+        raise HTTPException(e.status, str(e))
+
+
 def _process_upload(owner: str, filename: str, data: bytes, sheet: str) -> dict:
     """Heavy parsing/validation — runs in the threadpool, off the event loop."""
     ok, msg = validate_file_size(len(data))
     if not ok:
         raise HTTPException(413, msg)
+    guard_upload(filename, data)
 
     shim = _UploadShim(filename, data)
     sheet_arg = int(sheet) if sheet.isdigit() else sheet
@@ -104,6 +115,7 @@ async def upload_dataset(file: UploadFile = File(...), sheet: str = Query("0"),
 
 
 def _process_image_extract(owner: str, filename: str, data: bytes) -> dict:
+    guard_upload(filename, data)
     from app.services.table_extractor import (ExtractionError,
                                               extract_table_from_image)
     try:
@@ -147,6 +159,7 @@ def _process_video_extract(owner: str, filename: str, data: bytes) -> dict:
     if ext not in _VIDEO_EXTS:
         raise HTTPException(422, f"Unsupported video type '{ext}'. "
                              f"Use one of: {', '.join(sorted(_VIDEO_EXTS))}")
+    guard_upload(filename, data)
     try:
         df, extraction_warnings = extract_table_from_video(filename, data, ext)
     except ExtractionError as e:

@@ -184,6 +184,11 @@ def _create(owner: str, name: str, data: bytes):
     ok, msg = validate_file_size(len(data))
     if not ok:
         raise ValueError(msg)
+    from app.services.upload_guard import UploadRejected, check
+    try:
+        check(name, data)
+    except UploadRejected as e:
+        raise ValueError(str(e))
     result = load_file(_UploadShim(name, data))
     if not result.success or result.df is None:
         raise ValueError(result.error or "The file could not be read.")
@@ -480,6 +485,23 @@ def report_dir() -> str:
     return d
 
 
+def sweep_reports(now: Optional[float] = None) -> int:
+    """Delete report files whose download links have expired. They used to
+    stay on disk forever after the one-hour link stopped working."""
+    now = time.time() if now is None else now
+    removed = 0
+    d = report_dir()
+    for name in os.listdir(d):
+        path = os.path.join(d, name)
+        try:
+            if name.endswith(".pdf") and now - os.path.getmtime(path) > DOWNLOAD_TTL:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            logger.warning("could not remove expired report %s", name, exc_info=True)
+    return removed
+
+
 def verify_download(name: str, exp: int, sig: str) -> Optional[str]:
     """The file a download link names, if the link is genuine and current."""
     if exp < time.time() or not hmac.compare_digest(sig, _sign(name, exp)):
@@ -549,6 +571,7 @@ def generate_report(ctx: Context, dataset_id: str, kind: str = "analysis",
             f.write(pdf)
         return f"Saved the {pages}-page {kind} report to `{target}`."
     name = f"{stem}_{secrets.token_hex(6)}.pdf"
+    sweep_reports()
     with open(os.path.join(report_dir(), name), "wb") as f:
         f.write(pdf)
     exp = int(time.time()) + DOWNLOAD_TTL

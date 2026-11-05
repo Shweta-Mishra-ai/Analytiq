@@ -78,6 +78,8 @@ def delete_kb(kb_id: str, owner: str = Depends(current_owner)):
 
 def _process_kb_upload(kb, name: str, data: bytes) -> dict:
     """Heavy extraction/embedding — runs in the threadpool."""
+    from app.api.datasets import guard_upload
+    guard_upload(name, data)
     kind = service.file_kind(name)
     if kind in ("image", "video") and not config.gemini_api_key:
         raise HTTPException(
