@@ -131,7 +131,29 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     # ── Segment-difference insight — works on ANY dataset ────────────────
     # Best categorical × numeric pair, tested with Kruskal-Wallis so the
     # report can say "segment X outperforms Y" with a defensible p-value.
-    seg = _best_segment_difference(df, num_cols)
+    seg, mixed = _best_segment_difference(df, num_cols)
+    if mixed:
+        mixed = {**mixed, "lo_txt": _num(mixed["lo"]), "hi_txt": _num(mixed["hi"])}
+        insights.append(build_insight(
+            title="'{num}' gap between '{hi_seg}' and '{lo_seg}' reverses within "
+                  "'{z}'".format(**mixed),
+            problem=("Overall, median '{num}' is {hi_txt} in '{hi_seg}' against "
+                     "{lo_txt} in '{lo_seg}', but within every '{z}' group with "
+                     "enough records '{lo_seg}' is the higher of the two.".format(**mixed)),
+            cause=("The overall gap comes from how the two are spread across '{z}' "
+                   "(Simpson's paradox), not from a difference between them."
+                   .format(**mixed)),
+            evidence=("Pooled: Kruskal-Wallis {ptxt} after adjusting for {m} tests, "
+                      "n={n:,}. Within '{z}': the order reverses in every group holding "
+                      "10 or more of each.".format(**mixed)),
+            action=("Compare '{hi_seg}' and '{lo_seg}' within each '{z}' group, never "
+                    "on the pooled figure.".format(**mixed)),
+            impact="",
+            severity="warning", category="segmentation",
+        ))
+        findings.append(
+            "'{hi_seg}' leads '{lo_seg}' on '{num}' overall but trails it within every "
+            "'{z}' group: the pooled gap is a mix effect.".format(**mixed))
     if seg:
         seg = {**seg, "lo_txt": _num(seg["lo"]), "hi_txt": _num(seg["hi"])}
         # NOTE: neutral highest/lowest labels — whether high is good or bad
@@ -255,6 +277,32 @@ def _is_obvious_segment_pair(cat: str, num: str) -> bool:
     return False
 
 
+def _reverses_within(df: pd.DataFrame, seg: dict, min_rows: int = 10) -> str | None:
+    """Another column within every group of which the two segments trade
+    places: '{hi_seg}' leads overall but '{lo_seg}' leads in each group.
+    Returns that column, or None. At least two groups must hold enough of
+    both segments for the comparison to mean anything."""
+    cat, num, hi, lo = seg["cat"], seg["num"], seg["hi_key"], seg["lo_key"]
+    sub = df[df[cat].astype("string").isin([hi, lo])]
+    for z in df.select_dtypes(include=["object", "string"]).columns:
+        if z == cat or not 2 <= df[z].nunique(dropna=True) <= 8:
+            continue
+        try:
+            compared, reversed_ = 0, 0
+            for _, g in sub[[z, cat, num]].dropna().groupby(z, observed=True):
+                a = g.loc[g[cat].astype("string") == hi, num]
+                b = g.loc[g[cat].astype("string") == lo, num]
+                if len(a) < min_rows or len(b) < min_rows:
+                    continue
+                compared += 1
+                reversed_ += float(b.median()) > float(a.median())
+            if compared >= 2 and reversed_ == compared:
+                return str(z)
+        except Exception:
+            logger.warning("reversal check failed (%s)", z, exc_info=True)
+    return None
+
+
 def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
     """
     Find the categorical × numeric pair with the strongest group difference
@@ -297,9 +345,9 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
                 logger.warning("segment difference test failed (%s × %s)",
                                cat, num, exc_info=True)
     if not tested:
-        return None
+        return None, None
     qvals = bh_adjust([t[5] for t in tested])
-    best = None
+    best = reversal = None
     for (cat, num, sub, k, h, _p), q in zip(tested, qvals):
         if q >= 0.01:
             continue
@@ -321,17 +369,27 @@ def _best_segment_difference(df: pd.DataFrame, num_cols) -> dict | None:
         standardised = abs(hi - lo) / spread
         if ratio < MIN_SEGMENT_RATIO and standardised < MIN_SEGMENT_EFFECT:
             continue
+        cand = {
+            "cat": cat, "num": num, "h": h,
+            "ptxt": "p<0.001" if q < 0.001 else "p={:.3f}".format(q),
+            "m": len(tested),
+            "k": k, "n": len(sub),
+            "lo_seg": str(med.index[0])[:30], "hi_seg": str(med.index[-1])[:30],
+            "lo_key": str(med.index[0]), "hi_key": str(med.index[-1]),
+            "lo": lo, "hi": hi,
+            "ratio": min(ratio, 999.0),
+        }
+        # A gap that reverses inside every group of another column is a mix
+        # effect (Simpson's paradox); headlined, it named the wrong segment
+        # as the weak one.
+        z = _reverses_within(df, cand)
+        if z:
+            if reversal is None or h > reversal["h"]:
+                reversal = {**cand, "z": z}
+            continue
         if best is None or h > best["h"]:
-            best = {
-                "cat": cat, "num": num, "h": h,
-                "ptxt": "p<0.001" if q < 0.001 else "p={:.3f}".format(q),
-                "m": len(tested),
-                "k": k, "n": len(sub),
-                "lo_seg": str(med.index[0])[:30], "hi_seg": str(med.index[-1])[:30],
-                "lo": lo, "hi": hi,
-                "ratio": min(ratio, 999.0),
-            }
-    return best
+            best = cand
+    return best, reversal
 
 
 # ══════════════════════════════════════════════════════════

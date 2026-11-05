@@ -333,6 +333,15 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
     else:
         raw = _insights_general(df, all_stats, corrs)
 
+    # A month that breaks from the ones before it matters whatever the data
+    # is about; the general engine runs this check itself.
+    if domain != "general":
+        from app.engines.domains.general_depth import unusual_months
+        for key in ("findings", "risks", "opportunities", "insights"):
+            raw.setdefault(key, [])
+        unusual_months(df, raw["insights"], raw["findings"], raw["risks"],
+                       raw["opportunities"])
+
     # Top up from the general engine only where the domain engine came back
     # thin. Previously this merged unconditionally, which meant the general
     # findings were appended even to a rich HR/sales report (and duplicated
