@@ -359,6 +359,11 @@ def build_insights(df: pd.DataFrame, niche: str) -> list:
 # The domain engines emit a richer severity ladder than the report's card
 # renderer understands. Anything unmapped would fall back to "info" and be
 # rendered as a neutral blue card, quietly demoting a critical finding.
+# Card labels for categories whose code name reads badly once title-cased
+# ("Marketing Cpa").
+_TAG_LABELS = {"marketing_cpa": "cost per conversion",
+               "marketing_roas": "return on ad spend"}
+
 _SEVERITY_TO_CARD = {
     "critical": "critical",
     "high":     "critical",
@@ -398,7 +403,8 @@ def _insight_to_card(ins) -> Dict:
     if ins.impact and str(ins.impact).strip():
         body = f"{body} {_sentence(ins.impact)}"
 
-    tag = str(getattr(ins, "category", "") or severity).upper().replace("_", " ")
+    cat = str(getattr(ins, "category", "") or severity)
+    tag = _TAG_LABELS.get(cat, cat).upper().replace("_", " ")
     return {"tag": tag, "topic": str(getattr(ins, "category", "") or ""),
             "title": str(ins.title), "body": body,
             "action": str(ins.action), "severity": severity,

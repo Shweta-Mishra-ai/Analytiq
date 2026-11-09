@@ -1,0 +1,20 @@
+{
+  "name": "analytiq",
+  "version": "1.0.0",
+  "description": "Business and statistical analysis of CSV, Excel and JSON files, with consulting-style PDF reports in English or Hindi. Claude receives computed, tested summaries instead of reading the rows.",
+  "author": {
+    "name": "Shweta Mishra",
+    "url": "https://github.com/Shweta-Mishra-ai"
+  },
+  "homepage": "https://github.com/Shweta-Mishra-ai/Analytiq",
+  "repository": "https://github.com/Shweta-Mishra-ai/Analytiq",
+  "keywords": ["data-analysis", "csv", "excel", "statistics", "reports", "pdf", "hindi"],
+  "mcpServers": {
+    "analytiq": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/plugin/launch.py"]
+    }
+  },
+  "hooks": "./plugin/hooks.json",
+  "skills": ["./plugin/skills"]
+}

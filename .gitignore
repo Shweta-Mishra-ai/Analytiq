@@ -6,3 +6,8 @@ node_modules/
 dist/
 .DS_Store
 *.pkl
+coverage/
+test-results/
+playwright-report/
+coverage.xml
+.coverage

@@ -177,7 +177,15 @@ class _Template:
             # A value never runs on into the next sentence: a template
             # ending in a placeholder would otherwise swallow the rest
             # of a paragraph and pass it through untranslated.
-            parts.append(f"(?P<{name}>(?:(?![.!?।]\\s+\\S).)+?)")
+            # A plain value is one figure or name, so it never spans the
+            # list separator either: "Spend {v1}" took a whole " · " list
+            # and left every item after the first in English. Only a
+            # translated part ({vN:t}) with the template's own wording
+            # before it may hold a list ("… heavily skewed — {v2:t}."); one
+            # that opens the template ("{v1:t}: {v2} deals, {v3}", an item)
+            # swallowed the sentence's own opening and the items before.
+            guard = "" if m.group(2) and m.start() > 0 else "(?!\\s·\\s)"
+            parts.append(f"(?P<{name}>(?:(?![.!?।]\\s+\\S){guard}.)+?)")
             pos = m.end()
         parts.append(re.escape(english[pos:]))
         self.regex = re.compile("".join(parts), re.S)
@@ -220,10 +228,14 @@ class _Catalog:
             self.months.append((re.compile(r"\b%s\b" % re.escape(name)), target))
 
     def match(self, text: str) -> Optional[Tuple[_Template, Dict[str, str]]]:
+        """The matching template with the most fixed wording; on a tie, one
+        that starts with words (a sentence) over one starting with a
+        placeholder (a list item)."""
         best = None
         for tpl in self.by_key.get(text[:3], []) + self.wild:
             m = tpl.regex.fullmatch(text)
-            if m and (best is None or tpl.literal > best[0].literal):
+            if m and (best is None or (tpl.literal, bool(tpl.key))
+                      > (best[0].literal, bool(best[0].key))):
                 best = (tpl, m.groupdict())
         return best
 
@@ -267,9 +279,23 @@ def tr(text, **values) -> str:
     if not values and done is not None and _norm(text) in done:
         return text
     out = _tr(text, values, cat)
+    if out != text:
+        _check_value(out, text)
     if done is not None and len(done) < 20000:
         done.add(_norm(out))
     return out
+
+
+def mark_done(*texts: str) -> None:
+    """Record pieces cut from a finished translation (a caption's first
+    sentence used as a title) as translations, so they are not translated
+    again as if they were English."""
+    done = _DONE.get()
+    if done is None:
+        return
+    for t in texts:
+        if t:
+            done.add(_norm(t))
 
 
 def is_done(text: str) -> bool:
@@ -320,7 +346,7 @@ def _translate(text: str, cat: _Catalog) -> str:
         # Engines join sentences; translate them one at a time.
         parts = _SENTENCE.split(core)
         if len(parts) > 1:
-            done = [_core(p, cat) for p in parts]
+            parts, done = _sentence_runs(parts, cat)
             if all(d is not None for d in done):
                 return lead + " ".join(done) + tail
             for p, d in zip(parts, done):
@@ -331,6 +357,30 @@ def _translate(text: str, cat: _Catalog) -> str:
         _miss(core)
         return text
     return lead + out + tail
+
+
+_MAX_RUN = 4
+
+
+def _sentence_runs(parts: List[str], cat: _Catalog):
+    """Translate split sentences, letting a template that spans several
+    sentences ("{v1} reps with >=3 records. Top 20% of reps generate …")
+    match them together: one by one, none of them matched."""
+    groups, done, i = [], [], 0
+    while i < len(parts):
+        for j in range(min(len(parts), i + _MAX_RUN), i, -1):
+            text = " ".join(parts[i:j])
+            n = _norm(text)
+            known = n in cat.exact or cat.match(n)
+            out = _core(text, cat) if j - i > 1 and known else None
+            if out is not None or j == i + 1:
+                if out is None:
+                    out = _core(text, cat)
+                groups.append(text)
+                done.append(out)
+                i = j
+                break
+    return groups, done
 
 
 def _core(text: str, cat: _Catalog) -> Optional[str]:
@@ -344,13 +394,24 @@ def _core(text: str, cat: _Catalog) -> Optional[str]:
     parts = [p for p in _LIST.split(n) if p]
     if len(parts) > 1 and all(p in keep for p in parts):
         return _data_value(n)             # a list of the data's own names
+    if keep and _only_data(n):
+        # Only the data's own names and figures ("West: −22,448 (-39%)"):
+        # nothing to translate.
+        return _data_value(n)
     if n in cat.exact:
         return cat.exact[n]
-    if _ITEMS.search(n):
+    # A sentence template with real wording of its own ("Flags: {v1:t}.")
+    # comes before splitting on the list separator: split first, the
+    # sentence's own opening was matched as a list item by a short template
+    # and came out scrambled.
+    hit = cat.match(n)
+    if _ITEMS.search(n) and not (hit and hit[0].key) and len(_SENTENCE.split(n)) == 1:
+        # Only a template that starts with its own words (a sentence) beats
+        # list splitting; one starting with a placeholder ("{v1} {v2} on
+        # {v3}") is an item template and would swallow the whole list.
         listed = _items(n, cat)
         if listed is not None:
             return listed
-    hit = cat.match(n)
     if hit is None:
         return None
     tpl, vals = hit
@@ -365,6 +426,24 @@ def _core(text: str, cat: _Catalog) -> Optional[str]:
         else:
             out[k] = _months(v, cat)
     return tpl.render(out)
+
+
+# Latin-script words a translation may keep: names and notation.
+_KEPT_WORDS = {"SQL", "Analytiq", "Unknown", "Gini", "Kruskal", "Wallis", "Mann",
+               "Whitney", "Spearman", "Pearson", "Iglewicz", "Hoaglin", "COGS",
+               "RFM", "IQR", "ROC", "AUC", "MAE", "RMSE", "XGBoost", "True", "False"}
+
+
+def _check_value(out: str, source: str) -> None:
+    """Record a finished translation that still carries English words. A
+    placeholder matches any text, so "{v4}" could take "16.4M over Dec 2009
+    to Dec 2011" whole and the sentence came out half English with nothing
+    recorded. The data's own names and values are allowed."""
+    words = [w for w in re.findall(r"[A-Za-z]{3,}", _ENTITY.sub("", out))
+             if w not in _KEPT_WORDS]
+    if not words or _only_data(" ".join(words)):
+        return
+    _miss(source)
 
 
 _QUOTED = re.compile(r"'([^']+)'")
@@ -389,7 +468,9 @@ def _items(text: str, cat: _Catalog) -> Optional[str]:
             t = _data_value(piece)
         changed |= t != piece
         out.append(t)
-    return "".join(out) if changed else None
+    # A list of the data's own names and figures needs no translation.
+    return "".join(out) if changed or all(
+        _only_data(p) for i, p in enumerate(pieces) if not i % 2 and p) else None
 
 
 _DATA_WORDS: Dict[frozenset, frozenset] = {}

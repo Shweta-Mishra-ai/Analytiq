@@ -79,6 +79,9 @@ def kpis(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
     """
     from app.engines.chart_exporter import _label, _measures, _outcome, fmt, is_additive
     df = _df(owner, ds_id, body.filters)
+    business, period = _scorecard_cards(df, _df(owner, ds_id) if body.filters else None)
+    if business:
+        return {"kpis": to_jsonable(business), "period": period}
     cards = [{"label": "Rows", "value": len(df), "format": "int",
               "sub": "after filters" if body.filters else "in the dataset"}]
     out = _outcome(df) if len(df) else None
@@ -112,6 +115,65 @@ def kpis(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
     cards.append({"label": "Missing values", "value": missing, "format": "pct",
                   "sub": "of all cells"})
     return {"kpis": to_jsonable(cards)}
+
+
+_CARD_ORDER = ("Revenue", "Profit", "Profit margin", "Orders", "Records",
+               "Average order value", "Revenue per record", "Average discount",
+               "Customers", "Units")
+_UP_IS_BAD = {"Average discount"}
+
+
+def _compact(v: float) -> str:
+    """565,528 → 565.5K, as the cards print their own figures."""
+    a = abs(v)
+    if a >= 1e6:
+        return "{:.1f}M".format(v / 1e6)
+    if a >= 1e4:
+        return "{:.1f}K".format(v / 1e3)
+    return "{:,.4g}".format(v)
+
+
+def _scorecard_cards(df: pd.DataFrame, whole: pd.DataFrame = None):
+    """The report's headline measures as cards, each with its change on the
+    prior period, so the dashboard and the PDF state the same figures. Empty
+    when the data has no revenue-like measure."""
+    from app.engines.scorecard import build_scorecard, period_bounds
+    try:
+        bounds = None
+        if whole is not None:
+            dates = whole.select_dtypes(include="datetime")
+            if not dates.empty:
+                bounds = period_bounds(dates[dates.notna().sum().idxmax()])
+        sc = build_scorecard(df, bounds)
+    except Exception:
+        logger.warning("scorecard for KPI cards failed", exc_info=True)
+        return [], ""
+    if not sc.metrics:
+        return [], ""
+    by = {m.label: m for m in sc.metrics}
+    cards = []
+    for label in _CARD_ORDER:
+        m = by.get(label)
+        if m is None:
+            continue
+        card = {"label": label,
+                "value": round(m.value * 100, 1) if m.kind == "pct" else m.value,
+                "format": "pct" if m.kind == "pct" else ("int" if m.kind == "count" else "num"),
+                "sub": sc.period if sc.has_comparison else "all records"}
+        ch = m.change
+        if ch is not None:
+            card["delta"] = round(ch, 1)
+            card["delta_unit"] = "pp" if m.kind == "pct" else "%"
+            card["delta_good"] = (ch > 0) != (label in _UP_IS_BAD) if abs(ch) >= 0.05 else None
+            prior = ("{:.1f}%".format(m.prior * 100) if m.kind == "pct" else _compact(m.prior))
+            months = sc.prior_period.split(" ")[0]
+            card["sub"] = "vs {} prior {} months".format(prior, months)
+        cards.append(card)
+        if len(cards) == 6:
+            break
+    period = ("{} against the {} before".format(sc.period, sc.prior_period.split(" to ")[0])
+              if sc.has_comparison else "")
+    return cards, period
 
 
 def auto_tiles(df: pd.DataFrame) -> List[dict]:
@@ -313,10 +375,15 @@ def _drop_partial_periods(out: pd.DataFrame, x: str, rule: str, agg: str,
     keep = pd.Series(True, index=out.index)
     omitted = []
     first_d, last_d = first.normalize(), last.normalize()
-    if first_d > starts.iloc[0].normalize():
+    # A month the data reaches to within three days counts as complete — the
+    # rule the KPI cards and the report's scorecard use, so a file ending on
+    # 30 December keeps December everywhere. Weeks are short enough that a
+    # missing day matters, so they must be covered fully.
+    slack = pd.Timedelta(days=3 if rule == "ME" else 0)
+    if first_d > starts.iloc[0].normalize() + slack:
         keep.iloc[0] = False
         omitted.append("first")
-    if last_d < labels.iloc[-1].normalize():
+    if last_d < labels.iloc[-1].normalize() - slack:
         keep.iloc[-1] = False
         omitted.append("last")
     trimmed = out[keep].reset_index(drop=True)
@@ -349,7 +416,9 @@ def _aggregate(df: pd.DataFrame, req: ChartRequest, limit: bool = True) -> pd.Da
         if tmp.empty:
             raise HTTPException(422, f"No rows have both '{x}' and '{y}'")
         span_days = (tmp.index.max() - tmp.index.min()).days or 1
-        rule = "D" if span_days <= 92 else ("W" if span_days <= 730 else "ME")
+        # Monthly beyond six months: two years of weekly points was a line of
+        # noise in which no trend could be read.
+        rule = "D" if span_days <= 62 else ("W" if span_days <= 183 else "ME")
         agg_fn = "count" if agg == "count" else agg
         out = getattr(tmp[y].resample(rule), agg_fn)().reset_index()
         return _drop_partial_periods(out, x, rule, agg, tmp.index.min(), tmp.index.max())

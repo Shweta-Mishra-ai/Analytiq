@@ -277,6 +277,23 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
     cost_str   = ("Gallup estimates replacing an employee at one-half to two times "
                   "their annual salary; applied to {:,} leavers with your own salary "
                   "figures, that gives the cost for this organisation".format(n_left))
+    # With a numeric salary column the range is computed, not left to the
+    # reader: the card showed this whole sentence where a figure belonged.
+    cost_low = cost_high = None
+    pay_col = next((c for c in df.columns
+                    if any(k in c.lower() for k in ("salary", "pay", "compensation",
+                                                    "wage", "ctc"))
+                    and pd.api.types.is_numeric_dtype(df[c])
+                    and not pd.api.types.is_bool_dtype(df[c])), None)
+    if pay_col and n_left:
+        leaver_pay = pd.to_numeric(df.loc[left_mask, pay_col], errors="coerce").dropna()
+        if len(leaver_pay) >= 5 and leaver_pay.median() > 0:
+            med = float(leaver_pay.median())
+            cost_low, cost_high = 0.5 * med * n_left, 2.0 * med * n_left
+            from app.engines.chart_exporter import fmt
+            cost_str = ("At Gallup's estimate of one-half to two times annual salary, "
+                        "replacing the {:,} leavers (median '{}' {}) costs about {} to {}"
+                        .format(n_left, pay_col, fmt(med), fmt(cost_low), fmt(cost_high)))
 
     dept_gap = group_exit_gap(df[dept_col], left_mask) if dept_col else None
 
@@ -287,6 +304,7 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
         salary_attrition=salary_attrition,
         n_flight_risk=n_flight, flight_risk_pct=flight_pct,
         cost_estimate=cost_str,
+        cost_low=cost_low, cost_high=cost_high,
         dept_p=dept_gap["p"] if dept_gap else None,
         satisfaction_col=_sat_col,
         interpretation="{:.1f}% attrition ({:,} employees).{}".format(

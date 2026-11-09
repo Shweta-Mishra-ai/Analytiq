@@ -41,6 +41,17 @@ logger = logging.getLogger(__name__)
 # A trend explaining less than this of the variance is a line through
 # scatter, however significant the slope.
 MIN_TREND_R2 = 0.10
+# Unusual months. Each month is compared with the six before it, scaled by
+# the series' own month-to-month noise (robust: MAD of the changes). The
+# cut-off is Bonferroni over the months tested, never below 4, with a 30%
+# floor on the change. Simulated on pure noise, trend and ±40% seasonality
+# this flags at most 4% of series with no real event; a six-month MAD as
+# the scale flagged 88%. Monthly totals of fewer than 30 records are mostly
+# noise and are not tested.
+UNUSUAL_WINDOW = 6
+UNUSUAL_MIN_Z = 4.0
+UNUSUAL_MIN_CHANGE = 0.30
+UNUSUAL_MIN_ROWS = 30
 # Below this a segment's rate is an anecdote; a client's analyst will say
 # so before anyone acts on it.
 MIN_SEGMENT_N = 30
@@ -291,8 +302,130 @@ def thin_segments(df: pd.DataFrame, insights: List, findings: List,
         logger.warning("thin segment check failed", exc_info=True)
 
 
+def _complete_months(df: pd.DataFrame, metric: str, time_col: str):
+    """Monthly totals (or averages, for a measure that does not add up)
+    and record counts over the months the data fully covers, as the trend
+    chart draws them."""
+    from app.engines.chart_exporter import MONTH_END, is_additive
+    data = df[[time_col, metric]].dropna().set_index(time_col).sort_index()
+    if data.empty:
+        return pd.Series(dtype=float), pd.Series(dtype=int)
+    monthly = data[metric].resample(MONTH_END).agg("sum" if is_additive(metric) else "mean")
+    rows = data[metric].resample(MONTH_END).count()
+    first, last = data.index.min(), data.index.max()
+    keep = monthly.index
+    if len(keep) and first.day > 3:
+        keep = keep[1:]
+    if len(keep) and last.day < 25:
+        keep = keep[:-1]
+    return monthly.loc[keep].astype(float), rows.loc[keep]
+
+
+def _unusual(values: np.ndarray, seasonal: bool):
+    """([(index, log deviation, z) for each month out of line], months
+    tested, cut-off). In seasonal
+    mode the series is the year-on-year change, so December is compared
+    with how Decembers usually move, not with the autumn before it."""
+    from scipy.stats import norm
+    x = np.log(values)
+    s, off = (x[12:] - x[:-12], 12) if seasonal else (x, 0)
+    if len(s) <= UNUSUAL_WINDOW + 2:
+        return [], 0, 0.0
+    d = np.diff(s)
+    sig = 1.4826 * float(np.median(np.abs(d - np.median(d)))) / np.sqrt(2)
+    if sig <= 0:
+        return [], 0, 0.0
+    tested = len(s) - UNUSUAL_WINDOW
+    cut = max(UNUSUAL_MIN_Z, float(norm.isf(0.05 / (2 * tested))))
+    # The trailing median is itself estimated from six months.
+    scale = sig * np.sqrt(1 + 1.57 / UNUSUAL_WINDOW)
+    out = []
+    for k in range(UNUSUAL_WINDOW, len(s)):
+        dev = float(s[k] - np.median(s[k - UNUSUAL_WINDOW:k]))
+        z = dev / scale
+        if abs(z) >= cut and abs(np.expm1(dev)) >= UNUSUAL_MIN_CHANGE:
+            out.append((k + off, dev, z))
+    return out, tested, cut
+
+
+def unusual_months(df: pd.DataFrame, insights: List, findings: List,
+                   risks: List, opps: List) -> None:
+    """Months that break from the ones before them.
+
+    A trend line answers "is it moving"; it says nothing about a single
+    month that doubled or collapsed, which is usually either the most
+    important event in the period or a data-load error (a duplicated or
+    missing extract).
+    """
+    from app.engines.chart_exporter import _measures as _ranked_measures
+    from app.engines.chart_exporter import fmt
+    from app.i18n import month_year
+    time_col = _time_column(df)
+    measures = _ranked_measures(df)
+    if not time_col or not measures:
+        return
+    try:
+        metric = measures[0]
+        monthly, rows = _complete_months(df, metric, time_col)
+        if (len(monthly) < UNUSUAL_WINDOW + 3 or (monthly <= 0).any()
+                or float(rows.median()) < UNUSUAL_MIN_ROWS):
+            return
+        seasonal = len(monthly) >= 24
+        flagged, tested, cut = _unusual(monthly.to_numpy(), seasonal)
+        if not flagged:
+            return
+        flagged.sort(key=lambda t: -abs(t[2]))
+        vals = monthly.to_numpy()
+        shown = []
+        for i, dev, z in flagged[:3]:
+            expected = vals[i] / np.exp(dev)
+            shown.append((monthly.index[i], vals[i], expected, np.expm1(dev) * 100, z))
+        if seasonal:
+            items = " · ".join("{}: {} against about {} expected from the year before "
+                               "({:+.0f}%)".format(month_year(m), fmt(v), fmt(e), pct)
+                               for m, v, e, pct, _z in shown)
+            findings.append("Months where '{}' broke from its usual year-on-year "
+                            "change: {}.".format(metric, items))
+        else:
+            items = " · ".join("{}: {} against a median of {} ({:+.0f}%)".format(
+                month_year(m), fmt(v), fmt(e), pct) for m, v, e, pct, _z in shown)
+            findings.append("Months where '{}' broke from the six before it: {}.".format(
+                metric, items))
+        m, v, e, pct, z = shown[0]
+        if seasonal:
+            problem = ("'{}' was {} in {}, {:+.0f}% against about {} expected from the "
+                       "same month a year earlier and the recent year-on-year change."
+                       .format(metric, fmt(v), month_year(m), pct, fmt(e)))
+            how = "year-on-year changes of the six months before it"
+        else:
+            problem = ("'{}' was {} in {}, {:+.0f}% against the median of the six "
+                       "months before it ({}).".format(metric, fmt(v), month_year(m), pct, fmt(e)))
+            how = "six months before it"
+        cause = ("A single month this far out is either a real event (a promotion, an "
+                 "outage, a large one-off order) or a data problem such as a duplicated "
+                 "or missing extract; the data alone cannot tell which.")
+        if not seasonal:
+            cause += (" With under two years of data a seasonal peak cannot be ruled "
+                      "out either.")
+        insights.append(build_insight(
+            title="'{}' in {} broke from its recent pattern".format(metric, month_year(m)),
+            problem=problem, cause=cause,
+            evidence=("{:.1f} times the usual month-to-month variation away from the {}; "
+                      "the cut-off, {:.1f}, allows for the {} months tested. {} of {} "
+                      "flagged.".format(abs(z), how, cut, tested, len(flagged), tested)),
+            action="1. Check the month's records for duplicates or a missing load  "
+                   "2. If the data is right, find the event behind it before using the "
+                   "month in a trend or forecast",
+            impact="",
+            severity="warning" if seasonal else "info", category="trend",
+        ))
+    except Exception:
+        logger.warning("unusual month check failed", exc_info=True)
+
+
 def run_general_depth(df: pd.DataFrame, insights: List, findings: List,
                       risks: List, opps: List) -> None:
     trend_over_time(df, insights, findings, risks, opps)
+    unusual_months(df, insights, findings, risks, opps)
     outlier_concentration(df, insights, findings, risks, opps)
     thin_segments(df, insights, findings, risks, opps)

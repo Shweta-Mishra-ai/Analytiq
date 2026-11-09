@@ -211,7 +211,9 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
     meta = store.get_meta(owner, ds_id)
     data = i18n.data_context(
         df, getattr(meta, "filename", ""), _typed(req.title, "Data Analysis Report"),
-        req.subtitle, _typed(req.client_name, "Client"), req.prepared_by)
+        req.subtitle, _typed(req.client_name, "Client"), req.prepared_by,
+        # The table the cleaning SQL names is the client's object, not English.
+        table_name_from_filename(getattr(meta, "filename", "")))
     with i18n.use_language(lang, **data):
         pdf_bytes = _generate_pdf(df, owner, ds_id, req)
     return Response(
@@ -220,6 +222,7 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
 
 
 def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
+    from app.engines.transactions import is_derivation_note
     from app.engines.data_profiler import profile_dataset
     from app.engines.story_engine import detect_domain, generate_story
     from app.engines.pdf_builder import build_pdf
@@ -262,6 +265,24 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
         actions = story_obj.recommended_actions
     except Exception:
         _failed("story", "The summary, risks and next steps could not be produced.")
+
+    # 3b. the business scorecard the summary leads with
+    scorecard = None
+    try:
+        from app.engines.scorecard import build_scorecard
+        scorecard = build_scorecard(df)
+    except Exception:
+        _failed("scorecard", "The performance scorecard could not be computed.")
+    if scorecard is not None and scorecard.revenue_col:
+        # The outlook, as a key message: forecast with its tested accuracy.
+        try:
+            from app.engines.forecast import forecast_message
+            msg = forecast_message(df)
+            if msg is not None:
+                scorecard.messages.insert(1 if scorecard.messages and scorecard.messages[0].lead
+                                          else 0, msg)
+        except Exception:
+            _failed("forecast", "The three-month forecast could not be produced.")
 
     # 4. structured insights
     top_insights = []
@@ -332,6 +353,11 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
         "source_table": table_name_from_filename(
             getattr(store.get_meta(owner, ds_id), "filename", "")),
         "omitted": omitted,
+        "source_file": getattr(store.get_meta(owner, ds_id), "filename", "") or "",
+        # How the figures were derived where the file did not hold them
+        # (a revenue column computed from quantity and price).
+        "data_notes": [w for w in getattr(store.get_meta(owner, ds_id), "warnings", []) or []
+                       if is_derivation_note(w)],
     }
     try:
         pdf_bytes = build_pdf(
@@ -344,6 +370,7 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
             recommendations=actions, top_insights=top_insights,
             attrition=getattr(story_obj, "attrition", None),
             domain=domain_name,
+            scorecard=scorecard,
         )
     except Exception as e:
         logger.exception("PDF build failed")

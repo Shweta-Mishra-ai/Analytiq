@@ -17,7 +17,10 @@ arabic-reshaper and python-bidi, because ReportLab's own right-to-left
 support depends on rlbidi, which is not published on PyPI.
 
 Not covered: Korean (Hangul), Thai and other scripts with no bundled
-font; they still render as boxes. The CJK face is regular weight only.
+font; they still render as boxes. The CJK face is regular weight only,
+and a subset (GB2312 simplified Chinese plus JIS X 0208 Japanese, 10,490
+characters, 3.4 MB instead of 10.6 MB; see assets/fonts/LICENSE-Noto.txt):
+everyday Chinese and Japanese print, very rare characters show as boxes.
 
 If the font files are missing the PDFs still build, in Helvetica, and the
 fallback is logged once.
@@ -133,13 +136,17 @@ def _shape_when_needed():
         return
 
     def __init__(self, text, style=None, *args, **kwargs):
-        if isinstance(text, str):
+        # Code (the cleaning SQL) is never translated.
+        if isinstance(text, str) and not str(getattr(style, "name", "")).endswith("mono"):
             text = translate_markup(text)
         if style is not None and not getattr(style, "shaping", 0) \
                 and isinstance(text, str) and _DEVANAGARI.search(text):
             from reportlab.lib.styles import ParagraphStyle
             style = ParagraphStyle(style.name + "-shaped", parent=style, shaping=1)
         original(self, text, style, *args, **kwargs)
+        # The markup as given: once shaped, getPlainText returns glyph
+        # codes, and a contents entry made from them breaks apart.
+        self.source_markup = text
 
     __init__._shapes_devanagari = True
     _p.Paragraph.__init__ = __init__

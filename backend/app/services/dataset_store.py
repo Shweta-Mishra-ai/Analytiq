@@ -53,14 +53,21 @@ class DatasetMeta:
 class DatasetStore:
     """Thread-safe store for uploaded datasets and analysis caches."""
 
-    _MEM_LIMIT = 8  # datasets kept in RAM; older ones reload from disk
+    # Working frames kept in RAM, least recently used evicted first, within
+    # a byte budget. A count limit ("8 datasets") held eight copies of a
+    # million-row file, about 3 GB, on a server with a fraction of that;
+    # the original upload was also held beside every working copy. Only the
+    # working frame is kept now; the original is read from disk on the rare
+    # request for it (reset). The most recent frame always stays, even when
+    # it alone exceeds the budget.
+    _MEM_BUDGET = int(os.environ.get("DATASET_MEM_MB", "768")) * 1024 * 1024
 
     def __init__(self, base_dir: Optional[str] = None):
         self.base_dir = base_dir or os.path.join(config.data_dir, "datasets")
         os.makedirs(self.base_dir, exist_ok=True)
         self._lock = threading.RLock()
-        self._mem: Dict[str, Dict[str, Any]] = {}      # "owner/id" -> {raw, active, meta}
-        self._caches: Dict[str, Dict[str, Any]] = {}   # "owner/id" -> {key -> (hash, obj)}
+        self._mem: Dict[str, Dict[str, Any]] = {}      # "owner/id" -> {active, meta, bytes}
+        self._caches: Dict[str, Dict[str, Any]] = {}   # "owner/id" -> {key -> (rev, obj)}
 
     # ── paths ────────────────────────────────────────────
     @staticmethod
@@ -84,6 +91,11 @@ class DatasetStore:
     def create(self, owner: str, df_raw: pd.DataFrame, filename: str, size_mb: float,
                sheet_names: Optional[list] = None,
                warnings: Optional[list] = None) -> DatasetMeta:
+        # Every upload path (file, image, video, MCP) arrives here, so an
+        # order-line file without a revenue column gets one in one place.
+        from app.engines.transactions import derive_line_revenue
+        df_raw, derived = derive_line_revenue(df_raw)
+        warnings = list(warnings or []) + ([derived] if derived else [])
         ds_id = uuid.uuid4().hex[:12]
         meta = DatasetMeta(
             dataset_id=ds_id,
@@ -102,7 +114,7 @@ class DatasetStore:
             self._save_df(owner, ds_id, "active.pkl", df_raw)
             with open(self._path(owner, ds_id, "meta.pkl"), "wb") as f:
                 pickle.dump(meta, f)
-            self._touch_mem(owner, ds_id, raw=df_raw, active=df_raw.copy(), meta=meta)
+            self._touch_mem(owner, ds_id, active=df_raw, meta=meta)
             self._bump_revision(owner, ds_id)
         return meta
 
@@ -140,7 +152,8 @@ class DatasetStore:
         if not os.path.exists(p):
             return None
         with open(p, "rb") as f:
-            meta = pickle.load(f)
+            # A file this server wrote to its own data dir; uploads are never unpickled.
+            meta = pickle.load(f)  # nosec B301
         if meta.owner and meta.owner != owner:
             return None  # defense in depth; should be unreachable via _dir()
         return meta
@@ -163,15 +176,21 @@ class DatasetStore:
         return self._load("active", owner, ds_id)
 
     def get_raw_df(self, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
-        return self._load("raw", owner, ds_id)
+        """The upload as it arrived, read from disk (never held in memory)."""
+        p = self._path(owner, ds_id, "raw.pkl")
+        if not os.path.exists(p):
+            return None
+        with open(p, "rb") as f:
+            # A file this server wrote to its own data dir; uploads are never unpickled.
+            return pickle.load(f)  # nosec B301
 
     def update_active(self, owner: str, ds_id: str, df: pd.DataFrame) -> None:
         mkey = self._mkey(owner, ds_id)
         with self._lock:
             self._save_df(owner, ds_id, "active.pkl", df)
             if mkey in self._mem:
-                self._mem[mkey]["active"] = self._with_roles(
-                    df, self.get_meta(owner, ds_id))
+                self._touch_mem(owner, ds_id, active=self._with_roles(
+                    df, self.get_meta(owner, ds_id)), meta=self._mem[mkey]["meta"])
             self._bump_revision(owner, ds_id)
             meta = self.get_meta(owner, ds_id)
             if meta:
@@ -212,15 +231,15 @@ class DatasetStore:
             # roles applied: a column changed back from date to text must
             # not stay converted.
             with open(self._path(owner, ds_id, "active.pkl"), "rb") as f:
-                stored = pickle.load(f)
+                # A file this server wrote to its own data dir; uploads are never unpickled.
+                stored = pickle.load(f)  # nosec B301
             applied, notes = apply(stored, roles, strict=True)
             meta.column_roles = dict(applied.attrs.get("column_roles", {}))
             with open(self._path(owner, ds_id, "meta.pkl"), "wb") as f:
                 pickle.dump(meta, f)
             mkey = self._mkey(owner, ds_id)
             if mkey in self._mem:
-                self._mem[mkey]["meta"] = meta
-                self._mem[mkey]["active"] = applied
+                self._touch_mem(owner, ds_id, active=applied, meta=meta)
             # Every analysis depends on the roles, so none of the cached
             # results still holds.
             self._bump_revision(owner, ds_id)
@@ -248,6 +267,15 @@ class DatasetStore:
         rev = uuid.uuid4().hex
         with open(self._path(owner, ds_id, "revision"), "w") as f:
             f.write(rev)
+        # Every cached result now belongs to a revision nobody will ask for;
+        # left on disk they accumulated with each clean, reset or role change.
+        d = self._dir(owner, ds_id)
+        for name in os.listdir(d):
+            if name.startswith("cache_") and name.endswith(".pkl"):
+                try:
+                    os.remove(os.path.join(d, name))
+                except OSError:
+                    logger.warning("could not remove stale cache %s", name, exc_info=True)
         mkey = self._mkey(owner, ds_id)
         with self._lock:
             self._caches.pop(mkey, None)
@@ -291,10 +319,12 @@ class DatasetStore:
         if os.path.exists(p):
             try:
                 with open(p, "rb") as f:
-                    stored = pickle.load(f)
+                    # A file this server wrote to its own data dir; uploads are never unpickled.
+                    stored = pickle.load(f)  # nosec B301
                 if len(stored) == 3 and stored[0] == rev and stored[1] == key:
                     with self._lock:
-                        self._caches.setdefault(mkey, {})[key] = (rev, stored[2])
+                        if mkey in self._mem:
+                            self._caches.setdefault(mkey, {})[key] = (rev, stored[2])
                     return stored[2]
             except Exception:
                 logger.warning("cache_get: suppressed exception", exc_info=True)
@@ -306,7 +336,10 @@ class DatasetStore:
             return
         mkey = self._mkey(owner, ds_id)
         with self._lock:
-            self._caches.setdefault(mkey, {})[key] = (rev, obj)
+            # In memory only beside a frame that is in memory, so evicting
+            # the frame bounds these too; the disk copy serves the rest.
+            if mkey in self._mem:
+                self._caches.setdefault(mkey, {})[key] = (rev, obj)
         try:
             with open(self._path(owner, ds_id, self._cache_file(key)), "wb") as f:
                 pickle.dump((rev, key, obj), f)
@@ -329,35 +362,58 @@ class DatasetStore:
     def _load(self, which: str, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
         mkey = self._mkey(owner, ds_id)
         with self._lock:
-            if mkey in self._mem:
-                return self._mem[mkey][which]
+            entry = self._mem.get(mkey)
+            if entry is not None:
+                self._mem[mkey] = self._mem.pop(mkey)       # most recently used
+                return entry["active"]
         p = self._path(owner, ds_id, f"{which}.pkl")
         if not os.path.exists(p):
             return None
         with open(p, "rb") as f:
-            df = pickle.load(f)
-        other = "raw" if which == "active" else "active"
-        other_df = None
-        op = self._path(owner, ds_id, f"{other}.pkl")
-        if os.path.exists(op):
-            with open(op, "rb") as f:
-                other_df = pickle.load(f)
+            # A file this server wrote to its own data dir; uploads are never unpickled.
+            df = pickle.load(f)  # nosec B301
         meta = self.get_meta(owner, ds_id)
-        active = df if which == "active" else other_df
-        raw = other_df if which == "active" else df
-        active = self._with_roles(active, meta)
+        active = self._with_roles(df, meta)
         with self._lock:
-            self._touch_mem(owner, ds_id, active=active, raw=raw, meta=meta)
-        return active if which == "active" else raw
+            self._touch_mem(owner, ds_id, active=active, meta=meta)
+        return active
 
-    def _touch_mem(self, owner: str, ds_id: str, **entry) -> None:
+    @staticmethod
+    def _frame_bytes(df: Optional[pd.DataFrame]) -> int:
+        """Memory a frame holds. Measured on a sample and scaled: a deep
+        count of a million text cells takes seconds."""
+        if df is None or not len(df):
+            return 0
+        sample = df.head(5000)
+        per_row = sample.memory_usage(deep=True, index=True).sum() / len(sample)
+        return int(per_row * len(df))
+
+    def _touch_mem(self, owner: str, ds_id: str, active=None, meta=None) -> None:
         mkey = self._mkey(owner, ds_id)
+        old = self._mem.pop(mkey, None)
+        revision = old.get("revision") if old else None
+        entry = {"active": active, "meta": meta, "bytes": self._frame_bytes(active)}
+        if revision:
+            entry["revision"] = revision
         self._mem[mkey] = entry
-        while len(self._mem) > self._MEM_LIMIT:
+        while len(self._mem) > 1 and self.memory_bytes() > self._MEM_BUDGET:
             oldest = next(iter(self._mem))
-            if oldest == mkey:
-                break
             self._mem.pop(oldest)
+            # Its analysis results go with it; they were never released and
+            # outlived every frame they described.
+            self._caches.pop(oldest, None)
+
+    def memory_bytes(self) -> int:
+        """Bytes of working frames held in memory."""
+        with self._lock:
+            return sum(e.get("bytes", 0) for e in self._mem.values())
+
+    def memory_stats(self) -> dict:
+        with self._lock:
+            return {"datasets_in_memory": len(self._mem),
+                    "memory_mb": round(self.memory_bytes() / 2**20, 1),
+                    "budget_mb": round(self._MEM_BUDGET / 2**20, 1),
+                    "datasets_with_cached_results": len(self._caches)}
 
 
 store = DatasetStore()

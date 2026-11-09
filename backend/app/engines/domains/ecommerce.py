@@ -24,7 +24,6 @@ def _repeat_purchase_insights(df: pd.DataFrame, insights: List, findings: List,
     from a customer identifier column by counting orders per customer.
     """
     cust_kw = ("customer_id", "customerid", "customer_key", "buyer_id", "user_id", "client_id")
-    order_kw = ("order_id", "orderid", "order_number", "transaction_id", "invoice_id")
 
     cust_col = next((c for c in df.columns if any(k in c.lower().replace(" ", "_")
                     for k in cust_kw)), None)
@@ -35,10 +34,14 @@ def _repeat_purchase_insights(df: pd.DataFrame, insights: List, findings: List,
         # Prefer counting distinct ORDERS per customer if an order-id column
         # exists (multiple line items can share one order); otherwise fall
         # back to counting ROWS per customer.
-        order_col = next((c for c in df.columns if any(k in c.lower().replace(" ", "_")
-                          for k in order_kw) and c != cust_col), None)
+        from app.engines.transactions import order_column
+        order_col = order_column(df, exclude=(cust_col,))
         if order_col:
-            orders_per_cust = df.groupby(cust_col)[order_col].nunique()
+            # A cancellation invoice is not another order.
+            from app.engines.transactions import cancellation_mask
+            cancelled = cancellation_mask(df)
+            placed = df if cancelled is None else df[~cancelled]
+            orders_per_cust = placed.groupby(cust_col)[order_col].nunique()
         else:
             orders_per_cust = df.groupby(cust_col).size()
 

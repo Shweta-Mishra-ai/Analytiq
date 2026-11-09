@@ -1,0 +1,15 @@
+{
+  "name": "analytiq",
+  "description": "Analytiq data analysis tools for Claude Code",
+  "owner": {
+    "name": "Shweta Mishra",
+    "url": "https://github.com/Shweta-Mishra-ai"
+  },
+  "plugins": [
+    {
+      "name": "analytiq",
+      "source": "./",
+      "description": "Business and statistical analysis of CSV, Excel and JSON files, with consulting-style PDF reports in English or Hindi."
+    }
+  ]
+}

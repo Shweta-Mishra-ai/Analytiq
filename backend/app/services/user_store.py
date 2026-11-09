@@ -90,7 +90,8 @@ class UserStore:
             return {}
         try:
             with open(self.path, "rb") as f:
-                users = pickle.load(f)
+                # A file this server wrote to its own data dir; uploads are never unpickled.
+                users = pickle.load(f)  # nosec B301
         except Exception as e:
             raise UserStoreCorrupt(
                 f"Cannot read the account store at {self.path} ({e}). Refusing "

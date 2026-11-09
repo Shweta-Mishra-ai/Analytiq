@@ -34,7 +34,11 @@ async def lifespan(app: FastAPI):
     # CLEANUP_INTERVAL_HOURS. Cancelled cleanly on shutdown.
     task = asyncio.create_task(cleanup_loop())
     try:
-        yield
+        if _mcp_mount is not None:
+            async with _mcp_mount.running():
+                yield
+        else:
+            yield
     finally:
         task.cancel()
         try:
@@ -42,6 +46,14 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+
+# Analytiq's tools for Claude (Model Context Protocol) at /mcp; see
+# app/mcp_server.py. Optional: the web app runs without the mcp package.
+try:
+    from app.mcp_server import mount as _mcp_mount
+except ImportError:                       # pragma: no cover - mcp not installed
+    _mcp_mount = None
+    logging.getLogger(__name__).warning("mcp package not installed; /mcp is disabled")
 
 app = FastAPI(title=config.app_name, version=config.app_version, lifespan=lifespan)
 
@@ -102,6 +114,22 @@ try:
 except Exception as e:  # RAG deps optional in dev
     logging.getLogger(__name__).warning(f"RAG module not loaded: {e}")
 
+if _mcp_mount is not None:
+    app.mount("/mcp", _mcp_mount)
+
+    @app.get("/api/mcp-reports/{name}")
+    def mcp_report_download(name: str, exp: int, sig: str):
+        """A PDF the generate_report tool wrote for a remote caller. The link
+        is signed and expires after an hour, so it needs no login: it is
+        opened in a browser, which has no Analytiq token."""
+        from fastapi import HTTPException
+        from fastapi.responses import FileResponse
+        from app.mcp_server import verify_download
+        path = verify_download(name, exp, sig)
+        if path is None:
+            raise HTTPException(404, "This report link is invalid or has expired.")
+        return FileResponse(path, media_type="application/pdf", filename=name)
+
 
 @app.get("/api/health")
 async def health():
@@ -113,6 +141,8 @@ async def health():
         "version": config.app_version,
         "auth_required": not _open_mode(),
         "groq_configured": bool(config.groq_api_key),
+        "claude_configured": bool(config.anthropic_api_key),
+        "claude_model": config.claude_model if config.anthropic_api_key else None,
         "gemini_configured": bool(config.gemini_api_key),
         # What will actually happen to a narrative request, so a client
         # running in privacy mode can confirm it from outside the app.

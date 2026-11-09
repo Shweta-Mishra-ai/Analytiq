@@ -10,7 +10,8 @@ from typing import List, Dict, Optional, Tuple, Any
 import warnings
 warnings.filterwarnings("ignore")
 
-from sklearn.model_selection import cross_validate, train_test_split
+from sklearn.compose import TransformedTargetRegressor
+from sklearn.model_selection import TimeSeriesSplit, cross_validate, train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
@@ -114,6 +115,18 @@ class MLReport:
     # The answer in one plain sentence: can the target be predicted from
     # the other columns, and how well, in terms a reader can check.
     summary:            str = ""
+    # "ratio" when the model works on the log of a skewed positive target:
+    # its errors scale with the value, so the range is quoted as a ratio.
+    band_kind:          str = "add"
+    # The same range measured separately for low to high predictions:
+    # [(highest prediction in the band, low, high), ...]. Errors on an
+    # amount grow with it, and one range for all quoted a ₹3 order ±₹200.
+    band_bins:          List[Tuple[float, float, float]] = field(default_factory=list)
+    # How the held-out rows were chosen, in a sentence for the reader.
+    split_note:         str = ""
+    # Lowest value the target can take (0 for amounts that are never
+    # negative), so no prediction or range goes below it.
+    floor:              Optional[float] = None
 
 
 # ══════════════════════════════════════════════════════════
@@ -508,12 +521,69 @@ def _evaluate_classification(y_true, y_pred, y_prob=None) -> Dict:
     return {"accuracy": round(acc, 4), "f1": round(f1, 4), "roc_auc": auc}
 
 
+class LogTarget(TransformedTargetRegressor):
+    """Fits the log of a positive target and predicts its average, not its
+    median. Taking exp() of a log-scale prediction gives the median, which
+    sits below the average for a skewed amount: on a weakly predictable
+    revenue it cut R² from 0.10 to 0.04. Duan's smearing factor, the mean of
+    exp(residual) on the training rows, restores the average."""
+
+    def __init__(self, regressor=None):
+        super().__init__(regressor=regressor, func=np.log, inverse_func=np.exp,
+                         check_inverse=False)
+
+    def fit(self, X, y, **params):
+        super().fit(X, y, **params)
+        resid = np.log(np.asarray(y, dtype=float)) - np.log(super().predict(X))
+        smear = float(np.mean(np.exp(resid)))
+        self.smear_ = smear if np.isfinite(smear) and smear > 0 else 1.0
+        return self
+
+    def predict(self, X, **params):
+        return super().predict(X, **params) * self.smear_
+
+
+def _band_bins(pred: np.ndarray, actual: np.ndarray, kind: str,
+               n_bins: int = 5, min_rows: int = 40) -> List[Tuple[float, float, float]]:
+    """10th and 90th percentile of the held-out error, within each fifth of
+    the predictions from lowest to highest."""
+    ok = np.isfinite(pred) & np.isfinite(actual)
+    pred, actual = pred[ok], actual[ok]
+    if len(pred) < n_bins * min_rows:
+        return []
+    if kind == "ratio":
+        good = pred > 0
+        pred, err = pred[good], actual[good] / pred[good]
+    else:
+        err = actual - pred
+    edges = np.quantile(pred, np.linspace(0, 1, n_bins + 1))
+    out = []
+    for i in range(n_bins):
+        top = edges[i + 1]
+        m = (pred <= top) & (pred >= edges[i]) if i == 0 else (pred <= top) & (pred > edges[i])
+        if m.sum() < min_rows // 2:
+            return []
+        out.append((float(top), float(np.quantile(err[m], 0.10)), float(np.quantile(err[m], 0.90))))
+    return out
+
+
+def log_scale_target(y: pd.Series) -> bool:
+    """Whether to model the log of the target: an amount that is always
+    positive and strongly right-skewed (revenue, order value, price). On
+    the raw scale a ₹3 order was predicted at −28.6, with a range of −262
+    to +135; such amounts grow by multiplication (quantity × price), which
+    the log turns into the addition the models handle."""
+    v = pd.to_numeric(y, errors="coerce").dropna()
+    return len(v) >= 30 and float(v.min()) > 0 and float(v.skew()) > 1.0
+
+
 def train_models(
     X: pd.DataFrame,
     y: pd.Series,
     task: str,
     target_encoder: Optional[LabelEncoder] = None,
     cat_cols: Optional[List[str]] = None,
+    time_order: Optional[pd.Series] = None,
 ):
     """
     Train all models, cross-validate, evaluate on holdout.
@@ -532,13 +602,26 @@ def train_models(
         values = y.astype(str) if (is_text_dtype(y) or pd.api.types.is_bool_dtype(y)) else y
         y = pd.Series(target_encoder.fit_transform(values), index=y.index)
 
-    # Train/test split — stratified for classification, which needs at
-    # least two rows of every class or train_test_split raises.
-    stratify = (y if task == "classification" and y.nunique() <= MAX_CLASSES
-                and y.value_counts().min() >= 2 else None)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=stratify
-    )
+    if time_order is not None:
+        # Rows with a date are tested on the latest fifth, after training on
+        # what came before — the question a user asks of such a model is
+        # what happens next. A random split let the model see days on both
+        # sides of each test day: it reported R²=0.98 for sales it predicted
+        # at 0.78 on later dates.
+        order = time_order.loc[X.index].sort_values(kind="stable", na_position="first").index
+        n_test = max(1, int(round(0.2 * len(order))))
+        test_idx, train_idx = order[-n_test:], order[:-n_test]
+        X_train, X_test = X.loc[train_idx], X.loc[test_idx]
+        y_train, y_test = y.loc[train_idx], y.loc[test_idx]
+    else:
+        # Stratified for classification, which needs at least two rows of
+        # every class or train_test_split raises.
+        stratify = (y if task == "classification" and y.nunique() <= MAX_CLASSES
+                    and y.value_counts().min() >= 2 else None)
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=stratify
+        )
+    log_target = task == "regression" and log_scale_target(y_train)
 
     # Classifiers are chosen on log-loss, which charges a model for being
     # confidently wrong. Chosen on F1, a boosted model that said "No" with
@@ -549,17 +632,33 @@ def train_models(
     # Five folds on small data, three on large: the extra two folds change
     # the estimate little past ~10,000 rows and cost 40% more time.
     folds = 5 if len(X_train) <= 10_000 else 3
+    # Folds in time order too: each fold is scored on rows later than the
+    # ones it was fitted on.
+    cv_split = TimeSeriesSplit(n_splits=folds) if time_order is not None else folds
     n_classes = int(y.nunique()) if task == "classification" else 0
     results = []
 
-    for name, model in _get_models(task, n_classes, len(X_train)):
+    candidates = [(name, model, False) for name, model in _get_models(task, n_classes, len(X_train))]
+    if log_target:
+        # The log scale suits amounts that grow by multiplication and not
+        # others: on 1,500 orders it lifted R² from 0.86 to 0.94, on a
+        # weakly predictable revenue it lowered it from 0.17 to 0.12. The
+        # two quickest models are also tried on it and cross-validation
+        # chooses.
+        candidates += [(name + " (log scale)", model, True)
+                       for name, model in _get_models(task, n_classes, len(X_train))
+                       if name in ("Ridge Regression", "Gradient Boosting")]
+    for name, model, on_log in candidates:
         try:
-            pipe = _make_pipeline(model, num_cols, cat_cols)
+            from sklearn.base import clone
+            pipe = _make_pipeline(clone(model), num_cols, cat_cols)
+            if on_log:
+                pipe = LogTarget(regressor=pipe)
 
             # Cross-validation on the training set. One job here: the models
             # parallelise internally, and nesting the two oversubscribed the
             # machine.
-            cv = cross_validate(pipe, X_train, y_train, cv=folds,
+            cv = cross_validate(pipe, X_train, y_train, cv=cv_split,
                                 scoring=scoring, n_jobs=1, error_score="raise")
             cv_scores = cv["test_show"]
             pick = float(np.mean(cv["test_pick"] if "test_pick" in cv else cv_scores))
@@ -688,14 +787,21 @@ def get_feature_importance(
     scoring = "r2" if task == "regression" else "accuracy"
     if task == "classification" and hasattr(pipe, "predict_proba"):
         scoring = "neg_log_loss"
+    # Each repeat re-scores the model once per column, so the cost grows
+    # with columns x repeats: five repeats over 120 columns took 80 of a
+    # 100-second training run. Fewer repeats on wide data keep the ranking
+    # (the top columns separate after one or two shuffles) at a fraction of
+    # the time; narrow data keeps five for steadier shares.
+    n_cols = X_test.shape[1]
+    repeats = 5 if n_cols <= 20 else 3 if n_cols <= 50 else 2
     try:
-        perm = permutation_importance(pipe, Xs, ys, scoring=scoring, n_repeats=5,
+        perm = permutation_importance(pipe, Xs, ys, scoring=scoring, n_repeats=repeats,
                                       random_state=42, n_jobs=1)
     except Exception:
         logger.info("permutation importance with %s failed; using accuracy", scoring,
                     exc_info=True)
         try:
-            perm = permutation_importance(pipe, Xs, ys, scoring=None, n_repeats=5,
+            perm = permutation_importance(pipe, Xs, ys, scoring=None, n_repeats=repeats,
                                           random_state=42, n_jobs=1)
         except Exception:
             logger.warning("permutation importance failed", exc_info=True)
@@ -924,6 +1030,10 @@ def predict_what_if(
     try:
         pipe = ml_report.best_model.model
         pred = pipe.predict(X_input)[0]
+        floor = getattr(ml_report, "floor", None)
+        if ml_report.task == "regression" and floor is not None:
+            # An amount that is never negative is never predicted negative.
+            pred = max(float(pred), floor)
         result: Dict[str, Any] = {"prediction": float(pred), "task": ml_report.task,
                                   "target": ml_report.target_col,
                                   "model_score": ml_report.best_model.test_score,
@@ -959,10 +1069,21 @@ def predict_what_if(
             # them fell between these errors. This was ±1 RMSE, labelled a
             # confidence interval, which it is not.
             lo_e, hi_e = getattr(ml_report, "residual_band", None) or (None, None)
+            bins = getattr(ml_report, "band_bins", None) or []
+            if bins:
+                _top, lo_e, hi_e = next((b for b in bins if float(pred) <= b[0]), bins[-1])
             if lo_e is not None:
-                result["lower"] = round(float(pred) + lo_e, 4)
-                result["upper"] = round(float(pred) + hi_e, 4)
-                result["confidence_note"] = "8 in 10 held-out predictions fell within this range"
+                if getattr(ml_report, "band_kind", "add") == "ratio":
+                    lower, upper = float(pred) * lo_e, float(pred) * hi_e
+                else:
+                    lower, upper = float(pred) + lo_e, float(pred) + hi_e
+                if floor is not None:
+                    lower, upper = max(lower, floor), max(upper, floor)
+                result["lower"] = round(lower, 4)
+                result["upper"] = round(upper, 4)
+                result["confidence_note"] = ("8 in 10 held-out predictions of a similar size "
+                                             "fell within this range" if bins else
+                                             "8 in 10 held-out predictions fell within this range")
 
         return result
 
@@ -1152,7 +1273,8 @@ def _generate_insights(report: MLReport) -> List[str]:
 #  MAIN ENTRY POINT
 # ══════════════════════════════════════════════════════════
 
-def _leaky_columns(X: pd.DataFrame, y: pd.Series, cat_cols: List[str]) -> List[Tuple[str, str]]:
+def _leaky_columns(X: pd.DataFrame, y: pd.Series, cat_cols: List[str],
+                   date_cols=()) -> List[Tuple[str, str]]:
     """Columns that are (nearly) a copy of the target, with why.
 
     A number correlated beyond 0.98 with a numeric target, or a category
@@ -1166,6 +1288,12 @@ def _leaky_columns(X: pd.DataFrame, y: pd.Series, cat_cols: List[str]) -> List[T
     y_txt = y.astype(str)
     base = float(y_txt.value_counts(normalize=True).iloc[0]) if len(y_txt) else 1.0
     for col in X.columns:
+        # A date is known before the outcome. Sales that grow steadily
+        # correlate 0.99 with the date, and the date was dropped as a copy
+        # of the target: the model then found "no signal" in a series with
+        # a strong trend and a promotion effect.
+        if col in date_cols:
+            continue
         try:
             if col in cat_cols:
                 if y.nunique() > MAX_CLASSES or base > 0.95:
@@ -1189,6 +1317,39 @@ def _leaky_columns(X: pd.DataFrame, y: pd.Series, cat_cols: List[str]) -> List[T
         except Exception:
             logger.debug("leakage check failed for %s", col, exc_info=True)
     return out
+
+
+def _identity_note(X: pd.DataFrame, y: pd.Series, cat_cols: List[str],
+                   target: str) -> str:
+    """Name the formula behind a perfect score: the target is a sum
+    (Revenue = Cost + Profit) or a product (Revenue = Quantity × Price) of
+    other columns. A generic "check for leakage" left the reader to find it."""
+    from sklearn.linear_model import LinearRegression
+    nums = [c for c in X.columns if c not in cat_cols]
+    yv = pd.to_numeric(y, errors="coerce")
+    data = X[nums].assign(_y=yv).dropna()
+    if len(nums) < 2 or len(data) < 30:
+        return ""
+    for kind in ("sum", "product"):
+        Z, t = data[nums], data["_y"]
+        if kind == "product":
+            pos = (Z > 0).all(axis=0)
+            if t.le(0).any() or pos.sum() < 2:
+                continue
+            Z, t = np.log(Z.loc[:, pos]), np.log(t)
+        fit = LinearRegression().fit(Z, t)
+        if fit.score(Z, t) < 0.9999:
+            continue
+        coef = pd.Series(fit.coef_, index=Z.columns)
+        used = [c for c in coef.index if abs(coef[c]) * Z[c].std() > 1e-3 * t.std()]
+        if not 2 <= len(used) <= 4:
+            continue
+        joined = (" + " if kind == "sum" else " × ").join("'{}'".format(c) for c in used)
+        return ("'{}' is calculated from other columns: it equals {} (to within "
+                "rounding). The near-perfect score is that formula, not a forecast: "
+                "to predict '{}' before it is known, leave out the columns that are "
+                "only known at the same time.".format(target, joined, target))
+    return ""
 
 
 def _no_features_reason(df: pd.DataFrame, target_col: str, leaks: List[str]) -> str:
@@ -1252,7 +1413,7 @@ def run_ml_pipeline(
     X, y, cat_cols, datetime_origins = prepare_features(df, target_col, selected_features)
 
     leakage_warnings = []
-    for col, why in _leaky_columns(X, y, cat_cols):
+    for col, why in _leaky_columns(X, y, cat_cols, date_cols=set(datetime_origins)):
         X = X.drop(columns=[col])
         leakage_warnings.append(
             "Left out '{}': {}. It is only known once the outcome is, so a model "
@@ -1263,8 +1424,12 @@ def run_ml_pipeline(
     if len(X.columns) == 0:
         raise TargetError(_no_features_reason(df, target_col, leakage_warnings))
 
+    # The first date the model uses orders the rows for testing; enough
+    # distinct dates are needed for "later" to mean something.
+    time_col = next((c for c in datetime_origins if X[c].nunique() >= 10), None)
+    time_order = X[time_col] if time_col else None
     model_results, X_test, y_test, target_encoder = train_models(
-        X, y, task, cat_cols=cat_cols)
+        X, y, task, cat_cols=cat_cols, time_order=time_order)
     best = next((m for m in model_results if m.is_best), None)
     if best is None:
         first = next((m.error for m in model_results if m.error), "")
@@ -1278,14 +1443,32 @@ def run_ml_pipeline(
                    else y.loc[X_train.index]), index=X_train.index)
                if task == "classification" else y.loc[X_train.index])
 
-    y_pred, residual_band = None, None
+    y_pred, residual_band, band_kind, floor, band_bins = None, None, "add", None, []
+    if task == "regression":
+        y_num = pd.to_numeric(y, errors="coerce")
+        if y_num.notna().any() and float(y_num.min()) >= 0:
+            floor = 0.0
     if best and best.model is not None:
         try:
-            y_pred = best.model.predict(X_test)
+            y_pred = np.asarray(best.model.predict(X_test), dtype=float)
             if task == "regression":
-                resid = np.asarray(y_test, dtype=float) - np.asarray(y_pred, dtype=float)
-                residual_band = (float(np.quantile(resid, 0.10)),
-                                 float(np.quantile(resid, 0.90)))
+                if floor is not None:
+                    y_pred = np.maximum(y_pred, floor)
+                actual = np.asarray(y_test, dtype=float)
+                if isinstance(best.model, TransformedTargetRegressor):
+                    # Errors of a log-scale model grow with the value: quoted
+                    # as a ratio, a ₹3 order is not given a ±₹200 range.
+                    ratio = actual / np.where(y_pred > 0, y_pred, np.nan)
+                    ratio = ratio[np.isfinite(ratio)]
+                    if len(ratio):
+                        residual_band = (float(np.quantile(ratio, 0.10)),
+                                         float(np.quantile(ratio, 0.90)))
+                        band_kind = "ratio"
+                else:
+                    resid = actual - y_pred
+                    residual_band = (float(np.quantile(resid, 0.10)),
+                                     float(np.quantile(resid, 0.90)))
+                band_bins = _band_bins(y_pred, actual, band_kind)
         except Exception:
             logger.warning("run_ml_pipeline: suppressed exception", exc_info=True)
 
@@ -1305,6 +1488,13 @@ def run_ml_pipeline(
         datetime_origins=datetime_origins,
         categorical_cols=cat_cols,
         residual_band=residual_band,
+        band_kind=band_kind,
+        band_bins=band_bins,
+        floor=floor,
+        split_note=("Tested on the latest {:,} rows by '{}', after training on earlier "
+                    "ones.".format(len(X_test), time_col) if time_col else
+                    "Tested on {:,} rows picked at random and held out from "
+                    "training.".format(len(X_test))),
         feature_inputs=describe_feature_inputs(X, cat_cols, datetime_origins),
         # The task reason ("Continuous numeric target …") is not a warning;
         # listed first among them, every model had a warning box.
@@ -1313,7 +1503,12 @@ def run_ml_pipeline(
     )
 
     # Suspiciously perfect scores usually mean leakage we couldn't detect
-    if best and best.test_score >= 0.995:
+    # Checked whatever the score: trees only approximate a product, and
+    # Revenue = Quantity × Price scored 0.99, under the near-perfect bar.
+    identity = _identity_note(X, y, cat_cols, target_col) if task == "regression" else ""
+    if identity:
+        report.warnings.append(identity)
+    elif best and best.test_score >= 0.995:
         report.warnings.append(
             "Test score is near-perfect ({:.1%}). Real-world data almost "
             "never behaves like this — check whether a feature contains "
@@ -1333,4 +1528,8 @@ def run_ml_pipeline(
                                  f.importance * 100))
     report.insights = _generate_insights(report)
     report.summary = _summary(report)
+    if time_col and report.summary:
+        report.summary += (" Those were the latest {:,} rows by '{}', after training on "
+                           "earlier ones, so the score is what to expect for new "
+                           "periods.".format(len(X_test), time_col))
     return report

@@ -62,6 +62,12 @@ def _complete(system: str, messages: list[dict]) -> str:
                      "was sent anywhere.")
         return text
 
+    from app.ai import claude_client
+    if claude_client.is_configured():
+        text = claude_client.chat(system, messages, max_tokens=config.llm_max_tokens)
+        if text:
+            return text
+
     if config.groq_api_key:
         try:
             return get_client(config.groq_api_key).chat(messages, system)
@@ -84,9 +90,13 @@ def _complete(system: str, messages: list[dict]) -> str:
         raise HTTPException(
             503, f"The local language model at {config.local_llm_url} did not answer "
                  "(it may not be running, or it returned an empty reply).")
+    if claude_client.is_configured():
+        raise HTTPException(
+            503, "Claude did not answer (see the server log for the reason: key, "
+                 "rate limit or connection) and no other model is configured.")
     raise HTTPException(
-        503, "No language model is configured for chat — set GROQ_API_KEY, "
-             "or LOCAL_LLM_URL and LOCAL_LLM_MODEL.")
+        503, "No language model is configured for chat — set ANTHROPIC_API_KEY "
+             "or GROQ_API_KEY, or LOCAL_LLM_URL and LOCAL_LLM_MODEL.")
 
 
 @router.post("/{ds_id}")

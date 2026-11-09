@@ -164,7 +164,7 @@ def test_segment_headline_is_rare_on_random_data():
     for seed in range(25):
         df = _noise(seed=seed)
         nums = ["revenue", "cost", "tenure", "visits"]
-        found += _best_segment_difference(df, nums) is not None
+        found += any(r is not None for r in _best_segment_difference(df, nums))
     assert found <= 1, found
 
 
@@ -172,7 +172,7 @@ def test_a_real_segment_gap_is_still_found_and_reports_its_adjustment():
     from app.engines.domains.general import _best_segment_difference
     df = _noise(seed=3)
     df.loc[df.region == "N", "revenue"] *= 1.6
-    seg = _best_segment_difference(df, ["revenue", "cost", "tenure", "visits"])
+    seg, _ = _best_segment_difference(df, ["revenue", "cost", "tenure", "visits"])
     assert seg and seg["cat"] == "region" and seg["num"] == "revenue"
     assert seg["m"] > 1
 
