@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { apiGet } from '../api/client'
 import { useApp } from '../store/app'
+import Outlook from '../components/Outlook'
 import { ErrorBox, NeedData, PageHeader, Panel, Spinner } from '../components/Ui'
 
 interface Insight {
@@ -135,6 +136,8 @@ export default function InsightsPage() {
               {story.executive_summary}
             </p>
           </Panel>
+
+          {ds && <Outlook ds={ds} />}
 
           {story.attrition && (
             <Panel title="Attrition analysis">

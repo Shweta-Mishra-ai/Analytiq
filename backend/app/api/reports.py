@@ -273,6 +273,16 @@ def _generate_pdf(df, owner: str, ds_id: str, req: PdfRequest) -> bytes:
         scorecard = build_scorecard(df)
     except Exception:
         _failed("scorecard", "The performance scorecard could not be computed.")
+    if scorecard is not None and scorecard.revenue_col:
+        # The outlook, as a key message: forecast with its tested accuracy.
+        try:
+            from app.engines.forecast import forecast_message
+            msg = forecast_message(df)
+            if msg is not None:
+                scorecard.messages.insert(1 if scorecard.messages and scorecard.messages[0].lead
+                                          else 0, msg)
+        except Exception:
+            _failed("forecast", "The three-month forecast could not be produced.")
 
     # 4. structured insights
     top_insights = []

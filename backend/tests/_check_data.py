@@ -40,3 +40,25 @@ def daily_sales(seed=0, per_day=10, season=0.0, spike=None, factor=2.2,
         mask = (df["Order Date"].dt.year == y) & (df["Order Date"].dt.month == m)
         df.loc[mask, "Revenue"] *= factor
     return df
+
+
+def planted_df(seed=5, collapse=True):
+    """Orders by region and category. With `collapse`, West's furniture
+    sales mostly stop from April 2025: the cause a "why" must find."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for d in pd.date_range("2024-01-01", "2025-06-30"):
+        for _ in range(20):
+            reg = rng.choice(["North", "South", "East", "West"])
+            cat = rng.choice(["Furniture", "Tech", "Office"])
+            amt = rng.gamma(2, 60)
+            if (collapse and d >= pd.Timestamp("2025-04-01") and reg == "West"
+                    and cat == "Furniture" and rng.random() < 0.8):
+                continue
+            rows.append({"Order Date": d, "Order ID": f"O{len(rows)}", "Region": reg,
+                         "Category": cat, "Sales": round(amt, 2)})
+    df = pd.DataFrame(rows)
+    disc = rng.choice([0, 0, 0.05, 0.15, 0.3], len(df))
+    df["Discount"] = disc
+    df["Profit"] = (df["Sales"] * (0.25 - 0.9 * disc) + rng.normal(0, 5, len(df))).round(2)
+    return df

@@ -94,6 +94,12 @@ class Message:
     at_stake: float = 0.0          # revenue the finding concerns, for ranking
     kind: str = "info"
     lead: bool = False             # states where the business stands; shown first
+    # The money acting on it could move, with how that figure was reached,
+    # and how firm the finding is. Revenue concerned (at_stake) is not that:
+    # a discount band with 1M of sales puts at most its lost margin in play.
+    value: float = 0.0
+    value_basis: str = ""
+    evidence: str = ""
 
 
 @dataclass
@@ -338,7 +344,11 @@ def _messages(sc, data, rev, profit, disc, customer, periods):
                         " over " + span if span else "", caveat),
                     action="Put an account plan and a retention check on the largest "
                            "customers; losing a few would move the total.",
-                    at_stake=float(per.iloc[:k].sum()) * 0.25, kind="warning"))
+                    at_stake=float(per.iloc[:k].sum()) * 0.25, kind="warning",
+                    value=float(per.iloc[0]),
+                    value_basis="revenue of the largest customer, '{}'{}".format(
+                        per.index[0], " over " + span if span else ""),
+                    evidence="Measured: revenue by customer"))
     del total
 
 
@@ -388,36 +398,29 @@ def _returns_message(data, rev, periods, sc) -> Optional[Message]:
         action="Break returns down by product and customer: a few lines usually "
                "carry most of the value, and each is either a quality, a "
                "description or an ordering problem.",
-        at_stake=returned, kind="warning" if rate >= 5 else "info")
+        at_stake=returned, kind="warning" if rate >= 5 else "info",
+        value=returned, value_basis="value of returns and cancellations in the {}".format(where),
+        evidence="Measured: totals of the return lines")
 
 
 def _growth_drivers(data, rev, periods) -> str:
-    """Which group of the main category carried most of the change."""
+    """Where the change came from: the grouping in which the fewest segments
+    carry it, each segment's change tested against chance, and one level
+    down inside the segment that moved most (engines/change_drivers.py).
+    This used to name the largest rise and fall in one column picked by
+    its name, whatever the size of the movement against chance."""
     if not periods:
         return ""
-    cur_mask, pri_mask = periods[0], periods[1]
-    cat = _main_category(data)
-    if not cat:
+    from app.engines.change_drivers import explain_periods
+    try:
+        e = explain_periods(data, rev, periods[0], periods[1], periods[2], periods[3],
+                            where_only=True)
+    except Exception:
+        logger.warning("change explanation failed", exc_info=True)
         return ""
-    cur = data[cur_mask].groupby(cat)[rev].sum()
-    pri = data[pri_mask].groupby(cat)[rev].sum()
-    delta = cur.sub(pri, fill_value=0).sort_values()
-    if len(delta) < 2:
+    if e is None:
         return ""
-    from app.engines.chart_exporter import fmt
-    # The largest rise and the largest fall, in money. A share of the net
-    # change ("'East' accounts for 95% of it") hid a region that fell while
-    # the others rose.
-    parts = []
-    if delta.iloc[-1] > 0:
-        parts.append("'{}' added the most (+{})".format(
-            delta.index[-1], fmt(float(delta.iloc[-1]))))
-    if delta.iloc[0] < 0:
-        parts.append("'{}' fell the most ({})".format(
-            delta.index[0], fmt(float(delta.iloc[0]))))
-    if not parts:
-        return ""
-    return "By '{}': {}.".format(cat, "; ".join(parts))
+    return " ".join(e.sentences[1:])
 
 
 def _main_category(data) -> Optional[str]:
@@ -468,6 +471,7 @@ def _discount_message(data, rev, profit, disc) -> Optional[Message]:
     if gap_pp < 5 or share < 5 or p >= 0.05:
         return None
     loses = deep_m < 0
+    regained = gap_pp / 100 * float(g.loc[deepest, "rev"])
     title = ("Orders discounted {} lose money: {:.1f}% margin against {:.1f}% at full price"
              if loses else
              "Orders discounted {} earn {:.1f}% margin against {:.1f}% at full price")
@@ -482,7 +486,15 @@ def _discount_message(data, rev, profit, disc) -> Optional[Message]:
         action=("Require approval for discounts {} and test a lower cap on a subset of "
                 "orders, measuring the volume lost against the margin regained."
                 ).format(deepest),
-        at_stake=float(g.loc[deepest, "rev"]), kind="negative" if loses else "warning")
+        at_stake=float(g.loc[deepest, "rev"]), kind="negative" if loses else "warning",
+        value=regained,
+        value_basis=("margin regained if orders discounted {} earned the full-price margin "
+                     "({:.1f} points on {})").format(deepest, gap_pp, fmt(g.loc[deepest, "rev"])),
+        evidence="Tested: margins differ across discount bands ({})".format(_p_text(p)))
+
+
+def _p_text(p: float) -> str:
+    return "p<0.001" if p < 0.001 else "p={:.3f}".format(p)
 
 
 def _segment_margin_message(data, rev, profit) -> Optional[Message]:
@@ -514,11 +526,12 @@ def _segment_margin_message(data, rev, profit) -> Optional[Message]:
     for (c, g, _p), q in zip(tested, bh_adjust([t[2] for t in tested])):
         spread = float(g["margin"].max() - g["margin"].min()) * 100
         if q < 0.05 and spread >= 5 and (best is None or spread > best[0]):
-            best = (spread, c, g)
+            best = (spread, c, g, q)
     if not best:
         return None
-    spread, c, g = best
+    spread, c, g, q = best
     hi, lo = g["margin"].idxmax(), g["margin"].idxmin()
+    overall = float(g["profit"].sum() / g["rev"].sum())
     lo_share = float(g.loc[lo, "rev"] / g["rev"].sum() * 100)
     return Message(
         title="Margin ranges from {:.1f}% in '{}' to {:.1f}% in '{}'".format(
@@ -527,7 +540,12 @@ def _segment_margin_message(data, rev, profit) -> Optional[Message]:
                 ).format(c, spread, lo, lo_share, fmt(g.loc[lo, "rev"])),
         action=("Break '{}' down by product, price and discount to find what holds its "
                 "margin down.").format(lo),
-        at_stake=float(g.loc[lo, "rev"]), kind="warning")
+        at_stake=float(g.loc[lo, "rev"]), kind="warning",
+        value=max(0.0, (overall - float(g.loc[lo, "margin"]))) * float(g.loc[lo, "rev"]),
+        value_basis=("profit gained if '{}' earned the {:.1f}% margin of the business as a "
+                     "whole, on its {} of revenue").format(lo, overall * 100, fmt(g.loc[lo, "rev"])),
+        evidence="Tested: margins differ across '{}' ({}, adjusted for {} groupings "
+                 "tested)".format(c, _p_text(q), len(tested)))
 
 
 def priority(msg: Message, total_revenue: float) -> str:

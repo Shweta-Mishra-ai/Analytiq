@@ -74,15 +74,15 @@ def test_no_revenue_measure_means_no_scorecard():
     assert sc.metrics == [] and sc.messages == []
 
 
-def test_growth_names_the_largest_rise_and_fall():
+def test_growth_is_split_into_volume_and_value_and_names_only_real_movers():
     df = _sales()
     detail = next(m.detail for m in build_scorecard(df).messages if m.lead)
-    cur = df[df.order_date.dt.year == 2024].groupby("region").sales.sum()
-    pri = df[df.order_date.dt.year == 2023].groupby("region").sales.sum()
-    delta = (cur - pri).sort_values()
-    assert "'{}' added the most".format(delta.index[-1]) in detail
-    if delta.iloc[0] < 0:
-        assert "'{}' fell the most".format(delta.index[0]) in detail
+    # Revenue rose 14% here on value per order, every region with it.
+    assert "Orders fell 0.2% and average order value rose 14.2%" in detail
+    # No region's change passes the chance test once the 7 segments tested
+    # are allowed for (North, the largest, is z=2.4 against a bar of 2.7):
+    # the largest rise used to be named whatever its size against chance.
+    assert "By 'region'" not in detail
 
 
 # ── honesty ──────────────────────────────────────────────────────────────

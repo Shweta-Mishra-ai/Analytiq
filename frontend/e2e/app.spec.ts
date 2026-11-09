@@ -73,3 +73,15 @@ test('a program renamed as a CSV is refused with the reason', async ({ page }) =
   await upload(page, file)
   await expect(page.getByText(/program or script/i)).toBeVisible()
 })
+
+test('insights show what to act on, why revenue moved and a tested forecast', async ({ page }) => {
+  const problems = watch(page)
+  await upload(page, fixture('sales.csv'))
+  await expect(page.getByText('region').first()).toBeVisible()
+  await page.click('a[href="/insights"]')
+  await expect(page.getByTestId('outlook')).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByTestId('priority').first()).toBeVisible()
+  // The forecast states its tested accuracy beside the naive baseline.
+  await expect(page.getByTestId('forecast-accuracy')).toContainText("holding last month")
+  expect(problems).toEqual([])
+})
