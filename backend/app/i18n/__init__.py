@@ -166,7 +166,6 @@ class _Template:
         self.english = english
         self.target = target
         parts, names, translate, pos = [], [], set(), 0
-        sentence = len(_PLACEHOLDER.split(english, maxsplit=1)[0]) >= 3
         for m in _PLACEHOLDER.finditer(english):
             parts.append(re.escape(english[pos:m.start()]))
             name = m.group(1)
@@ -181,10 +180,11 @@ class _Template:
             # A plain value is one figure or name, so it never spans the
             # list separator either: "Spend {v1}" took a whole " · " list
             # and left every item after the first in English. Only a
-            # translated part ({vN:t}) of a sentence template may hold a
-            # list; in an item template ("{v1:t}: {v2} deals, {v3}") it
+            # translated part ({vN:t}) with the template's own wording
+            # before it may hold a list ("… heavily skewed — {v2:t}."); one
+            # that opens the template ("{v1:t}: {v2} deals, {v3}", an item)
             # swallowed the sentence's own opening and the items before.
-            guard = "" if m.group(2) and sentence else "(?!\\s·\\s)"
+            guard = "" if m.group(2) and m.start() > 0 else "(?!\\s·\\s)"
             parts.append(f"(?P<{name}>(?:(?![.!?।]\\s+\\S){guard}.)+?)")
             pos = m.end()
         parts.append(re.escape(english[pos:]))
@@ -370,7 +370,9 @@ def _sentence_runs(parts: List[str], cat: _Catalog):
     while i < len(parts):
         for j in range(min(len(parts), i + _MAX_RUN), i, -1):
             text = " ".join(parts[i:j])
-            out = _core(text, cat) if j - i > 1 and cat.match(_norm(text)) else None
+            n = _norm(text)
+            known = n in cat.exact or cat.match(n)
+            out = _core(text, cat) if j - i > 1 and known else None
             if out is not None or j == i + 1:
                 if out is None:
                     out = _core(text, cat)
@@ -392,6 +394,10 @@ def _core(text: str, cat: _Catalog) -> Optional[str]:
     parts = [p for p in _LIST.split(n) if p]
     if len(parts) > 1 and all(p in keep for p in parts):
         return _data_value(n)             # a list of the data's own names
+    if keep and _only_data(n):
+        # Only the data's own names and figures ("West: −22,448 (-39%)"):
+        # nothing to translate.
+        return _data_value(n)
     if n in cat.exact:
         return cat.exact[n]
     # A sentence template with real wording of its own ("Flags: {v1:t}.")
