@@ -59,6 +59,7 @@ def _serialize_report(report) -> dict:
         "no_signal": getattr(report, "no_signal", ""),
         "summary": getattr(report, "summary", ""),
         "task_reason": getattr(report, "task_reason", ""),
+        "split_note": getattr(report, "split_note", ""),
         "feature_inputs": to_jsonable(getattr(report, "feature_inputs", None) or []),
     }
 
