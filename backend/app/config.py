@@ -55,7 +55,11 @@ class AppConfig(BaseSettings):
     llm_privacy_mode: bool = Field(default=False, alias="LLM_PRIVACY_MODE")
 
     # ── Upload limits ────────────────────────────────────
-    max_file_mb: int = 200
+    # 50 MB by default: a 59 MB file was measured at 1 GB of memory while it
+    # loads, so the old 200 MB limit needed about 3 GB the server did not
+    # have. Raise MAX_FILE_MB only with the memory to match (about 20 MB of
+    # RAM per MB of file, on top of 700 MB for the app).
+    max_file_mb: int = Field(default=50, alias="MAX_FILE_MB")
     max_media_mb: int = 100          # images / video / documents for RAG
 
     # ── Knowledge base limits ────────────────────────────
@@ -76,10 +80,28 @@ class AppConfig(BaseSettings):
     data_ttl_days: int = Field(default=30, alias="DATA_TTL_DAYS")
     cleanup_interval_hours: int = Field(default=6, alias="CLEANUP_INTERVAL_HOURS")
 
+    # ── Limits (services/limits.py) ──────────────────────
+    # Uploads, reports and model training that run at once; the rest queue
+    # for up to HEAVY_JOB_WAIT seconds, then are told the server is busy.
+    max_heavy_jobs: int = Field(default=2, alias="MAX_HEAVY_JOBS")
+    heavy_job_wait_sec: int = Field(default=90, alias="HEAVY_JOB_WAIT")
+    # Per client. 0 disables a limit.
+    max_storage_mb_per_owner: int = Field(default=1024, alias="MAX_STORAGE_MB")
+    max_datasets_per_owner: int = Field(default=50, alias="MAX_DATASETS")
+    # Uploads stop while the data disk has less than this free.
+    min_free_disk_mb: int = Field(default=300, alias="MIN_FREE_DISK_MB")
+    # API requests per caller per minute (0 = unlimited).
+    rate_limit_per_minute: int = Field(default=300, alias="RATE_LIMIT_PER_MINUTE")
+    # Shown to clients on error screens and the account page.
+    support_email: str = Field(default="", alias="SUPPORT_EMAIL")
+
     # ── App meta ─────────────────────────────────────────
     app_name: str = "Analytiq"
     app_version: str = "2.0.0"
-    cors_origins: str = Field(default="*", alias="CORS_ORIGINS")
+    # Other websites allowed to call the API from a browser. Empty (the
+    # default) allows none: the app's own pages are served from the same
+    # address and need no entry. "*" allowed every site.
+    cors_origins: str = Field(default="", alias="CORS_ORIGINS")
 
     # ── Auth ─────────────────────────────────────────────
     # APP_ADMIN_KEY gates account management (POST /api/admin/*): creating

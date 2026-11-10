@@ -189,6 +189,12 @@ def _create(owner: str, name: str, data: bytes):
         check(name, data)
     except UploadRejected as e:
         raise ValueError(str(e))
+    from fastapi import HTTPException
+    from app.services.limits import check_storage
+    try:
+        check_storage(owner, len(data))
+    except HTTPException as e:
+        raise ValueError(str(e.detail))
     result = load_file(_UploadShim(name, data))
     if not result.success or result.df is None:
         raise ValueError(result.error or "The file could not be read.")

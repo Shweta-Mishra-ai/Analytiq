@@ -82,8 +82,12 @@ def train(ds_id: str, req: TrainRequest, owner: str = Depends(current_owner)):
             422, f"'{req.target}' is a date — predict something measured "
                  f"about the rows instead, such as a duration in days")
     from app.engines.ml_engine import TargetError, run_ml_pipeline
+    from app.services.limits import heavy_job
     try:
-        report = run_ml_pipeline(df, req.target, max_rows=req.max_rows)
+        with heavy_job("model training"):
+            report = run_ml_pipeline(df, req.target, max_rows=req.max_rows)
+    except HTTPException:
+        raise                       # the "server is busy" answer, as it is
     except TargetError as e:
         # A target the pipeline refuses (too many classes) is the request's
         # problem, said in words the user can act on — not a server error.

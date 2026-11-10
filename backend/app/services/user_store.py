@@ -34,6 +34,9 @@ class User:
     password_hash: bytes
     created_at: float
     is_admin: bool = False
+    # When the password was last set. Tokens issued before it stop working,
+    # so changing a password signs out every other device.
+    password_changed_at: float = 0.0
 
 
 @dataclass
@@ -42,6 +45,35 @@ class PublicUser:
     username: str
     created_at: float
     is_admin: bool = False
+    password_changed_at: float = 0.0
+
+
+# The passwords tried first in any guessing attack. "password" was accepted.
+_COMMON_PASSWORDS = {
+    "password", "password1", "password12", "password123", "passw0rd", "12345678",
+    "123456789", "1234567890", "qwertyui", "qwerty123", "qwertyuiop", "11111111",
+    "00000000", "iloveyou", "admin123", "administrator", "letmein1", "welcome1",
+    "welcome123", "abc12345", "abcd1234", "1q2w3e4r", "changeme", "analytiq",
+    "analytiq123", "football", "baseball", "sunshine", "princess", "trustno1",
+}
+
+
+def check_password(password: str, username: str = "") -> None:
+    """Raise ValueError saying what is wrong with a new password."""
+    if len(password or "") < 8:
+        raise ValueError("Password must be at least 8 characters")
+    if len(password) > 200:
+        raise ValueError("Password must be at most 200 characters")
+    low = password.lower()
+    if low in _COMMON_PASSWORDS or len(set(low)) < 4:
+        raise ValueError("That password is too easy to guess; choose a less common one")
+    if username and low == username.lower():
+        raise ValueError("Password must not be the username")
+
+
+def _public(user: "User") -> PublicUser:
+    return PublicUser(user.username, user.created_at, user.is_admin,
+                      float(getattr(user, "password_changed_at", 0.0) or 0.0))
 
 
 def _hash_password(password: str, salt: bytes) -> bytes:
@@ -128,8 +160,7 @@ class UserStore:
                 "'-', starting with a letter or digit")
         if username in _RESERVED_USERNAMES:
             raise ValueError(f"'{username}' is reserved")
-        if len(password) < 8:
-            raise ValueError("Password must be at least 8 characters")
+        check_password(password, username)
         with self._lock:
             if username in self._users:
                 raise ValueError(f"User '{username}' already exists")
@@ -143,7 +174,22 @@ class UserStore:
             )
             self._users[username] = user
             self._save()
-        return PublicUser(username, user.created_at, user.is_admin)
+        return _public(user)
+
+    def set_password(self, username: str, new_password: str) -> PublicUser:
+        """Set a new password (admin reset, or after the old one was
+        verified). Every token issued before now stops working."""
+        username = username.strip().lower()
+        check_password(new_password, username)
+        with self._lock:
+            user = self._users.get(username)
+            if user is None:
+                raise ValueError("No such user")
+            user.salt = secrets.token_bytes(16)
+            user.password_hash = _hash_password(new_password, user.salt)
+            user.password_changed_at = time.time()
+            self._save()
+            return _public(user)
 
     def verify(self, username: str, password: str) -> Optional[PublicUser]:
         username = username.strip().lower()
@@ -155,17 +201,16 @@ class UserStore:
         candidate = _hash_password(password, user.salt)
         if not hmac.compare_digest(candidate, user.password_hash):
             return None
-        return PublicUser(user.username, user.created_at, user.is_admin)
+        return _public(user)
 
     def get(self, username: str) -> Optional[PublicUser]:
         with self._lock:
             user = self._users.get(username.strip().lower())
-        return PublicUser(user.username, user.created_at, user.is_admin) if user else None
+        return _public(user) if user else None
 
     def list(self) -> list[PublicUser]:
         with self._lock:
-            out = [PublicUser(u.username, u.created_at, u.is_admin)
-                   for u in self._users.values()]
+            out = [_public(u) for u in self._users.values()]
         out.sort(key=lambda u: u.created_at)
         return out
 

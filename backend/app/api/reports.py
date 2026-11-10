@@ -196,9 +196,13 @@ def _xlsx_bytes(df) -> bytes:
 
 @router.get("/{ds_id}/excel")
 def export_excel(ds_id: str, owner: str = Depends(current_owner)):
-    df = _excel_safe_times(_df_or_404(owner, ds_id))
+    from app.services.limits import heavy_job
+    # A million rows are held as Python objects while the workbook is
+    # written; several at once is what runs a small server out of memory.
+    with heavy_job("Excel export"):
+        data = _xlsx_bytes(_excel_safe_times(_df_or_404(owner, ds_id)))
     return Response(
-        _xlsx_bytes(df),
+        data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=analytiq_export.xlsx"})
 
@@ -214,7 +218,8 @@ def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner
         req.subtitle, _typed(req.client_name, "Client"), req.prepared_by,
         # The table the cleaning SQL names is the client's object, not English.
         table_name_from_filename(getattr(meta, "filename", "")))
-    with i18n.use_language(lang, **data):
+    from app.services.limits import heavy_job
+    with heavy_job("report"), i18n.use_language(lang, **data):
         pdf_bytes = _generate_pdf(df, owner, ds_id, req)
     return Response(
         pdf_bytes, media_type="application/pdf",
@@ -423,7 +428,9 @@ def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
     filename = meta.filename if meta else f"{ds_id}.csv"
     from app import i18n
     lang = _check_language(req.language)
-    with i18n.use_language(lang, **i18n.data_context(df, filename, req.agency_name)):
+    from app.services.limits import heavy_job
+    with heavy_job("report"), \
+            i18n.use_language(lang, **i18n.data_context(df, filename, req.agency_name)):
         pdf_bytes = _generate_health_pdf(df, filename, req)
     return Response(
         pdf_bytes, media_type="application/pdf",

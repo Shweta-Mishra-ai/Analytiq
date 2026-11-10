@@ -152,7 +152,7 @@ def server(monkeypatch):
     from app.services.user_store import user_store
     monkeypatch.setattr(config, "app_admin_key", "mcp-test-admin-key")
     for u in ("mcp_alice", "mcp_bob"):
-        user_store.create(u, "password123")
+        user_store.create(u, "correct-horse-7")
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
