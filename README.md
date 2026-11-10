@@ -221,6 +221,10 @@ claude mcp add --transport stdio --env PYTHONPATH=$(pwd)/backend analytiq -- pyt
 
 ## ☁️ Deployment Guides
 
+Before serving clients, read **[docs/OPERATIONS.md](docs/OPERATIONS.md)**: memory and
+limit settings, the `/admin` screen for client accounts, backups, and how to trace an
+error a client reports.
+
 ### **Render Deployment**
 1. Push this code repository to GitHub.
 2. Link your repository in Render and create a **Web Service** using the Blueprint configuration in `render.yaml`.
