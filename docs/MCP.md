@@ -167,7 +167,6 @@ from your computer. You have three ways in:
 
 ## Licence
 
-Analytiq is proprietary software. Anyone may install and run it, including
-through the plugin and the MCP server, for their own personal or internal
-business purposes; copying, modifying, redistributing or offering it as a
-service is not permitted. See [LICENSE](../LICENSE).
+Analytiq is proprietary software. Using, copying, modifying or distributing
+it, including through the plugin and the MCP server, requires the express
+written authorization of Shweta Mishra. See [LICENSE](../LICENSE).
