@@ -30,6 +30,15 @@ export default function UploadPage() {
   }, [])
   useEffect(refresh, [refresh])
 
+  // The server's own limit, not a number written here: it follows the
+  // memory the deployment has.
+  const [maxMb, setMaxMb] = useState<number | null>(null)
+  useEffect(() => {
+    apiGet<{ max_file_mb?: number }>('/api/health')
+      .then((h) => setMaxMb(h.max_file_mb ?? null))
+      .catch(() => setMaxMb(null))
+  }, [])
+
   useEffect(() => {
     if (dataset)
       apiGet<TableData>(`/api/datasets/${dataset.dataset_id}/preview?rows=50`)
@@ -98,7 +107,7 @@ export default function UploadPage() {
     <div className="page">
       <PageHeader
         title="Data Upload"
-        subtitle="CSV, Excel (multi-sheet) or JSON up to 200 MB — or let AI extract a table from a photo or video"
+        subtitle={`CSV, Excel (multi-sheet) or JSON${maxMb ? ` up to ${maxMb} MB` : ''} — or let AI extract a table from a photo or video`}
       />
       {error && (
         <div className="mb-4">
@@ -236,6 +245,17 @@ export default function UploadPage() {
                   <span className="shrink-0 text-xs opacity-70">
                     {m.rows.toLocaleString()} × {m.cols}
                   </span>
+                  {m.expires_at != null && (
+                    <span
+                      className={`shrink-0 text-[11px] ${
+                        m.expires_at * 1000 - Date.now() < 7 * 86400_000 ? 'text-amber' : 'opacity-60'
+                      }`}
+                      data-testid="expires"
+                      title="Datasets are deleted automatically; download what you need before then"
+                    >
+                      deleted on {new Date(m.expires_at * 1000).toLocaleDateString()}
+                    </span>
+                  )}
                 </button>
                 <button
                   title="Delete dataset"
