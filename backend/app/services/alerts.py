@@ -39,7 +39,8 @@ def _post(url: str, text: str) -> None:
         req = urllib.request.Request(
             url, data=json.dumps({"text": text}).encode("utf-8"),
             headers={"Content-Type": "application/json"}, method="POST")
-        urllib.request.urlopen(req, timeout=10).close()  # nosec B310 - https only, checked above
+        # The address is checked to be https just above.
+        urllib.request.urlopen(req, timeout=10).close()  # nosec B310
     except Exception as e:
         logger.warning("alert could not be sent: %s", e)
 
