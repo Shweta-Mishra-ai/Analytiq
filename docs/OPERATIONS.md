@@ -16,7 +16,10 @@ figures are measurements of this app, not estimates.
 4. **Persistent disk** mounted at `DATA_DIR`. Accounts, the token signing key
    and all client data live there.
 5. **Set `SUPPORT_EMAIL`** so error screens tell clients whom to contact.
-6. **Agree terms with each client in writing.** The licence forbids any use
+6. **Set `APP_PUBLIC_URL`** to the address clients use
+   (`https://analytics.example.com`). The account page shows it as the Claude
+   connector address, and report links use it.
+7. **Agree terms with each client in writing.** The licence forbids any use
    without written authorization, and you hold their business data.
 
 ## Sizing
@@ -41,32 +44,64 @@ Open `/admin` on your deployment and enter the admin key. From there:
   trust; they can change the password under **Account**);
 - reset a lost password (signs out their sessions);
 - delete a client and all of their data;
-- see each client's storage, the server's memory, disk and running jobs.
+- see each client's storage, the server's memory, disk and running jobs;
+- see recent errors and the saved backups.
 
 There is no self sign-up: every account is one you created.
 
+## Clients who use Claude
+
+No AI key is needed on the server for this. A client with their own Claude
+account (any plan; the free plan allows one custom connector) connects it to
+Analytiq and asks questions in plain words; Analytiq does the calculations
+and Claude writes the answer.
+
+Each client does this once, from **Account → Use Analytiq in Claude**:
+
+1. **Create key.** It is shown once.
+2. In Claude: **Customize → Connectors → Add → Add custom connector**.
+3. Paste the connector address, choose **No sign in**, and add the request
+   header `Authorization` with the value `Bearer <key>`.
+
+The key does not expire, opens the analysis tools only (not the web app or
+the password), and stops working when the client replaces or removes it or
+you delete the account. Details and the list of tools: [MCP.md](MCP.md).
+
+The chat and written narratives *inside the web app* are separate: they need
+`ANTHROPIC_API_KEY`, `GROQ_API_KEY` or `GEMINI_API_KEY`, and without one the
+app shows its calculated findings only.
+
 ## Backups
 
-**Download backup** on `/admin` (or `GET /api/admin/backup` with the admin
-key) returns one `.tar.gz` of everything: accounts, the signing key and every
-client's data. Keep it somewhere other than the server, and treat it as
-secret, since it holds all client data.
+**Scheduled.** A snapshot of everything (accounts, the signing key, every
+client's data) is written every `BACKUP_EVERY_HOURS` (24) to
+`DATA_DIR/backups`, and the newest `BACKUP_KEEP` (3) are kept. A snapshot is
+skipped, with a warning in the log, when it would leave less than
+`MIN_FREE_DISK_MB` free. `/admin` lists them, takes one on demand and
+downloads any of them.
 
-Daily, from any machine with `curl`:
+These cover a deleted dataset, a bad release or a damaged file. **They do not
+cover losing the disk**, because they are on it. For that, copy one off the
+server on a schedule, from any machine with `curl`:
 
 ```
 curl -fsS -H "Authorization: Bearer $APP_ADMIN_KEY" \
   https://YOUR-APP/api/admin/backup -o analytiq-$(date +%F).tar.gz
 ```
 
+Treat every backup as secret: it holds all client data.
+
 Restore: stop the app, unpack the archive so that its `data/` folder becomes
 `DATA_DIR`, start the app. Try a restore once before you need one.
 
 ## When a client reports a problem
 
-- An error screen quotes a **reference** (for example `3f9a1c2b7d10`). Search
-  the server log for `ref=3f9a1c2b7d10` to find the request, the client and
-  the full error.
+- An error screen quotes a **reference** (for example `3f9a1c2b7d10`).
+  `/admin` lists recent errors by reference with the request, the client and
+  the error; the server log has the full traceback under `ref=3f9a1c2b7d10`.
+- To be told as errors happen, set `ALERT_WEBHOOK_URL` to an incoming webhook
+  (Slack, Discord with `/slack` appended, or similar). At most one message
+  every five minutes, with a count of the rest.
 - "The server is busy": more heavy jobs were waiting than `MAX_HEAVY_JOBS`
   allows. Occasional is normal; frequent means more memory and a higher limit.
 - "Too many requests": the caller passed `RATE_LIMIT_PER_MINUTE`.
@@ -82,6 +117,9 @@ with their reference, path, duration and client.
 
 - Sending email (password reset links, expiry reminders).
 - Billing and invoices.
-- Alerts when the server is down: point an uptime monitor at `/api/health`.
+- Alerts when the server is *down* (as opposed to failing a request): point an
+  uptime monitor at `/api/health`.
+- Copying backups off the server: schedule the `curl` above somewhere else.
+- Self sign-up: every account is created by you.
 - More than one server process: the queue, rate limit and login throttle are
   per process, and data is on one disk.

@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: dataforge-pro
+    name: analytiq
     runtime: docker
     # At least 2 GB of memory. Measured: 240 MB idle, 700 MB with a few
     # reports running, 1 GB while a 59 MB file loads. A 512 MB instance is
@@ -16,6 +16,10 @@ services:
         sync: false        # optional: Claude for chat and report text
       - key: SUPPORT_EMAIL
         sync: false        # shown to clients on error screens
+      - key: APP_PUBLIC_URL
+        sync: false        # https://your-address: used in the Claude connector address and report links
+      - key: ALERT_WEBHOOK_URL
+        sync: false        # optional: unexpected errors are posted here (Slack-style webhook)
       - key: MAX_FILE_MB
         value: "50"        # raise only with more memory (docs/OPERATIONS.md)
       - key: APP_ADMIN_KEY
@@ -23,6 +27,6 @@ services:
       - key: DATA_DIR
         value: /srv/data
     disk:
-      name: dataforge-data
+      name: analytiq-data
       mountPath: /srv/data
       sizeGB: 5
