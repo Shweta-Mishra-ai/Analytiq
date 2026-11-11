@@ -274,3 +274,53 @@ def test_a_report_never_overwrites_an_existing_file(tmp_path):
     assert keep.read_bytes() == b"keep me"
     saved = tmp_path / "review (1).pdf"
     assert saved.read_bytes()[:5] == b"%PDF-" and str(saved) in msg
+
+
+# ── the connector key (claude.ai has no way to sign in again) ────────────
+
+def test_a_connector_key_signs_claude_in_until_it_is_replaced_or_removed(server):
+    from app.services.user_store import user_store
+    base, tok = server
+    key = user_store.new_connector_key("mcp_alice")
+    profile = _run(_remote(base, tok["mcp_alice"], "load_dataset",
+                           {"csv_text": _CSV, "name": "alice_key"}))
+    ds = _dataset_id(profile)
+    # The key opens the same account's data as the sign-in token ...
+    assert ds in _run(_remote(base, key, "list_datasets", {}))
+    # ... and nobody else's: a key edited to name another user is refused.
+    other = user_store.new_connector_key("mcp_bob")
+    assert ds not in _run(_remote(base, other, "list_datasets", {}))
+    forged = other.split("-", 2)
+    forged[1] = key.split("-", 2)[1]
+    assert "Not signed in" in _run(_remote(base, "-".join(forged), "list_datasets", {}))
+    # A password change leaves it working; a new key replaces it.
+    user_store.set_password("mcp_alice", "another-horse-9")
+    assert ds in _run(_remote(base, key, "list_datasets", {}))
+    newer = user_store.new_connector_key("mcp_alice")
+    assert "Not signed in" in _run(_remote(base, key, "list_datasets", {}))
+    assert ds in _run(_remote(base, newer, "list_datasets", {}))
+    assert user_store.revoke_connector_key("mcp_alice")
+    assert "Not signed in" in _run(_remote(base, newer, "list_datasets", {}))
+
+
+def test_a_connector_key_does_not_open_the_web_api(server):
+    import httpx2
+    from app.services.user_store import user_store
+    base, _ = server
+    key = user_store.new_connector_key("mcp_alice")
+    for path in ("/api/datasets", "/api/account"):
+        r = httpx2.get(base + path, headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 401, path
+
+
+def test_a_busy_server_tells_claude_so_in_words(server, monkeypatch):
+    from app.services import limits
+    base, tok = server
+    profile = _run(_remote(base, tok["mcp_alice"], "load_dataset",
+                           {"csv_text": _CSV, "name": "alice_busy"}))
+    ds = _dataset_id(profile)
+    full = limits.JobGate(slots=1, wait_sec=0.1)
+    monkeypatch.setattr(limits, "job_gate", full)
+    with full.job("report"):
+        out = _run(_remote(base, tok["mcp_alice"], "generate_report", {"dataset_id": ds}))
+    assert "Could not do that" in out and "busy" in out
