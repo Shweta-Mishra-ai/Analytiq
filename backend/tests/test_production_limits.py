@@ -260,3 +260,108 @@ def test_old_account_files_without_the_new_field_still_load():
     u = User("old", b"s", b"h", 1.0)
     del u.__dict__["password_changed_at"]              # as unpickled from an older file
     assert _public(u).password_changed_at == 0.0
+
+
+# ── the Claude connector key ─────────────────────────────
+
+def test_the_account_page_hands_out_a_connector_key_once(client, tenant, monkeypatch):
+    headers, name = tenant
+    monkeypatch.setattr(config, "public_url", "https://analytiq.example.com/")
+    c = client.get("/api/account", headers=headers).json()["connector"]
+    assert c == {"url": "https://analytiq.example.com/mcp/", "has_key": False,
+                 "key_created_at": None}
+    made = client.post("/api/account/connector-key", headers=headers).json()
+    assert made["key"].startswith("aqk-") and made["connector"]["has_key"]
+    assert user_store.user_for_connector_key(made["key"]).username == name
+    # Shown once: the account answer says a key exists, never the key.
+    again = client.get("/api/account", headers=headers)
+    assert again.json()["connector"]["has_key"] and made["key"] not in again.text
+    assert client.delete("/api/account/connector-key", headers=headers).json() == {"removed": True}
+    assert user_store.user_for_connector_key(made["key"]) is None
+    assert client.delete("/api/account/connector-key", headers=headers).json() == {"removed": False}
+
+
+def test_connector_keys_need_an_account_and_survive_nonsense(client):
+    # Single-user mode has no accounts: nothing to key.
+    assert client.get("/api/account").json()["connector"] is None
+    assert client.post("/api/account/connector-key").status_code == 400
+    for junk in ("", "aqk-", "aqk-!!!-x", "aqk-" + "A" * 500, "aqk-w6k-x", "é"):
+        assert user_store.user_for_connector_key(junk) is None
+
+
+# ── backups ──────────────────────────────────────────────
+
+def test_snapshots_are_kept_on_disk_pruned_and_never_nest(client, tenant, monkeypatch):
+    import os
+    from app.services import backups
+    headers, _ = tenant
+    assert _upload(client, headers).status_code == 200
+    for b in backups.list_backups():
+        os.unlink(os.path.join(backups.backup_dir(), b["name"]))
+    monkeypatch.setattr(config, "backup_keep", 2)
+    stamps = iter(["20260101-000001", "20260101-000002", "20260101-000003"])
+    monkeypatch.setattr(backups.time, "strftime", lambda _f: next(stamps))
+    made = [client.post("/api/admin/backups", headers=ADMIN) for _ in range(3)]
+    assert [m.status_code for m in made] == [200, 200, 200]
+    listed = client.get("/api/admin/status", headers=ADMIN).json()["backups"]
+    assert len(listed) == 2 and made[0].json()["name"] not in [b["name"] for b in listed]
+    got = client.get(f"/api/admin/backups/{listed[0]['name']}", headers=ADMIN)
+    names = tarfile.open(fileobj=io.BytesIO(got.content)).getnames()
+    assert "data/users.pkl" in names
+    assert not any(n.startswith("data/backups") for n in names)
+    assert client.get("/api/admin/backups/..%2Fusers.pkl", headers=ADMIN).status_code == 404
+    assert client.get(f"/api/admin/backups/{listed[0]['name']}", headers=headers).status_code == 401
+    for b in backups.list_backups():
+        os.unlink(os.path.join(backups.backup_dir(), b["name"]))
+
+
+def test_a_snapshot_is_skipped_when_it_would_fill_the_disk(monkeypatch):
+    import collections
+    from app.services import backups
+    usage = collections.namedtuple("usage", "total used free")
+    monkeypatch.setattr(backups.shutil, "disk_usage", lambda _p: usage(10**9, 10**9, 10 * 2**20))
+    before = backups.list_backups()
+    assert backups.take_backup() is None
+    assert backups.list_backups() == before
+
+
+# ── knowing something broke ──────────────────────────────
+
+def test_an_unexpected_error_is_listed_for_the_admin_and_alerted_once(client, monkeypatch):
+    from app.services import alerts
+    sent = []
+    monkeypatch.setattr(config, "alert_webhook_url", "https://hooks.example.com/x")
+    monkeypatch.setattr(alerts, "_post", lambda url, text: sent.append((url, text)))
+    monkeypatch.setattr(alerts, "_last_sent", 0.0)
+    monkeypatch.setattr(alerts, "_held", 0)
+    monkeypatch.setattr(alerts.threading, "Thread", _Inline)
+    from app.api import datasets as ds_api
+
+    def boom(*a, **k):
+        raise RuntimeError("disk on fire")
+    monkeypatch.setattr(ds_api.store, "list_meta", boom)
+    refs = [client.get("/api/datasets").json()["reference"] for _ in range(3)]
+    listed = client.get("/api/admin/status").json()
+    assert [e["reference"] for e in listed["recent_errors"][:3]] == refs[::-1]
+    assert "disk on fire" in listed["recent_errors"][0]["error"]
+    assert listed["alerts_configured"] is True
+    # Three failures in a row are one message, not three.
+    assert len(sent) == 1 and refs[0] in sent[0][1] and "disk on fire" in sent[0][1]
+    monkeypatch.setattr(alerts, "_last_sent", 0.0)
+    client.get("/api/datasets")
+    assert len(sent) == 2 and "+2 more" in sent[1][1]
+
+
+class _Inline:
+    def __init__(self, target, args=(), daemon=None):
+        self._run = lambda: target(*args)
+
+    def start(self):
+        self._run()
+
+
+def test_alerts_go_only_to_https_and_never_raise(monkeypatch, caplog):
+    from app.services import alerts
+    alerts._post("http://plain.example.com/x", "hello")
+    alerts._post("file:///etc/passwd", "hello")
+    assert "alert could not be sent" in caplog.text

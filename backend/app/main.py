@@ -37,6 +37,8 @@ async def lifespan(app: FastAPI):
     # Set DATA_TTL_DAYS=0 to disable. Runs once immediately, then on
     # CLEANUP_INTERVAL_HOURS. Cancelled cleanly on shutdown.
     task = asyncio.create_task(cleanup_loop())
+    from app.services.backups import backup_loop
+    backups = asyncio.create_task(backup_loop())
     try:
         if _mcp_mount is not None:
             async with _mcp_mount.running():
@@ -44,11 +46,12 @@ async def lifespan(app: FastAPI):
         else:
             yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for t in (task, backups):
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
 
 # Analytiq's tools for Claude (Model Context Protocol) at /mcp; see
@@ -114,9 +117,12 @@ class GuardMiddleware(BaseHTTPMiddleware):
                 return response
         try:
             response = await call_next(request)
-        except Exception:
+        except Exception as e:
+            user = getattr(request.state, "username", "-")
             logger.exception("unhandled error ref=%s %s %s user=%s", rid, request.method,
-                             path, getattr(request.state, "username", "-"))
+                             path, user)
+            from app.services.alerts import record_error
+            record_error(rid, request.method, path, user, e)
             contact = f" at {config.support_email}" if config.support_email else ""
             response = JSONResponse(
                 {"detail": "Something went wrong on our side. Please try again; if it "
@@ -229,7 +235,48 @@ def account(request: Request):
         "max_file_mb": config.max_file_mb,
         "data_ttl_days": config.data_ttl_days,
         "support_email": config.support_email,
+        "connector": _connector_info(request, username),
     }
+
+
+def _connector_info(request: Request, username: str):
+    """Where Claude connects, and whether this client has a key for it.
+    None without accounts (single-user mode serves only this machine)."""
+    from app.services.auth import _open_mode
+    user = None if _open_mode() else user_store.get(username)
+    if _mcp_mount is None or user is None:
+        return None
+    base = config.public_url.rstrip("/")
+    if not base:
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+        base = f"{proto}://{host}"
+    return {"url": base + "/mcp/", "has_key": user.connector_key_at > 0,
+            "key_created_at": user.connector_key_at or None}
+
+
+@app.post("/api/account/connector-key")
+def create_connector_key(request: Request):
+    """A new key for this client's Claude connector, shown this once. Any
+    earlier key stops working."""
+    from fastapi import HTTPException
+    from app.services.auth import LOCAL_OWNER, _open_mode
+    username = getattr(request.state, "username", LOCAL_OWNER)
+    if _open_mode() or not user_store.exists(username):
+        raise HTTPException(400, "Connector keys need a client account.")
+    key = user_store.new_connector_key(username)
+    logger.info("connector key created for %s", username)
+    return {"key": key, "connector": _connector_info(request, username)}
+
+
+@app.delete("/api/account/connector-key")
+def delete_connector_key(request: Request):
+    from app.services.auth import LOCAL_OWNER
+    username = getattr(request.state, "username", LOCAL_OWNER)
+    removed = user_store.revoke_connector_key(username)
+    if removed:
+        logger.info("connector key removed for %s", username)
+    return {"removed": removed}
 
 app.include_router(datasets.router)
 app.include_router(analytics.router)
@@ -334,6 +381,8 @@ def admin_status():
     """What the server is doing and how much room it has."""
     import shutil
     from app.services.dataset_store import store as dataset_store
+    from app.services.alerts import recent_errors
+    from app.services.backups import list_backups
     from app.services.limits import job_gate
     rss_mb = None
     try:
@@ -348,6 +397,10 @@ def admin_status():
             "datasets_in_memory": dataset_store.memory_stats(),
             "disk_free_mb": disk.free // 2**20, "disk_total_mb": disk.total // 2**20,
             "clients": len(user_store.list()),
+            "recent_errors": recent_errors()[:20],
+            "alerts_configured": bool(config.alert_webhook_url),
+            "backups": list_backups(),
+            "backup_every_hours": config.backup_every_hours,
             "limits": {"max_file_mb": config.max_file_mb,
                        "max_storage_mb_per_client": config.max_storage_mb_per_owner,
                        "max_datasets_per_client": config.max_datasets_per_owner,
@@ -359,21 +412,36 @@ def admin_backup():
     """Everything the server stores (accounts, the signing key, every
     client's data) as one .tar.gz, to keep somewhere other than this
     server. Restore by unpacking it into DATA_DIR before starting."""
-    import tarfile
     import tempfile
     from starlette.background import BackgroundTask
+    from app.services.backups import write_archive
     fd, path = tempfile.mkstemp(suffix=".tar.gz", prefix="analytiq-backup-")
     os.close(fd)
-
-    def _keep(ti):
-        # Report downloads expire within the hour; not worth backing up.
-        return None if ti.name.startswith("data/mcp_reports") else ti
-
-    with tarfile.open(path, "w:gz", compresslevel=3) as tar:
-        tar.add(config.data_dir, arcname="data", filter=_keep)
+    write_archive(path)
     name = "analytiq-backup-{}.tar.gz".format(time.strftime("%Y%m%d-%H%M"))
     return FileResponse(path, media_type="application/gzip", filename=name,
                         background=BackgroundTask(os.unlink, path))
+
+
+@app.post("/api/admin/backups")
+def admin_take_backup():
+    """Take a snapshot now, kept on the data disk with the scheduled ones."""
+    from fastapi import HTTPException
+    from app.services.backups import take_backup
+    made = take_backup()
+    if made is None:
+        raise HTTPException(507, "Not enough free disk space for a snapshot.")
+    return made
+
+
+@app.get("/api/admin/backups/{name}")
+def admin_get_backup(name: str):
+    from fastapi import HTTPException
+    from app.services.backups import backup_path
+    path = backup_path(name)
+    if path is None:
+        raise HTTPException(404, "No such backup")
+    return FileResponse(path, media_type="application/gzip", filename=name)
 
 
 @app.delete("/api/admin/users/{username}")

@@ -23,6 +23,7 @@ os.environ["APP_PASSWORD"] = ""
 # The suite sends thousands of requests a minute as one caller; the
 # request-rate limit has its own tests (test_production_limits.py).
 os.environ["RATE_LIMIT_PER_MINUTE"] = "0"
+os.environ["BACKUP_EVERY_HOURS"] = "0"
 
 
 def _make_hr_df(seed: int = 42, n: int = 500) -> pd.DataFrame:

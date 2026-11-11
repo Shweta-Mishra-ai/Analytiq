@@ -94,6 +94,16 @@ class AppConfig(BaseSettings):
     rate_limit_per_minute: int = Field(default=300, alias="RATE_LIMIT_PER_MINUTE")
     # Shown to clients on error screens and the account page.
     support_email: str = Field(default="", alias="SUPPORT_EMAIL")
+    # The address clients reach the app at (https://analytics.example.com):
+    # used in report links and in the Claude connector address.
+    public_url: str = Field(default="", alias="APP_PUBLIC_URL")
+    # A snapshot of all data every this many hours, kept on the data disk
+    # (0 = off), and how many to keep.
+    backup_every_hours: float = Field(default=24, alias="BACKUP_EVERY_HOURS")
+    backup_keep: int = Field(default=3, alias="BACKUP_KEEP")
+    # Unexpected errors are posted here ({"text": ...}: Slack, Discord
+    # "/slack" and Teams-style incoming webhooks all accept it).
+    alert_webhook_url: str = Field(default="", alias="ALERT_WEBHOOK_URL")
 
     # ── App meta ─────────────────────────────────────────
     app_name: str = "Analytiq"
