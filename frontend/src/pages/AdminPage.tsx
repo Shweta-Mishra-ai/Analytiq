@@ -17,6 +17,10 @@ interface Status {
   disk_total_mb: number
   clients: number
   limits: Record<string, number>
+  recent_errors: { reference: string; at: number; method: string; path: string; user: string; error: string }[]
+  alerts_configured: boolean
+  backups: { name: string; created_at: number; size_mb: number }[]
+  backup_every_hours: number
 }
 
 const KEY = 'analytiq-admin-key'
@@ -103,15 +107,17 @@ export default function AdminPage() {
     })
   }
 
-  const backup = async () => {
+  const backup = async (saved?: string) => {
     setError('')
     try {
-      const res = await fetch('/api/admin/backup', { headers: { Authorization: `Bearer ${key}` } })
-      if (!res.ok) throw new Error('The backup could not be made.')
+      const res = await fetch(saved ? `/api/admin/backups/${encodeURIComponent(saved)}` : '/api/admin/backup', {
+        headers: { Authorization: `Bearer ${key}` },
+      })
+      if (!res.ok) throw new Error('The backup could not be downloaded.')
       const url = URL.createObjectURL(await res.blob())
       const a = document.createElement('a')
       a.href = url
-      a.download = `analytiq-backup-${new Date().toISOString().slice(0, 10)}.tar.gz`
+      a.download = saved ?? `analytiq-backup-${new Date().toISOString().slice(0, 10)}.tar.gz`
       document.body.appendChild(a)
       a.click()
       a.remove()
@@ -211,7 +217,7 @@ export default function AdminPage() {
       <div className="rounded-xl border border-edge bg-panel p-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-bold text-ink">Clients</h2>
-          <button className={btn} onClick={backup}>
+          <button className={btn} onClick={() => backup()}>
             Download backup
           </button>
         </div>
@@ -270,6 +276,66 @@ export default function AdminPage() {
           </tbody>
         </table>
       </div>
+
+      {status && (
+        <div className="grid gap-5 lg:grid-cols-2">
+          <div className="rounded-xl border border-edge bg-panel p-4" data-testid="backups">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold text-ink">Saved backups</h2>
+              <button
+                className={btn}
+                onClick={() => act(() => call(key, '/api/admin/backups', 'POST'), 'Backup taken.')}
+              >
+                Back up now
+              </button>
+            </div>
+            <p className="mt-1 text-[11px] text-mute">
+              {status.backup_every_hours > 0
+                ? `Taken every ${status.backup_every_hours} hours and kept on the server's disk.`
+                : 'Scheduled backups are off (BACKUP_EVERY_HOURS=0).'}{' '}
+              They do not survive losing that disk: download one regularly and keep it elsewhere.
+            </p>
+            <ul className="mt-3 space-y-1.5 text-xs">
+              {status.backups.map((b) => (
+                <li key={b.name} className="flex items-center justify-between text-ink2">
+                  <span>
+                    {new Date(b.created_at * 1000).toLocaleString()} · {b.size_mb} MB
+                  </span>
+                  <button className={btn} onClick={() => backup(b.name)}>
+                    Download
+                  </button>
+                </li>
+              ))}
+              {status.backups.length === 0 && <li className="text-mute">None yet.</li>}
+            </ul>
+          </div>
+
+          <div className="rounded-xl border border-edge bg-panel p-4" data-testid="errors">
+            <h2 className="text-sm font-bold text-ink">Recent errors</h2>
+            <p className="mt-1 text-[11px] text-mute">
+              Unexpected failures since the server last started, newest first. A client quoting a reference
+              is quoting one of these.{' '}
+              {status.alerts_configured
+                ? 'Alerts are being sent to your webhook.'
+                : 'Set ALERT_WEBHOOK_URL to be told as they happen.'}
+            </p>
+            <ul className="mt-3 space-y-2 text-xs">
+              {status.recent_errors.map((e) => (
+                <li key={e.reference} className="text-ink2">
+                  <div>
+                    <code className="text-ink">{e.reference}</code> · {new Date(e.at * 1000).toLocaleString()} ·{' '}
+                    {e.user}
+                  </div>
+                  <div className="break-all text-mute">
+                    {e.method} {e.path} — {e.error}
+                  </div>
+                </li>
+              ))}
+              {status.recent_errors.length === 0 && <li className="text-mute">None.</li>}
+            </ul>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

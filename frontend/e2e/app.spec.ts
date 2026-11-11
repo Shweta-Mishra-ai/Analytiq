@@ -105,5 +105,8 @@ test('the admin screen opens with the key and shows the server status', async ({
   await expect(page.getByTestId('admin')).toBeVisible()
   await expect(page.getByText('Disk free')).toBeVisible()
   await expect(page.getByText('Download backup')).toBeVisible()
+  await page.click('button:has-text("Back up now")')
+  await expect(page.getByTestId('backups').getByText('Download').first()).toBeVisible()
+  await expect(page.getByTestId('errors')).toContainText('None.')
   expect(problems).toEqual([])
 })
