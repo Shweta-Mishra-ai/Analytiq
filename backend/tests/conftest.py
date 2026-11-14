@@ -20,6 +20,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATA_DIR", "/tmp/analytiq-pytest-data")
 os.environ["APP_ADMIN_KEY"] = ""
 os.environ["APP_PASSWORD"] = ""
+# The suite sends thousands of requests a minute as one caller; the
+# request-rate limit has its own tests (test_production_limits.py).
+os.environ["RATE_LIMIT_PER_MINUTE"] = "0"
+os.environ["BACKUP_EVERY_HOURS"] = "0"
 
 
 def _make_hr_df(seed: int = 42, n: int = 500) -> pd.DataFrame:

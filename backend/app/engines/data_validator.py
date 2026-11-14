@@ -41,10 +41,12 @@ class ValidationResult:
 
 def validate_file_size(size_bytes: int) -> Tuple[bool, str]:
     """Check file size before reading."""
+    from app.config import config
+    limit = config.max_file_mb          # the deployment's setting, not a constant
     size_mb = size_bytes / (1024 * 1024)
-    if size_mb > MAX_FILE_MB:
+    if size_mb > limit:
         return False, "File too large ({:.1f} MB). Maximum allowed: {} MB.".format(
-            size_mb, MAX_FILE_MB)
+            size_mb, limit)
     return True, ""
 
 

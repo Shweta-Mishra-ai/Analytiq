@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("DATA_DIR", "/tmp/dataforge-test-data")
+os.environ.setdefault("DATA_DIR", "/tmp/analytiq-test-data")
 # This suite exercises single-user open dev mode specifically (see
 # multi_tenant_test.py for the auth-enforced multi-client path) — force
 # that regardless of a local backend/.env that may set a real admin key
@@ -133,15 +133,15 @@ def main():
                         "application/pdf")}))
 
     check("rag kb detail", client.get(f"/api/rag/kb/{kb}"))
-    has_llm = bool(os.environ.get("GEMINI_API_KEY")
-                   or os.environ.get("GROQ_API_KEY"))
-    expect = 200 if has_llm else 503
-    # Without a model the query still answers, by quoting the passages found.
+    # Without a model the query and the report still answer, by quoting the
+    # passages found.
     check("rag query", client.post(
         f"/api/rag/kb/{kb}/query", json={"question": "How did revenue do?"}))
-    check(f"rag report (expect {expect})", client.post(
-        f"/api/rag/kb/{kb}/report", json={"title": "Test Report"}),
-        expect=expect)
+    report = check("rag report", client.post(
+        f"/api/rag/kb/{kb}/report", json={"title": "Test Report"}))
+    if report.status_code == 200 and "## Sources" not in report.json().get("markdown", ""):
+        print("   report has no source list")
+        FAILURES.append("rag report sources")
     check("rag delete kb", client.delete(f"/api/rag/kb/{kb}"))
 
     check("delete", client.delete(f"/api/datasets/{ds}"))

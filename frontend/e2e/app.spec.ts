@@ -85,3 +85,38 @@ test('insights show what to act on, why revenue moved and a tested forecast', as
   await expect(page.getByTestId('forecast-accuracy')).toContainText("holding last month")
   expect(problems).toEqual([])
 })
+
+test('the account page shows storage and limits, and the upload page the deletion date', async ({ page }) => {
+  const problems = watch(page)
+  await upload(page, fixture('sales.csv'))
+  await expect(page.getByText('region').first()).toBeVisible()
+  await expect(page.getByTestId('expires').first()).toContainText('deleted on')
+  await page.click('a[href="/account"]')
+  await expect(page.getByTestId('usage')).toContainText('MB used')
+  await expect(page.getByText('Largest file you can upload')).toBeVisible()
+  expect(problems).toEqual([])
+})
+
+test('without an AI model the chat page says so instead of failing on a question', async ({ page }) => {
+  const problems = watch(page)
+  await upload(page, fixture('sales.csv'))
+  await expect(page.getByText('region').first()).toBeVisible()
+  await page.click('a[href="/chat"]')
+  await expect(page.getByTestId('chat-off')).toContainText('not switched on')
+  await expect(page.locator('form input')).toHaveCount(0)
+  expect(problems).toEqual([])
+})
+
+test('the admin screen opens with the key and shows the server status', async ({ page }) => {
+  const problems = watch(page)
+  await page.goto('/admin')
+  await page.fill('input[type=password]', 'any-key-in-open-mode')
+  await page.click('button:has-text("Open")')
+  await expect(page.getByTestId('admin')).toBeVisible()
+  await expect(page.getByText('Disk free')).toBeVisible()
+  await expect(page.getByText('Download backup')).toBeVisible()
+  await page.click('button:has-text("Back up now")')
+  await expect(page.getByTestId('backups').getByText('Download').first()).toBeVisible()
+  await expect(page.getByTestId('errors')).toContainText('None.')
+  expect(problems).toEqual([])
+})

@@ -98,12 +98,19 @@ def _owner(ctx: Optional[Context]) -> tuple[str, bool]:
     auth = headers.get("authorization") or headers.get("Authorization") or ""
     token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
     user = _user_for_token(token) if token else None
+    if user is None and token:
+        # The key from the account page: made for a connector, which has
+        # no way to sign in again when a 30-day token runs out.
+        from app.services.user_store import user_store
+        user = user_store.user_for_connector_key(token)
     if user is not None:
         return user.username, False
     if _open_mode() and headers.get("x-analytiq-loopback") == "1":
         return LOCAL_OWNER, False
-    raise AccessError("Not signed in: send your Analytiq token as "
-                      "'Authorization: Bearer <token>'.")
+    raise AccessError("Not signed in: this connector's key is missing, replaced or "
+                      "removed. Create a key on the Account page of the Analytiq web "
+                      "app and set the connector's request header to "
+                      "'Authorization: Bearer <key>'.")
 
 
 def _store():
@@ -128,7 +135,11 @@ def _guard(fn):
             return fn(*a, **k)
         except (AccessError, ValueError) as e:
             return f"**Could not do that:** {e}"
-        except Exception as e:                       # pragma: no cover - logged
+        except Exception as e:
+            # The busy and over-quota answers of the web API, in words.
+            detail = getattr(e, "detail", None)
+            if isinstance(detail, str) and getattr(e, "status_code", 0) in (413, 503, 507):
+                return f"**Could not do that:** {detail}"
             logger.exception("MCP tool %s failed", fn.__name__)
             return f"**The analysis failed:** {e}"
     return wrapper
@@ -189,6 +200,12 @@ def _create(owner: str, name: str, data: bytes):
         check(name, data)
     except UploadRejected as e:
         raise ValueError(str(e))
+    from fastapi import HTTPException
+    from app.services.limits import check_storage
+    try:
+        check_storage(owner, len(data))
+    except HTTPException as e:
+        raise ValueError(str(e.detail))
     result = load_file(_UploadShim(name, data))
     if not result.success or result.df is None:
         raise ValueError(result.error or "The file could not be read.")
@@ -443,8 +460,10 @@ def train_model(ctx: Context, dataset_id: str, target: str) -> str:
     df = _df(owner, dataset_id)
     if target not in df.columns:
         raise ValueError(f"No column '{target}'.")
+    from app.services.limits import heavy_job
     try:
-        rep = run_ml_pipeline(df, target)
+        with heavy_job("model training"):
+            rep = run_ml_pipeline(df, target)
     except TargetError as e:
         raise ValueError(str(e))
     _store().cache_set(owner, dataset_id, f"ml_{target}", rep)
@@ -542,14 +561,15 @@ def generate_report(ctx: Context, dataset_id: str, kind: str = "analysis",
     meta = _store().get_meta(owner, dataset_id)
     lang = _check_language(language)
     filename = getattr(meta, "filename", "") or f"{dataset_id}.csv"
+    from app.services.limits import heavy_job
     if kind == "health":
         req = HealthPdfRequest(agency_name=prepared_by or "Analytiq", language=lang)
-        with i18n.use_language(lang, **i18n.data_context(df, filename, req.agency_name)):
+        with heavy_job("report"), i18n.use_language(lang, **i18n.data_context(df, filename, req.agency_name)):
             pdf = _generate_health_pdf(df, filename, req)
     elif kind == "analysis":
         req = PdfRequest(title=title, client_name=client_name, prepared_by=prepared_by,
                          language=lang)
-        with i18n.use_language(lang, **i18n.data_context(df, filename, title, "",
+        with heavy_job("report"), i18n.use_language(lang, **i18n.data_context(df, filename, title, "",
                                                          client_name, prepared_by)):
             pdf = _generate_pdf(df, owner, dataset_id, req)
     else:

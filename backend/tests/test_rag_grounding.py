@@ -323,7 +323,8 @@ def test_privacy_mode_without_a_local_model_quotes_and_sends_nothing(tmp_path, m
     kb.owner = "local"
     out = service.answer_question(kb, "How many days of annual leave do staff get?")
     assert out["extractive"] and "25 days" in out["answer"]
-    assert "LLM_PRIVACY_MODE" in out["answer"]
+    # Said in words the client reads; the setting's name is in the log.
+    assert "No data was sent anywhere" in out["answer"]
 
 
 def test_without_a_model_sentences_sharing_one_word_are_not_quoted(tmp_path, monkeypatch):

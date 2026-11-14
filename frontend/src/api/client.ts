@@ -146,6 +146,8 @@ export interface DatasetMeta {
   rows: number
   cols: number
   warnings: string[]
+  /** When the server will delete it (seconds since 1970); null if kept. */
+  expires_at?: number | null
 }
 
 export interface TableData {

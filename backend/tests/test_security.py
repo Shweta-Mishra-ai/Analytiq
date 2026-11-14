@@ -86,15 +86,15 @@ def users(tmp_path):
                                   "admin", "local", "sp ace"])
 def test_unsafe_or_reserved_usernames_are_refused(users, name):
     with pytest.raises(ValueError):
-        users.create(name, "password123")
+        users.create(name, "correct-horse-7")
 
 
 def test_ordinary_usernames_are_accepted_and_case_folded(users):
-    users.create("Tenant_A", "password123")
+    users.create("Tenant_A", "correct-horse-7")
     assert users.exists("tenant_a") and users.exists("TENANT_A")
-    assert users.verify("tenant_a", "password123")
+    assert users.verify("tenant_a", "correct-horse-7")
     assert users.verify("tenant_a", "wrong-pass") is None
-    assert users.verify("nobody", "password123") is None
+    assert users.verify("nobody", "correct-horse-7") is None
 
 
 def test_a_corrupt_account_store_refuses_to_load_instead_of_opening_the_app(tmp_path):
@@ -137,7 +137,7 @@ def test_offboarding_removes_knowledge_bases_from_the_served_store(client, monke
     from app.rag.vector_store import rag_store
     from app.services.user_store import user_store
     monkeypatch.setattr(config, "app_admin_key", "offboard-test-key")
-    user_store.create("offboard_me", "password123")
+    user_store.create("offboard_me", "correct-horse-7")
     try:
         kb = rag_store.create("offboard_me", "contracts")
         assert rag_store.get("offboard_me", kb.kb_id) is not None
@@ -214,7 +214,7 @@ def test_a_recreated_account_does_not_honour_the_old_accounts_tokens(client, mon
     from app.services.tokens import issue_token
     from app.services.user_store import user_store
     monkeypatch.setattr(config, "app_admin_key", "revoke-test-key")
-    user_store.create("reuse_me", "password123")
+    user_store.create("reuse_me", "correct-horse-7")
     try:
         old = issue_token("reuse_me")
         assert client.get("/api/datasets", headers={"Authorization": f"Bearer {old}"}).status_code == 200

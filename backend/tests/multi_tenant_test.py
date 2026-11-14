@@ -14,7 +14,7 @@ import sys
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("DATA_DIR", "/tmp/dataforge-mt-test-data")
+os.environ.setdefault("DATA_DIR", "/tmp/analytiq-mt-test-data")
 os.environ["APP_ADMIN_KEY"] = "test-admin-key-do-not-use-in-prod"
 
 from fastapi.testclient import TestClient  # noqa: E402

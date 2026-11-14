@@ -296,13 +296,55 @@ def _to_binary(s: pd.Series) -> Optional[Tuple[pd.Series, str]]:
     return (norm == event).astype(int), str(lowered.get(event, event))
 
 
+def _cv_proba_and_importance(model, X: pd.DataFrame, y: pd.Series, col_origin: dict,
+                             folds: int, repeats: int = 2, max_test: int = 2000):
+    """Out-of-fold probabilities, and (column, % of the importance) for each
+    original column: how much the model's AUC on the fold it did not train
+    on drops when that column is shuffled (a category's one-hot parts
+    together), averaged over the folds.
+
+    The forest's own split counts were used before, and they favour columns
+    with many distinct values whatever their link to the outcome: monthly
+    income, pure noise in a test file, ranked third at 11%, level with
+    tenure, which drives attrition there."""
+    from sklearn.base import clone
+    from sklearn.metrics import roc_auc_score
+    from sklearn.model_selection import StratifiedKFold
+    proba = np.zeros(len(y))
+    groups: dict = {}
+    for c in X.columns:
+        groups.setdefault(col_origin.get(c, c), []).append(c)
+    drops = {g: 0.0 for g in groups}
+    rng = np.random.default_rng(42)
+    for tr, te in StratifiedKFold(folds, shuffle=True, random_state=42).split(X, y):
+        m = clone(model).fit(X.iloc[tr], y.iloc[tr])
+        proba[te] = m.predict_proba(X.iloc[te])[:, 1]
+        sub = te[:max_test]
+        X_te, y_te = X.iloc[sub], y.iloc[sub]
+        if y_te.nunique() < 2:
+            continue
+        base = float(roc_auc_score(y_te, m.predict_proba(X_te)[:, 1]))
+        for origin, cols in groups.items():
+            for _ in range(repeats):
+                shuffled = X_te.copy()
+                shuffled[cols] = shuffled[cols].to_numpy()[rng.permutation(len(shuffled))]
+                drops[origin] += base - float(roc_auc_score(y_te, m.predict_proba(shuffled)[:, 1]))
+    drops = {g: max(v, 0.0) for g, v in drops.items()}
+    whole = sum(drops.values())
+    if whole <= 0:
+        ranked = [(c, 0.0) for c in list(groups)[:8]]
+    else:
+        ranked = sorted(((c, v / whole * 100) for c, v in drops.items()),
+                        key=lambda kv: kv[1], reverse=True)[:8]
+    return proba, ranked
+
+
 def compute_drivers(df: pd.DataFrame, target_col: str,
                     max_rows: int = 20000) -> Optional[DriverResult]:
     """Fit a RandomForest to predict the target and return ranked drivers +
     model quality + the highest-risk profile. Returns None if not feasible."""
     try:
         from sklearn.ensemble import RandomForestClassifier
-        from sklearn.model_selection import cross_val_predict
         from sklearn.metrics import roc_auc_score, accuracy_score
     except Exception:
         logger.warning("scikit-learn unavailable — predictive section skipped")
@@ -344,27 +386,16 @@ def compute_drivers(df: pd.DataFrame, target_col: str,
             n_estimators=200, max_depth=8, min_samples_leaf=15,
             class_weight="balanced", random_state=42, n_jobs=-1)
 
-        # Cross-validated quality (honest — not train-set optimism)
+        # Cross-validated quality (honest — not train-set optimism), and
+        # the drivers measured on the same held-out folds.
         folds = 5 if y.sum() >= 25 else 3
         try:
-            proba = cross_val_predict(model, X, y, cv=folds,
-                                      method="predict_proba", n_jobs=-1)[:, 1]
+            proba, ranked = _cv_proba_and_importance(model, X, y, col_origin, folds)
             auc = float(roc_auc_score(y, proba))
             acc = float(accuracy_score(y, (proba >= 0.5).astype(int)))
         except Exception:
-            logger.warning("CV scoring failed — reporting importances only", exc_info=True)
-            auc, acc, proba = float("nan"), float("nan"), None
-
-        model.fit(X, y)
-
-        # Aggregate one-hot importances back to the original column.
-        imp = pd.Series(model.feature_importances_, index=X.columns)
-        agg: dict = {}
-        for feat_name, val in imp.items():
-            agg[col_origin.get(feat_name, feat_name)] = agg.get(col_origin.get(feat_name, feat_name), 0.0) + float(val)
-        total = sum(agg.values()) or 1.0
-        ranked = sorted(((c, v / total * 100) for c, v in agg.items()),
-                        key=lambda kv: kv[1], reverse=True)[:8]
+            logger.warning("CV scoring failed", exc_info=True)
+            return None
 
         # Highest-risk profile: the model's top quintile by predicted
         # probability. proba is positional (row order of X/data), so index
