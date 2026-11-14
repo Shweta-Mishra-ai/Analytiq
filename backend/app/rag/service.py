@@ -61,7 +61,7 @@ class KbLimitError(ValueError):
     so the API can answer 413 rather than 422."""
 
 
-def check_ingest_limits(kb: KnowledgeBase, new_chunks: int) -> None:
+def check_ingest_limits(kb: KnowledgeBase, new_chunks: int, replacing: bool = False) -> None:
     """Refuse an ingest that would take a knowledge base past its limits.
 
     The whole KB is held in memory and rewritten on every ingest, so
@@ -71,7 +71,7 @@ def check_ingest_limits(kb: KnowledgeBase, new_chunks: int) -> None:
     than truncating the upload, which would leave the user with a KB that
     silently does not contain what they put in it.
     """
-    if len(kb.files) >= config.rag_max_files_per_kb:
+    if not replacing and len(kb.files) >= config.rag_max_files_per_kb:
         raise KbLimitError(
             f"This knowledge base already holds the maximum of "
             f"{config.rag_max_files_per_kb} files. Delete a file, or create "
@@ -94,10 +94,12 @@ def ingest_file(kb: KnowledgeBase, filename: str, data: bytes) -> dict:
     # Extraction above is the slow part and runs unlocked; the check and the
     # append must happen together or concurrent uploads race (see kb_lock).
     with kb_lock(kb):
-        check_ingest_limits(kb, len(chunks))
+        replaced = sum(1 for c in kb.chunks if c.get("source") == filename)
+        check_ingest_limits(kb, len(chunks) - replaced,
+                            replacing=any(f.get("filename") == filename for f in kb.files))
         kb.add_chunks(chunks, filename, kind)
     preview = passages[0]["text"][:600]
-    return {"filename": filename, "kind": kind,
+    return {"filename": filename, "kind": kind, "replaced": bool(replaced),
             "chunks_added": len(chunks), "preview": preview,
             "chunks_total": len(kb.chunks),
             "chunks_limit": config.rag_max_chunks_per_kb}
@@ -153,11 +155,11 @@ def _generate(system: str, user: str, max_tokens: int = 2048) -> str:
     if local_llm.privacy_mode():
         text = _local_generate(system, user, max_tokens)
         if not text:
+            logger.warning("knowledge base: LLM_PRIVACY_MODE is on and no local model "
+                           "answered; set LOCAL_LLM_URL and LOCAL_LLM_MODEL")
             raise NoModelAvailable(
-                "LLM_PRIVACY_MODE is on and no local model answered. Set "
-                "LOCAL_LLM_URL and LOCAL_LLM_MODEL (any OpenAI-compatible "
-                "server: Ollama, llama.cpp, vLLM, LM Studio). No data was "
-                "sent anywhere.")
+                "This workspace keeps documents on its own server, and its AI model "
+                "did not answer. No data was sent anywhere.")
         return text
 
     from app.ai import claude_client
@@ -166,9 +168,10 @@ def _generate(system: str, user: str, max_tokens: int = 2048) -> str:
             or _gemini_generate(system, user, max_tokens)
             or _groq_generate(system, user, max_tokens))
     if not text:
-        raise NoModelAvailable(
-            "No LLM available — set LOCAL_LLM_URL, ANTHROPIC_API_KEY, "
-            "GEMINI_API_KEY or GROQ_API_KEY")
+        # The client reads the message; the operator reads the log.
+        logger.info("knowledge base: no model available (set ANTHROPIC_API_KEY, "
+                    "GEMINI_API_KEY, GROQ_API_KEY or LOCAL_LLM_URL to write answers)")
+        raise NoModelAvailable("No AI model is switched on for this workspace.")
     return text
 
 
@@ -246,7 +249,7 @@ def _extractive_answer(question: str, hits: List[dict], why: str,
     lines = [f"> {sent} [{ref}]" for _, ref, _, sent in picked]
     if not lines:      # every hit matched on words split across sentences
         lines = [f"> {' '.join(hits[0]['text'].split())[:400]} [1]"]
-    return ("**No language model is configured, so this is not a written "
+    return ("**No AI model is switched on, so this is not a written "
             "answer** — these are the passages in your documents that match "
             "the question, quoted word for word. Read them to judge whether "
             "they answer it.\n\n" + "\n>\n".join(lines)
@@ -313,14 +316,29 @@ def generate_report(kb: KnowledgeBase, title: str, focus: str = "") -> dict:
     probes += ["key findings and metrics", "trends and performance",
                "risks problems issues", "recommendations and actions",
                "summary overview"]
-    seen, hits = set(), []
+    seen, hits, sections = set(), [], []
     for q in probes:
+        mine = []
         for h in kb.search(q, k=5):
             key = (h["source"], h["locator"], h["text"][:80])
-            if key not in seen:
+            if key not in seen and len(hits) < 18:
                 seen.add(key)
                 hits.append(h)
-    hits = hits[:18]
+                mine.append(len(hits))
+        sections.append((q, mine))
+    if not hits and kb.chunks and not focus:
+        # None of the general probes matched closely enough (a refund
+        # policy shares no words with "key findings and metrics"), which was
+        # reported as an empty knowledge base. A report on the whole
+        # material reads the material: passages spread across it, in order.
+        step = max(1, len(kb.chunks) // 18)
+        seen_text = set()
+        for c in kb.chunks[::step]:
+            if c["text"] not in seen_text:
+                seen_text.add(c["text"])
+                hits.append(c)
+        hits = hits[:18]
+        sections = [("", list(range(1, len(hits) + 1)))]
     if not hits:
         if kb.chunks and focus:
             raise ValueError(
@@ -333,13 +351,50 @@ def generate_report(kb: KnowledgeBase, title: str, focus: str = "") -> dict:
     user = (f"REPORT TITLE: {title}\n"
             + (f"FOCUS: {focus}\n" if focus else "")
             + f"\nCONTEXT:\n{_context_block(hits)}")
-    markdown = _generate(REPORT_SYSTEM.replace("{title}", title), user,
-                         max_tokens=3000)
+    try:
+        markdown, extractive = _generate(REPORT_SYSTEM.replace("{title}", title), user,
+                                         max_tokens=3000), False
+    except NoModelAvailable as e:
+        markdown, extractive = _extractive_report(title, focus, hits, sections, str(e)), True
+    # The [n] citations name the passages here; without the list the reader
+    # had numbers that pointed nowhere, on the page and in the PDF.
+    markdown = markdown.rstrip() + "\n\n## Sources\n\n" + "\n".join(
+        f"{i}. {h['source']} — {h['locator']}" for i, h in enumerate(hits, 1))
     return {
         "markdown": markdown,
+        "extractive": extractive,
         "sources": [{"ref": i + 1, "source": h["source"],
                      "locator": h["locator"]} for i, h in enumerate(hits)],
     }
+
+
+_SECTION_NAMES = {"key findings and metrics": "Key findings and figures",
+                  "trends and performance": "Trends and performance",
+                  "risks problems issues": "Risks and issues",
+                  "recommendations and actions": "Recommendations and actions",
+                  "summary overview": "Overview", "": "What the documents say"}
+
+
+def _extractive_report(title: str, focus: str, hits: List[dict], sections, why: str) -> str:
+    """The report's sections filled with the documents' own sentences, each
+    cited, when no model can write one. A report request that only failed
+    threw away passages the search had already found."""
+    import re
+    out = [f"# {title}",
+           f"**{why} This report quotes your documents rather than summarising "
+           "them**: each section lists the passages that match it, word for word; "
+           "the number after each is its source, listed at the end."]
+    for probe, refs in sections:
+        quotes = []
+        for ref in refs[:3]:
+            sentences = [" ".join(x.split()) for x in re.split(_SENTENCE_END, hits[ref - 1]["text"])]
+            text = " ".join(x for x in sentences if x)[:400]
+            if text:
+                quotes.append(f"> {text} [{ref}]")
+        if quotes:
+            name = f"On '{focus}'" if focus and probe == focus else _SECTION_NAMES.get(probe, probe.capitalize())
+            out.append(f"## {name}\n\n" + "\n>\n".join(quotes))
+    return "\n\n".join(out)
 
 
 def report_pdf(markdown: str, title: str) -> bytes:
