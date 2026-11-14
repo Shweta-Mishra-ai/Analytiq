@@ -24,7 +24,7 @@ web app and returns a compact answer.
 | Tool | What it returns |
 |---|---|
 | `list_datasets` | Your datasets and their ids |
-| `load_dataset` | Loads a CSV, Excel or JSON file and returns its profile and id. Accepts `path` (local only), an https `url`, or `csv_text` (up to 200 KB) |
+| `load_dataset` | Loads a CSV, TSV, Excel or JSON file and returns its profile and id. Accepts `path` (local only), an https `url`, or `csv_text` (up to 200 KB) |
 | `business_summary` | Scorecard for this period against the last, key messages with evidence, tested findings, risks and next steps |
 | `data_quality` | Quality score and grade, blanks, duplicates, outliers, readiness for modelling |
 | `query` | `aggregate`, `filter`, `top_n`, `describe_column`, `correlation`, `count_values`; rankings and correlations say when a gap is within chance |

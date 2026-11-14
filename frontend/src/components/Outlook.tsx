@@ -150,7 +150,10 @@ export default function Outlook({ ds }: { ds: string }) {
 
       <div className="grid gap-5 lg:grid-cols-2">
         {data.why && (
-          <Panel title="What changed and why" subtitle={`${data.why.period} against the ${data.why.prior_period}`}>
+          <Panel
+            title="What changed and why"
+            subtitle={`${data.why.period.charAt(0).toUpperCase()}${data.why.period.slice(1)} against the ${data.why.prior_period}`}
+          >
             <div className={`text-2xl font-bold ${data.why.pct >= 0 ? 'text-teal' : 'text-rose'}`}>
               {data.why.pct >= 0 ? '+' : '−'}
               {Math.abs(data.why.pct).toFixed(1)}%

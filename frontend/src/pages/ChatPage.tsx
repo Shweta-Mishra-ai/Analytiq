@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Send, Trash2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
-import { apiPost, type TableData } from '../api/client'
+import { Link } from 'react-router-dom'
+import { apiGet, apiPost, type TableData } from '../api/client'
 import type { Figure } from '../types'
 import { useApp } from '../store/app'
 import DataTable from '../components/DataTable'
@@ -27,8 +28,17 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  // Chat needs a model on the server; without one, say so before a
+  // question is typed rather than after it fails.
+  const [available, setAvailable] = useState<boolean | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
   const ds = dataset?.dataset_id
+
+  useEffect(() => {
+    apiGet<{ chat_available?: boolean }>('/api/health')
+      .then((h) => setAvailable(h.chat_available !== false))
+      .catch(() => setAvailable(true))
+  }, [])
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' })
@@ -84,8 +94,21 @@ export default function ChatPage() {
         }
       />
 
+      {available === false && (
+        <div className="rounded-xl border border-amber/40 bg-amber/10 p-4 text-sm text-ink" data-testid="chat-off">
+          <p className="font-semibold">Chat is not switched on for this workspace.</p>
+          <p className="mt-1 text-xs text-mute">
+            You can ask questions about your data in plain words from your own Claude account: open{' '}
+            <Link to="/account" className="text-accent underline">
+              Account
+            </Link>{' '}
+            and follow &ldquo;Use Analytiq in Claude&rdquo;. Every other page works without it.
+          </p>
+        </div>
+      )}
+
       <div className="flex-1 space-y-4 overflow-y-auto pb-4">
-        {messages.length === 0 && (
+        {messages.length === 0 && available !== false && (
           <div className="grid gap-2 sm:grid-cols-2">
             {SUGGESTIONS.map((s) => (
               <button
@@ -132,6 +155,7 @@ export default function ChatPage() {
         <div ref={bottom} />
       </div>
 
+      {available !== false && (
       <form
         onSubmit={(e) => {
           e.preventDefault()
@@ -153,6 +177,7 @@ export default function ChatPage() {
           <Send className="h-4 w-4" />
         </button>
       </form>
+      )}
     </div>
   )
 }

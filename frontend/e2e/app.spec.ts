@@ -97,6 +97,16 @@ test('the account page shows storage and limits, and the upload page the deletio
   expect(problems).toEqual([])
 })
 
+test('without an AI model the chat page says so instead of failing on a question', async ({ page }) => {
+  const problems = watch(page)
+  await upload(page, fixture('sales.csv'))
+  await expect(page.getByText('region').first()).toBeVisible()
+  await page.click('a[href="/chat"]')
+  await expect(page.getByTestId('chat-off')).toContainText('not switched on')
+  await expect(page.locator('form input')).toHaveCount(0)
+  expect(problems).toEqual([])
+})
+
 test('the admin screen opens with the key and shows the server status', async ({ page }) => {
   const problems = watch(page)
   await page.goto('/admin')

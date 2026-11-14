@@ -107,7 +107,7 @@ export default function UploadPage() {
     <div className="page">
       <PageHeader
         title="Data Upload"
-        subtitle={`CSV, Excel (multi-sheet) or JSON${maxMb ? ` up to ${maxMb} MB` : ''} — or let AI extract a table from a photo or video`}
+        subtitle={`CSV, TSV, Excel (multi-sheet) or JSON${maxMb ? ` up to ${maxMb} MB` : ''} — or let AI extract a table from a photo or video`}
       />
       {error && (
         <div className="mb-4">
@@ -140,7 +140,7 @@ export default function UploadPage() {
           <p className="mt-1 text-xs text-mute">.csv · .xlsx · .xls · .json</p>
           <input
             type="file"
-            accept=".csv,.xlsx,.xls,.json"
+            accept=".csv,.tsv,.txt,.xlsx,.xls,.json"
             className="hidden"
             onChange={(e) => e.target.files?.[0] && doUpload(e.target.files[0])}
           />

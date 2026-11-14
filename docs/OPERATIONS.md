@@ -67,9 +67,17 @@ The key does not expire, opens the analysis tools only (not the web app or
 the password), and stops working when the client replaces or removes it or
 you delete the account. Details and the list of tools: [MCP.md](MCP.md).
 
-The chat and written narratives *inside the web app* are separate: they need
-`ANTHROPIC_API_KEY`, `GROQ_API_KEY` or `GEMINI_API_KEY`, and without one the
-app shows its calculated findings only.
+The AI features *inside the web app* are separate: they need
+`ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY` or a local model
+(`LOCAL_LLM_URL`). Without one:
+
+- every analysis, chart, forecast, model and PDF report works as usual (none
+  of them uses an AI model to calculate);
+- the AI Chat page says chat is not switched on and points clients to the
+  Claude connector instead;
+- knowledge-base answers and reports quote the matching passages of the
+  client's documents, word for word with their sources, instead of writing a
+  summary.
 
 ## Backups
 

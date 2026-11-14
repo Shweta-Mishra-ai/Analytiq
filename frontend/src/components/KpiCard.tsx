@@ -12,7 +12,7 @@ function fmt(k: Kpi): string {
 export default function KpiCard({ kpi }: { kpi: Kpi }) {
   return (
     <div className="surface min-w-0 px-4 py-3">
-      <div className="t-label truncate" title={kpi.label}>
+      <div className="t-label line-clamp-2" title={kpi.label}>
         {kpi.label}
       </div>
       <div className="mt-1.5 flex items-baseline gap-2">
