@@ -80,14 +80,28 @@ _SECURITY_HEADERS = {
 
 def _caller_key(request: Request) -> str:
     """Who a request is counted against: the token when there is one, else
-    the address (the first forwarded one behind a proxy)."""
+    the address.
+
+    The address is the connecting one, or, when that is a proxy on a private
+    network (Render, Railway, nginx), the last X-Forwarded-For entry: the
+    one the proxy appended. The first entry was used, and the caller writes
+    that one, so a new invented address on every request was never limited.
+    """
     auth = request.headers.get("authorization", "")
     if auth:
         import hashlib
         return "t:" + hashlib.sha256(auth.encode("utf-8", "replace")).hexdigest()[:24]
+    peer = request.client.host if request.client else "unknown"
     fwd = request.headers.get("x-forwarded-for", "")
-    return "ip:" + (fwd.split(",")[0].strip() if fwd else
-                    (request.client.host if request.client else "unknown"))
+    if fwd:
+        import ipaddress
+        try:
+            behind_proxy = ipaddress.ip_address(peer).is_private
+        except ValueError:
+            behind_proxy = False
+        if behind_proxy:
+            return "ip:" + fwd.split(",")[-1].strip()
+    return "ip:" + peer
 
 
 class GuardMiddleware(BaseHTTPMiddleware):
@@ -309,6 +323,11 @@ if _mcp_mount is not None:
         return FileResponse(path, media_type="application/pdf", filename=name)
 
 
+def _chat_available() -> bool:
+    from app.api.chat import chat_available
+    return chat_available()
+
+
 @app.get("/api/health")
 async def health():
     from app.ai.local_llm import status as _llm_status
@@ -324,6 +343,7 @@ async def health():
         "gemini_configured": bool(config.gemini_api_key),
         "max_file_mb": config.max_file_mb,
         "data_ttl_days": config.data_ttl_days,
+        "chat_available": _chat_available(),
         # What will actually happen to a narrative request, so a client
         # running in privacy mode can confirm it from outside the app.
         "llm": _llm_status(),

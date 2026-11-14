@@ -11,7 +11,7 @@ from typing import List, Optional
 
 import plotly.io as pio
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.ai.llm_client import get_client
 from app.ai.prompt_builder import build_chat_system_prompt
@@ -28,13 +28,31 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
 class ChatMessage(BaseModel):
-    role: str
-    content: str
+    role: str = Field(max_length=20)
+    content: str = Field(max_length=20_000)
 
 
 class ChatRequest(BaseModel):
-    message: str
-    history: List[ChatMessage] = Field(default_factory=list)
+    # Each message is sent to a paid model: an empty one buys nothing and an
+    # unlimited one was any size a caller cared to send.
+    message: str = Field(min_length=1, max_length=4000)
+    history: List[ChatMessage] = Field(default_factory=list, max_length=50)
+
+    @field_validator("message")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Type a question first.")
+        return v
+
+
+def chat_available() -> bool:
+    """Whether a model is set up that chat is allowed to use."""
+    from app.ai import claude_client, local_llm
+    if local_llm.privacy_mode():
+        return local_llm.is_configured()
+    return bool(claude_client.is_configured() or config.groq_api_key
+                or local_llm.is_configured())
 
 
 def _complete(system: str, messages: list[dict]) -> str:
@@ -94,9 +112,12 @@ def _complete(system: str, messages: list[dict]) -> str:
         raise HTTPException(
             503, "Claude did not answer (see the server log for the reason: key, "
                  "rate limit or connection) and no other model is configured.")
+    # Clients read this, not the operator: it says what they can do. The
+    # settings that would switch chat on are in docs/OPERATIONS.md.
     raise HTTPException(
-        503, "No language model is configured for chat — set ANTHROPIC_API_KEY "
-             "or GROQ_API_KEY, or LOCAL_LLM_URL and LOCAL_LLM_MODEL.")
+        503, "Chat is not switched on for this workspace. You can ask questions "
+             "about your data from your own Claude account instead: see Account, "
+             "'Use Analytiq in Claude'.")
 
 
 @router.post("/{ds_id}")
