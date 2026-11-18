@@ -60,7 +60,9 @@ def load_file(uploaded_file, sheet_name=0) -> LoadResult:
         df     = None
 
         # ── Read by type ───────────────────────────────────
-        if fname.endswith(".csv"):
+        # Tab-separated and plain-text exports go through the same reader,
+        # which finds the separator (comma, semicolon, tab or bar) itself.
+        if fname.endswith((".csv", ".tsv", ".txt")):
             df = _load_csv(uploaded_file, warnings_list)
 
         elif fname.endswith((".xlsx", ".xls")):
@@ -71,7 +73,7 @@ def load_file(uploaded_file, sheet_name=0) -> LoadResult:
 
         else:
             return LoadResult(df=None, success=False,
-                error="Unsupported format. Upload CSV, Excel (.xlsx/.xls), or JSON.")
+                error="Unsupported format. Upload CSV, TSV, Excel (.xlsx/.xls), or JSON.")
 
         if df is None or len(df) == 0:
             return LoadResult(df=None, success=False,
@@ -458,10 +460,15 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
         # "$1,200", "22%"), which to_numeric rejects and which then stayed
         # text — left out of every chart, statistic and model.
         try:
+            # Shares of the filled cells: counted over all rows, a money
+            # column that was a third empty never reached 80% and stayed
+            # text however clean its amounts were.
+            filled = df[col].notna() & (df[col].astype(str).str.strip() != "")
+            n_filled = max(int(filled.sum()), 1)
             converted = pd.to_numeric(df[col], errors="coerce")
-            if converted.notna().sum() / max(len(df), 1) <= 0.80:
+            if converted.notna().sum() / n_filled <= 0.80:
                 converted = decorated_numbers(df[col])
-            success_rate = converted.notna().sum() / max(len(df), 1)
+            success_rate = converted.notna().sum() / n_filled if n_filled >= 5 else 0.0
             # The values that did not convert say what the column is. When
             # they are codes — a letter prefix and digits, as in "C489449"
             # among invoice numbers 489434, 489435 — the column is an
@@ -471,7 +478,11 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
             coded = (len(failed) > 0 and float(failed.astype(str).str.strip()
                      .str.fullmatch(r"[A-Za-z]{1,3}[-/]?\d+").mean()) > 0.9)
             if success_rate > 0.80 and not zero_padded and not coded:
-                df[col] = converted.where(converted.notna(), df[col])
+                # Words that are not numbers ("Pending") are kept beside the
+                # numbers; with none, the column is numbers. Keeping the
+                # blanks as they came left "$1,234" with a few empty cells
+                # as text, and its money out of every analysis.
+                df[col] = converted if failed.empty else converted.where(converted.notna(), df[col])
                 continue
         except Exception:
             logger.warning("_smart_dtype_inference: suppressed exception", exc_info=True)
@@ -481,13 +492,19 @@ def _smart_dtype_inference(df: pd.DataFrame) -> pd.DataFrame:
         if named or _looks_like_dates(df[col]):
             try:
                 converted = _parse_dates(df[col])
-                filled = df[col].notna().sum()
-                # By name, 70% of all rows; by content, 95% of the filled ones —
-                # the shape test already vouched for the rest.
-                ok = (converted.notna().sum() / max(len(df), 1) > 0.70 if named
-                      else converted.notna().sum() >= 0.95 * max(filled, 1))
+                filled = int((df[col].notna()
+                              & (df[col].astype(str).str.strip() != "")).sum())
+                # By name, 70% of the filled cells; by content, 95% — the
+                # shape test already vouched for the rest. Blank cells are
+                # not failed dates: counted as such, a date column a third
+                # empty stayed text.
+                ok = filled >= 3 and (converted.notna().sum() / filled > 0.70 if named
+                                      else converted.notna().sum() >= 0.95 * filled)
                 if ok:
-                    df[col] = converted.where(converted.notna(), df[col])
+                    unparsed = df[col][converted.isna() & df[col].notna()]
+                    unparsed = unparsed[unparsed.astype(str).str.strip() != ""]
+                    df[col] = (converted if unparsed.empty
+                               else converted.where(converted.notna(), df[col]))
             except Exception:
                 logger.warning("_smart_dtype_inference: suppressed exception", exc_info=True)
 

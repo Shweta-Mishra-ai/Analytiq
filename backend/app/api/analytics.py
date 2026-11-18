@@ -73,12 +73,13 @@ def _outlook(df) -> dict:
     """What changed and why, the next three months, and what to act on
     first. Each part is None (or empty) when the data cannot support it,
     with the reason, rather than failing the whole page."""
-    from app.engines.change_drivers import explain_change
+    from app.engines.change_drivers import explain_change_or_reason
     from app.engines.forecast import forecast
     from app.engines.priorities import build_priorities
     out = {"why": None, "forecast": None, "priorities": [], "notes": []}
+    reason = "No change to explain: the calculation failed; see the server log."
     try:
-        change = explain_change(df)
+        change, reason = explain_change_or_reason(df)
     except Exception:
         logger.warning("explain_change failed", exc_info=True)
         change = None
@@ -91,9 +92,7 @@ def _outlook(df) -> dict:
                                                      if change.where else [])],
                       "column": change.where.column if change.where else None}
     else:
-        out["notes"].append("No change to explain: the data needs a money measure and "
-                            "dates covering two comparable periods, and a movement of "
-                            "at least 2% between them.")
+        out["notes"].append(reason)
     try:
         fc = forecast(df)
     except Exception:

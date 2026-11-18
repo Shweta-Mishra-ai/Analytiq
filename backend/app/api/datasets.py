@@ -84,10 +84,13 @@ def _process_upload(owner: str, filename: str, data: bytes, sheet: str) -> dict:
     if not ok:
         raise HTTPException(413, msg)
     guard_upload(filename, data)
+    from app.services.limits import check_storage, heavy_job
+    check_storage(owner, len(data))
 
     shim = _UploadShim(filename, data)
     sheet_arg = int(sheet) if sheet.isdigit() else sheet
-    result = load_file(shim, sheet_name=sheet_arg)
+    with heavy_job("upload"):
+        result = load_file(shim, sheet_name=sheet_arg)
     if not result.success or result.df is None:
         raise HTTPException(422, result.error or "Could not parse file.")
 
@@ -102,7 +105,7 @@ def _process_upload(owner: str, filename: str, data: bytes, sheet: str) -> dict:
         sheet_names=getattr(result, "sheet_names", None) or [],
         warnings=(result.warnings or []) + (validation.warnings or []),
     )
-    return {"meta": to_jsonable(meta), "preview": df_records(df, 100)}
+    return {"meta": _with_expiry(meta), "preview": df_records(df, 100)}
 
 
 @router.post("/upload")
@@ -116,6 +119,8 @@ async def upload_dataset(file: UploadFile = File(...), sheet: str = Query("0"),
 
 def _process_image_extract(owner: str, filename: str, data: bytes) -> dict:
     guard_upload(filename, data)
+    from app.services.limits import check_storage
+    check_storage(owner, len(data))
     from app.services.table_extractor import (ExtractionError,
                                               extract_table_from_image)
     try:
@@ -135,7 +140,7 @@ def _process_image_extract(owner: str, filename: str, data: bytes) -> dict:
                   "spot-check critical numbers against the original."]
         + extraction_warnings + (validation.warnings or []),
     )
-    return {"meta": to_jsonable(meta), "preview": df_records(df, 100)}
+    return {"meta": _with_expiry(meta), "preview": df_records(df, 100)}
 
 
 @router.post("/extract-from-image")
@@ -177,7 +182,7 @@ def _process_video_extract(owner: str, filename: str, data: bytes) -> dict:
                   "spot-check critical numbers against the original."]
         + extraction_warnings + (validation.warnings or []),
     )
-    return {"meta": to_jsonable(meta), "preview": df_records(df, 100)}
+    return {"meta": _with_expiry(meta), "preview": df_records(df, 100)}
 
 
 @router.post("/extract-from-video")
@@ -192,9 +197,19 @@ async def extract_from_video(file: UploadFile = File(...),
         _process_video_extract, owner, file.filename or "video.mp4", data)
 
 
+def _with_expiry(meta) -> dict:
+    """Dataset details plus when it will be deleted (None when data is
+    kept indefinitely). Clients used to find a dataset gone after
+    DATA_TTL_DAYS with nothing in the app having said so."""
+    out = to_jsonable(meta)
+    out["expires_at"] = (meta.uploaded_at + config.data_ttl_days * 86400
+                         if config.data_ttl_days > 0 else None)
+    return out
+
+
 @router.get("")
 def list_datasets(owner: str = Depends(current_owner)):
-    return {"datasets": to_jsonable(store.list_meta(owner))}
+    return {"datasets": [_with_expiry(m) for m in store.list_meta(owner)]}
 
 
 @router.get("/{ds_id}")
@@ -202,7 +217,7 @@ def get_dataset(ds_id: str, owner: str = Depends(current_owner)):
     meta = store.get_meta(owner, ds_id)
     if not meta:
         raise HTTPException(404, "Dataset not found")
-    return {"meta": to_jsonable(meta)}
+    return {"meta": _with_expiry(meta)}
 
 
 @router.delete("/{ds_id}")

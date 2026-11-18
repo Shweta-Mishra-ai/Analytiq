@@ -169,7 +169,9 @@ def test_dashboard_cards_carry_the_change_on_the_prior_period(client):
     assert list(cards)[:3] == ["Revenue", "Profit", "Profit margin"]
     assert body["period"] == "12 months to Dec 2024 against the 12 months before"
     assert cards["Profit margin"]["delta_unit"] == "pp"
-    assert cards["Average discount"]["delta_good"] is (cards["Average discount"]["delta"] < 0)
+    # A rise in discounting is bad news; no change is neither.
+    disc = cards["Average discount"]
+    assert disc["delta_good"] is (None if round(disc["delta"], 1) == 0 else disc["delta"] < 0)
     assert cards["Revenue"]["sub"].startswith("vs ") and "prior 12 months" in cards["Revenue"]["sub"]
 
 

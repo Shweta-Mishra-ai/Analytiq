@@ -69,7 +69,7 @@ def build_priorities(df: pd.DataFrame, change=None, limit: int = 6) -> List[Prio
             logger.warning("change explanation for priorities failed", exc_info=True)
             change = None
     if change is not None and change.where:
-        months = 12 if change.period.startswith("12") else 3
+        months = change.months or (12 if change.period.startswith("12") else 3)
         items.extend([(f, a, v * 12 / months, b + ", a year if it continues", e)
                       for f, a, v, b, e in _from_change(change)])
 

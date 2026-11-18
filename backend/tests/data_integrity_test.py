@@ -13,7 +13,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("DATA_DIR", "/tmp/dataforge-data-integrity-test")
+os.environ.setdefault("DATA_DIR", "/tmp/analytiq-data-integrity-test")
 os.environ["APP_ADMIN_KEY"] = ""
 os.environ["APP_PASSWORD"] = ""
 

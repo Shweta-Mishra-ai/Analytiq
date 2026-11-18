@@ -35,6 +35,27 @@ from app.config import config
 logger = logging.getLogger(__name__)
 
 
+def _code_version() -> str:
+    """A fingerprint of the application's source. Cached analysis carries
+    it: results were keyed to the data alone, so after a release that fixed
+    an analysis, a client went on seeing the old answer for that dataset
+    until it expired, up to DATA_TTL_DAYS later."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    h = hashlib.sha256()
+    for folder, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if d != "__pycache__")
+        for name in sorted(files):
+            if name.endswith((".py", ".json")):
+                path = os.path.join(folder, name)
+                h.update(os.path.relpath(path, root).encode())
+                with open(path, "rb") as f:
+                    h.update(f.read())
+    return h.hexdigest()[:12]
+
+
+CODE_VERSION = _code_version()
+
+
 @dataclass
 class DatasetMeta:
     dataset_id: str
@@ -83,6 +104,18 @@ class DatasetStore:
 
     def _path(self, owner: str, ds_id: str, name: str) -> str:
         return os.path.join(self._dir(owner, ds_id), name)
+
+    def _valid(self, owner: str, ds_id: str) -> bool:
+        """Whether an id names a possible dataset. An id comes from the
+        request (a URL, or a body such as Compare's other dataset), and one
+        that is blank or path-like is simply not found: refusing it by
+        raising made every lookup of it a server error."""
+        try:
+            self._safe(owner)
+            self._safe(ds_id)
+            return True
+        except ValueError:
+            return False
 
     def _mkey(self, owner: str, ds_id: str) -> str:
         return f"{owner}/{ds_id}"
@@ -144,6 +177,8 @@ class DatasetStore:
         return out
 
     def get_meta(self, owner: str, ds_id: str) -> Optional[DatasetMeta]:
+        if not self._valid(owner, ds_id):
+            return None
         mkey = self._mkey(owner, ds_id)
         with self._lock:
             if mkey in self._mem:
@@ -160,6 +195,8 @@ class DatasetStore:
 
     def delete(self, owner: str, ds_id: str) -> bool:
         import shutil
+        if not self._valid(owner, ds_id):
+            return False
         mkey = self._mkey(owner, ds_id)
         with self._lock:
             self._mem.pop(mkey, None)
@@ -177,6 +214,8 @@ class DatasetStore:
 
     def get_raw_df(self, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
         """The upload as it arrived, read from disk (never held in memory)."""
+        if not self._valid(owner, ds_id):
+            return None
         p = self._path(owner, ds_id, "raw.pkl")
         if not os.path.exists(p):
             return None
@@ -310,6 +349,7 @@ class DatasetStore:
         rev = self._revision(owner, ds_id)
         if rev is None:
             return None
+        rev = f"{rev}:{CODE_VERSION}"
         mkey = self._mkey(owner, ds_id)
         with self._lock:
             entry = self._caches.get(mkey, {}).get(key)
@@ -334,6 +374,7 @@ class DatasetStore:
         rev = self._revision(owner, ds_id)
         if rev is None:
             return
+        rev = f"{rev}:{CODE_VERSION}"
         mkey = self._mkey(owner, ds_id)
         with self._lock:
             # In memory only beside a frame that is in memory, so evicting
@@ -360,6 +401,8 @@ class DatasetStore:
             pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     def _load(self, which: str, owner: str, ds_id: str) -> Optional[pd.DataFrame]:
+        if not self._valid(owner, ds_id):
+            return None
         mkey = self._mkey(owner, ds_id)
         with self._lock:
             entry = self._mem.get(mkey)

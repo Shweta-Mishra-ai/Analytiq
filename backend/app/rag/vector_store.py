@@ -184,6 +184,16 @@ class KnowledgeBase:
             all_vecs, backend = embed(all_texts, "retrieval_document")
             self.vectors = all_vecs[:len(self.chunks)]
             vecs = all_vecs[len(self.chunks):]
+        # A file uploaded again replaces its earlier copy. Both were kept,
+        # so every answer quoted the same passage twice, and the second
+        # upload of a corrected file left the wrong one beside it.
+        keep = [c.get("source") != filename for c in self.chunks]
+        if not all(keep) and self.vectors is not None:
+            self.chunks = [c for c, k in zip(self.chunks, keep) if k]
+            self.vectors = self.vectors[np.asarray(keep, dtype=bool)]
+            if not self.chunks:
+                self.vectors = None
+            self.files = [f for f in self.files if f.get("filename") != filename]
         for c in chunks:
             c["id"] = uuid.uuid4().hex[:8]
         self.chunks.extend(chunks)

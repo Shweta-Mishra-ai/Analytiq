@@ -24,7 +24,7 @@ web app and returns a compact answer.
 | Tool | What it returns |
 |---|---|
 | `list_datasets` | Your datasets and their ids |
-| `load_dataset` | Loads a CSV, Excel or JSON file and returns its profile and id. Accepts `path` (local only), an https `url`, or `csv_text` (up to 200 KB) |
+| `load_dataset` | Loads a CSV, TSV, Excel or JSON file and returns its profile and id. Accepts `path` (local only), an https `url`, or `csv_text` (up to 200 KB) |
 | `business_summary` | Scorecard for this period against the last, key messages with evidence, tested findings, risks and next steps |
 | `data_quality` | Quality score and grade, blanks, duplicates, outliers, readiness for modelling |
 | `query` | `aggregate`, `filter`, `top_n`, `describe_column`, `correlation`, `count_values`; rankings and correlations say when a gap is within chance |
@@ -118,31 +118,38 @@ uses their own Analytiq account and sees only their own datasets.
 - Set `APP_PUBLIC_URL` (for example `https://analytiq.example.com`) so report
   download links use your public address.
 
-**Each person's token**
+**Each person's key**
 
-Sign in once to get a token. It is valid for `TOKEN_TTL_DAYS`, 30 days by default:
+In the Analytiq web app, open **Account → Use Analytiq in Claude** and choose
+**Create key**. The page shows the connector address and the header to paste.
+The key is shown once, does not expire, and opens the analysis tools only. It
+stops working when you replace or remove it there.
 
-```bash
-curl -X POST https://<your-deployment>/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "you", "password": "your-password"}'
-```
+**claude.ai** (web, desktop and mobile): *Customize → Connectors → Add → Add
+custom connector*. On Team and Enterprise plans an Owner adds it under
+*Organization settings → Connectors*.
 
-**claude.ai**: *Settings → Connectors → Add custom connector*.
-
-- **URL:** `https://<your-deployment>/mcp/`
+- **URL:** the connector address from the account page
+  (`https://<your-deployment>/mcp/`)
 - **Authentication:** *No sign in*.
-- **Request headers:** `Authorization: Bearer <your token>`.
+- **Request headers:** name `Authorization`, value `Bearer <your key>`.
 
-On Team and Enterprise plans an Owner adds the connector once, and members
-connect to it individually. Each member must use **their own** token: a shared
-token gives everyone the same account.
+Custom connectors are available on every Claude plan; the free plan allows
+one. No Anthropic API key is involved: Claude runs on the person's own Claude
+account, and Analytiq only answers its tool calls.
+
+On Team and Enterprise plans members connect individually, and each must use
+**their own** key: a shared key gives everyone the same account.
+
+A sign-in token from `POST /api/auth/login` is also accepted in the header,
+but it expires after `TOKEN_TTL_DAYS` (30), after which the connector stops
+working until the header is replaced. Use a key.
 
 **Claude Code (remote)**
 
 ```bash
 claude mcp add --transport http analytiq https://<your-deployment>/mcp/ \
-  --header "Authorization: Bearer <your token>"
+  --header "Authorization: Bearer <your key>"
 ```
 
 To share it with a project team, use `--scope project` and keep the token out of
@@ -157,8 +164,11 @@ from your computer. You have three ways in:
 
 ## Security
 
-- Remote calls are authorised per request by the same token check as the web
-  API. Tokens of deleted accounts stop working.
+- Remote calls are authorised on every request. A connector key is stored
+  only as a hash, opens the analysis tools and not the web API, and stops
+  working when it is replaced, removed or its account is deleted.
+- Model training and reports started from Claude share the server's queue for
+  heavy work and each client's storage quota with the web app.
 - Remote callers cannot read server files, and links to private, loopback or
   cloud-metadata addresses are refused, as are redirects.
 - Report links are signed, expire after one hour, and name a single file.

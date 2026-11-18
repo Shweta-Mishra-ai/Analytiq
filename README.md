@@ -181,7 +181,11 @@ curl -X DELETE https://your-deployment/api/admin/users/acme_corp \
   -H "Authorization: Bearer $APP_ADMIN_KEY"
 ```
 
-List current clients with `GET /api/admin/users` (same admin header).
+List current clients with `GET /api/admin/users` (same admin header). The same actions, with password resets, backups and recent errors, are on the `/admin` screen.
+
+### 🤖 Using Analytiq from Claude, with no API key
+
+A client with their own Claude account connects it to their Analytiq account from **Account → Use Analytiq in Claude**: create a key, then add a custom connector in Claude with the address and header the page shows. They ask in plain words; Analytiq computes and Claude writes. Nothing is set on the server for this. See [docs/MCP.md](docs/MCP.md).
 
 ### ✅ Verifying your GROQ/GEMINI keys actually work
 
@@ -221,10 +225,16 @@ claude mcp add --transport stdio --env PYTHONPATH=$(pwd)/backend analytiq -- pyt
 
 ## ☁️ Deployment Guides
 
+Before serving clients, read **[docs/OPERATIONS.md](docs/OPERATIONS.md)**: memory and
+limit settings, the `/admin` screen for client accounts, backups, and how to trace an
+error a client reports.
+
 ### **Render Deployment**
 1. Push this code repository to GitHub.
 2. Link your repository in Render and create a **Web Service** using the Blueprint configuration in `render.yaml`.
-3. Set your environment keys (`GROQ_API_KEY`, `GEMINI_API_KEY`) in the Render Dashboard.
+3. In the Render Dashboard set `APP_ADMIN_KEY` and `APP_PUBLIC_URL`. The AI keys (`ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`) are optional: without one the app shows its calculated findings, and clients can still use Analytiq from their own Claude account (see below).
+
+The Blueprint creates a service named `analytiq` with a disk named `analytiq-data`. If you already run a service created from an earlier version of this file under another name, Render treats the new name as a new service with an empty disk: download a backup from `/admin` on the old one and restore it on the new one, or keep the old name in your copy of `render.yaml`.
 
 ### **Railway Deployment**
 1. Initialize a new project on Railway from your repository.

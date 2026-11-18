@@ -21,6 +21,7 @@ import {
   Activity,
   GitCompare,
   Gauge,
+  UserCog,
 } from 'lucide-react'
 import { useApp } from '../store/app'
 import { ApiError, apiGet, getToken, setToken } from '../api/client'
@@ -207,6 +208,12 @@ export default function Layout() {
           )}
         </div>
 
+        <Link
+          to="/account"
+          className="flex items-center gap-2 border-t border-edge px-4 py-3 text-[11px] text-faint transition-colors hover:bg-panel2 hover:text-ink"
+        >
+          <UserCog className="h-3.5 w-3.5" /> Account
+        </Link>
         {getToken() && (
           <button
             onClick={() => {

@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import AuthGate from './components/AuthGate'
+import ErrorBoundary from './components/ErrorBoundary'
 import Layout from './components/Layout'
 
 // Route-level code splitting: each page becomes its own chunk, fetched
@@ -23,6 +24,8 @@ const MlPage = lazy(() => import('./pages/MlPage'))
 const ChatPage = lazy(() => import('./pages/ChatPage'))
 const RagPage = lazy(() => import('./pages/RagPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
+const AccountPage = lazy(() => import('./pages/AccountPage'))
+const AdminPage = lazy(() => import('./pages/AdminPage'))
 
 function RouteFallback() {
   return (
@@ -32,33 +35,48 @@ function RouteFallback() {
   )
 }
 
+function ClientApp() {
+  return (
+    <AuthGate>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route path="/" element={<UploadPage />} />
+          <Route path="/columns" element={<ColumnsPage />} />
+          <Route path="/quality" element={<QualityPage />} />
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/eda" element={<EdaPage />} />
+          <Route path="/insights" element={<InsightsPage />} />
+          <Route path="/bi" element={<BiPage />} />
+          <Route path="/deep-analysis" element={<DeepAnalysisPage />} />
+          <Route path="/segments" element={<SegmentsPage />} />
+          <Route path="/ab-test" element={<AbTestPage />} />
+          <Route path="/survival" element={<SurvivalPage />} />
+          <Route path="/compare" element={<ComparePage />} />
+          <Route path="/ml" element={<MlPage />} />
+          <Route path="/chat" element={<ChatPage />} />
+          <Route path="/rag" element={<RagPage />} />
+          <Route path="/reports" element={<ReportsPage />} />
+          <Route path="/account" element={<AccountPage />} />
+        </Route>
+      </Routes>
+    </AuthGate>
+  )
+}
+
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthGate>
+      {/* Around everything: an error while a screen draws shows a message
+          with a way back, not a blank page. */}
+      <ErrorBoundary>
         <Suspense fallback={<RouteFallback />}>
           <Routes>
-            <Route element={<Layout />}>
-              <Route path="/" element={<UploadPage />} />
-              <Route path="/columns" element={<ColumnsPage />} />
-              <Route path="/quality" element={<QualityPage />} />
-              <Route path="/dashboard" element={<DashboardPage />} />
-              <Route path="/eda" element={<EdaPage />} />
-              <Route path="/insights" element={<InsightsPage />} />
-              <Route path="/bi" element={<BiPage />} />
-              <Route path="/deep-analysis" element={<DeepAnalysisPage />} />
-              <Route path="/segments" element={<SegmentsPage />} />
-              <Route path="/ab-test" element={<AbTestPage />} />
-              <Route path="/survival" element={<SurvivalPage />} />
-              <Route path="/compare" element={<ComparePage />} />
-              <Route path="/ml" element={<MlPage />} />
-              <Route path="/chat" element={<ChatPage />} />
-              <Route path="/rag" element={<RagPage />} />
-              <Route path="/reports" element={<ReportsPage />} />
-            </Route>
+            {/* The operator's screen uses the admin key, not a client sign-in. */}
+            <Route path="/admin" element={<AdminPage />} />
+            <Route path="/*" element={<ClientApp />} />
           </Routes>
         </Suspense>
-      </AuthGate>
+      </ErrorBoundary>
     </BrowserRouter>
   )
 }

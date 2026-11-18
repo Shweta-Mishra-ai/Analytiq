@@ -136,6 +136,18 @@ def fmt_change(m: Metric) -> str:
 
 # ── periods ──────────────────────────────────────────────────────────────
 
+def last_complete_end(dates: pd.Series):
+    """The exclusive end of the last whole calendar month the dates cover
+    (to within its final three days), or None without dates."""
+    d = pd.to_datetime(dates, errors="coerce")
+    hi = d.max()
+    if pd.isna(hi):
+        return None
+    month_end = hi + pd.offsets.MonthEnd(0)
+    end = month_end if (month_end - hi).days <= 3 else hi - pd.offsets.MonthEnd(1)
+    return end.normalize() + pd.Timedelta(days=1)
+
+
 def period_bounds(dates: pd.Series):
     """(start, cut, end, label, prior label) of the latest complete
     comparison the dates allow: 12 months against the 12 before when they
@@ -149,12 +161,10 @@ def period_bounds(dates: pd.Series):
     def month_year(ts):
         return ts.strftime("%b %Y")
     d = pd.to_datetime(dates, errors="coerce")
-    lo, hi = d.min(), d.max()
-    if pd.isna(lo) or pd.isna(hi):
+    lo = d.min()
+    end = last_complete_end(d)
+    if pd.isna(lo) or end is None:
         return None
-    month_end = hi + pd.offsets.MonthEnd(0)
-    end = month_end if (month_end - hi).days <= 3 else hi - pd.offsets.MonthEnd(1)
-    end = end.normalize() + pd.Timedelta(days=1)            # exclusive bound
     for months, label in ((12, "12 months to {}"), (3, "3 months to {}")):
         cut = end - pd.DateOffset(months=months)
         start = cut - pd.DateOffset(months=months)
@@ -235,9 +245,12 @@ def build_scorecard(df: pd.DataFrame, bounds=None) -> Scorecard:
             out["Units"] = ("count", float(part[qty].sum()))
         if disc:
             rate = _as_rate(part[disc])
-            if rate is not None and r > 0:
-                w = part[rev].clip(lower=0)
-                out["Average discount"] = ("pct", float((rate * w).sum() / max(w.sum(), 1e-9)))
+            if rate is not None and rate.notna().any():
+                # The plain average over orders, as AVERAGE() gives it. It was
+                # weighted by sales after the discount, which shrinks the
+                # weight of exactly the deeply discounted orders: 6.8% shown
+                # where every spreadsheet gives 7.5%.
+                out["Average discount"] = ("pct", float(rate.mean()))
         return out
 
     periods = _periods(data[sc.date_col], bounds) if sc.date_col else None

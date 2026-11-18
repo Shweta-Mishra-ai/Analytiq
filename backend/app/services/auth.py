@@ -101,6 +101,10 @@ def _user_for_token(token: str):
     user = user_store.get(claims["u"])
     if user is None or claims["iat"] < user.created_at:
         return None
+    # Issued before the password was last changed: signed out. (The token
+    # handed back by the change itself is issued after it is recorded.)
+    if claims["iat"] < user.password_changed_at:
+        return None
     return user
 
 

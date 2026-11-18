@@ -7,12 +7,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
 from pydantic import BaseModel
 
@@ -33,6 +37,8 @@ async def lifespan(app: FastAPI):
     # Set DATA_TTL_DAYS=0 to disable. Runs once immediately, then on
     # CLEANUP_INTERVAL_HOURS. Cancelled cleanly on shutdown.
     task = asyncio.create_task(cleanup_loop())
+    from app.services.backups import backup_loop
+    backups = asyncio.create_task(backup_loop())
     try:
         if _mcp_mount is not None:
             async with _mcp_mount.running():
@@ -40,11 +46,12 @@ async def lifespan(app: FastAPI):
         else:
             yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for t in (task, backups):
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
 
 # Analytiq's tools for Claude (Model Context Protocol) at /mcp; see
@@ -57,15 +64,112 @@ except ImportError:                       # pragma: no cover - mcp not installed
 
 app = FastAPI(title=config.app_name, version=config.app_version, lifespan=lifespan)
 
-origins = [o.strip() for o in config.cors_origins.split(",") if o.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins or ["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    # The app's own scripts and styles only. Plotly sets inline styles.
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"),
+}
+
+
+def _caller_key(request: Request) -> str:
+    """Who a request is counted against: the token when there is one, else
+    the address.
+
+    The address is the connecting one, or, when that is a proxy on a private
+    network (Render, Railway, nginx), the last X-Forwarded-For entry: the
+    one the proxy appended. The first entry was used, and the caller writes
+    that one, so a new invented address on every request was never limited.
+    """
+    auth = request.headers.get("authorization", "")
+    if auth:
+        import hashlib
+        return "t:" + hashlib.sha256(auth.encode("utf-8", "replace")).hexdigest()[:24]
+    peer = request.client.host if request.client else "unknown"
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        import ipaddress
+        try:
+            behind_proxy = ipaddress.ip_address(peer).is_private
+        except ValueError:
+            behind_proxy = False
+        if behind_proxy:
+            return "ip:" + fwd.split(",")[-1].strip()
+    return "ip:" + peer
+
+
+class GuardMiddleware(BaseHTTPMiddleware):
+    """Around every request: a reference id, a request rate, a safe answer
+    for any unhandled error, and the security headers.
+
+    An unhandled error used to reach the client as a bare "Internal Server
+    Error" with nothing to quote and nothing in the log to find it by. It
+    is now logged with a reference the client is shown, so a report of
+    "it broke" can be traced to its traceback.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        rid = uuid.uuid4().hex[:12]
+        request.state.request_id = rid
+        path = request.url.path
+        is_api = path.startswith("/api") or path.startswith("/mcp")
+        started = time.time()
+        if is_api and path != "/api/health" and request.method != "OPTIONS":
+            from app.services.limits import rate_limiter
+            wait = rate_limiter.allow(_caller_key(request))
+            if wait:
+                response = JSONResponse(
+                    {"detail": f"Too many requests. Try again in {wait} s."},
+                    status_code=429, headers={"Retry-After": str(wait)})
+                response.headers["X-Request-ID"] = rid
+                return response
+        try:
+            response = await call_next(request)
+        except Exception as e:
+            user = getattr(request.state, "username", "-")
+            logger.exception("unhandled error ref=%s %s %s user=%s", rid, request.method,
+                             path, user)
+            from app.services.alerts import record_error
+            record_error(rid, request.method, path, user, e)
+            contact = f" at {config.support_email}" if config.support_email else ""
+            response = JSONResponse(
+                {"detail": "Something went wrong on our side. Please try again; if it "
+                           f"keeps happening, contact support{contact} and quote "
+                           f"reference {rid}.",
+                 "reference": rid}, status_code=500)
+        took = time.time() - started
+        if is_api and (response.status_code >= 500 or took > 30):
+            logger.warning("ref=%s %s %s -> %s in %.1fs user=%s", rid, request.method, path,
+                           response.status_code, took,
+                           getattr(request.state, "username", "-"))
+        response.headers["X-Request-ID"] = rid
+        for k, v in _SECURITY_HEADERS.items():
+            response.headers.setdefault(k, v)
+        if request.headers.get("x-forwarded-proto", request.url.scheme) == "https":
+            response.headers.setdefault("Strict-Transport-Security",
+                                        "max-age=31536000; includeSubDomains")
+        return response
+
+
+# Innermost first: auth, then the guard around it, then CORS outermost so
+# its headers are on every answer, errors included.
 app.add_middleware(AuthMiddleware)
+app.add_middleware(GuardMiddleware)
+origins = [o.strip() for o in config.cors_origins.split(",") if o.strip()]
+if origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 class LoginRequest(BaseModel):
@@ -100,6 +204,94 @@ def login(req: LoginRequest):
     return {"token": issue_token(user.username), "username": user.username,
             "is_admin": user.is_admin}
 
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.post("/api/auth/change-password")
+def change_password(req: ChangePasswordRequest, request: Request):
+    """Change the signed-in client's own password. Every other session of
+    theirs is signed out; the answer carries a fresh token for this one."""
+    from fastapi import HTTPException
+    from app.services.auth import LOCAL_OWNER, _open_mode, login_throttle
+    from app.services.tokens import issue_token
+    username = getattr(request.state, "username", LOCAL_OWNER)
+    if _open_mode() or not user_store.exists(username):
+        raise HTTPException(400, "This sign-in has no password to change.")
+    wait = login_throttle.retry_after(username)
+    if wait:
+        raise HTTPException(429, f"Too many failed attempts. Try again in {wait} s.",
+                            headers={"Retry-After": str(wait)})
+    if not user_store.verify(username, req.current_password):
+        login_throttle.record_failure(username)
+        raise HTTPException(403, "The current password is not right.")
+    try:
+        user_store.set_password(username, req.new_password)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    logger.info("password changed for %s", username)
+    return {"token": issue_token(username), "username": username}
+
+
+@app.get("/api/account")
+def account(request: Request):
+    """Who is signed in, what they store and the limits that apply."""
+    from app.services.auth import LOCAL_OWNER, _open_mode
+    from app.services.limits import owner_usage
+    username = getattr(request.state, "username", LOCAL_OWNER)
+    return {
+        "username": username,
+        "has_password": not _open_mode() and user_store.exists(username),
+        "usage": owner_usage(username) if username != "admin" else None,
+        "max_file_mb": config.max_file_mb,
+        "data_ttl_days": config.data_ttl_days,
+        "support_email": config.support_email,
+        "connector": _connector_info(request, username),
+    }
+
+
+def _connector_info(request: Request, username: str):
+    """Where Claude connects, and whether this client has a key for it.
+    None without accounts (single-user mode serves only this machine)."""
+    from app.services.auth import _open_mode
+    user = None if _open_mode() else user_store.get(username)
+    if _mcp_mount is None or user is None:
+        return None
+    base = config.public_url.rstrip("/")
+    if not base:
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+        base = f"{proto}://{host}"
+    return {"url": base + "/mcp/", "has_key": user.connector_key_at > 0,
+            "key_created_at": user.connector_key_at or None}
+
+
+@app.post("/api/account/connector-key")
+def create_connector_key(request: Request):
+    """A new key for this client's Claude connector, shown this once. Any
+    earlier key stops working."""
+    from fastapi import HTTPException
+    from app.services.auth import LOCAL_OWNER, _open_mode
+    username = getattr(request.state, "username", LOCAL_OWNER)
+    if _open_mode() or not user_store.exists(username):
+        raise HTTPException(400, "Connector keys need a client account.")
+    key = user_store.new_connector_key(username)
+    logger.info("connector key created for %s", username)
+    return {"key": key, "connector": _connector_info(request, username)}
+
+
+@app.delete("/api/account/connector-key")
+def delete_connector_key(request: Request):
+    from app.services.auth import LOCAL_OWNER
+    username = getattr(request.state, "username", LOCAL_OWNER)
+    removed = user_store.revoke_connector_key(username)
+    if removed:
+        logger.info("connector key removed for %s", username)
+    return {"removed": removed}
+
 app.include_router(datasets.router)
 app.include_router(analytics.router)
 app.include_router(advanced_analytics.router)
@@ -131,6 +323,11 @@ if _mcp_mount is not None:
         return FileResponse(path, media_type="application/pdf", filename=name)
 
 
+def _chat_available() -> bool:
+    from app.api.chat import chat_available
+    return chat_available()
+
+
 @app.get("/api/health")
 async def health():
     from app.ai.local_llm import status as _llm_status
@@ -144,6 +341,9 @@ async def health():
         "claude_configured": bool(config.anthropic_api_key),
         "claude_model": config.claude_model if config.anthropic_api_key else None,
         "gemini_configured": bool(config.gemini_api_key),
+        "max_file_mb": config.max_file_mb,
+        "data_ttl_days": config.data_ttl_days,
+        "chat_available": _chat_available(),
         # What will actually happen to a narrative request, so a client
         # running in privacy mode can confirm it from outside the app.
         "llm": _llm_status(),
@@ -168,11 +368,100 @@ def create_client_user(req: CreateUserRequest):
 
 
 @app.get("/api/admin/users")
-async def list_client_users():
+def list_client_users():
+    from app.services.limits import owner_usage
     return {"users": [
-        {"username": u.username, "created_at": u.created_at, "is_admin": u.is_admin}
+        {"username": u.username, "created_at": u.created_at, "is_admin": u.is_admin,
+         "usage": owner_usage(u.username)}
         for u in user_store.list()
     ]}
+
+
+class ResetPasswordRequest(BaseModel):
+    password: str
+
+
+@app.post("/api/admin/users/{username}/password")
+def reset_client_password(username: str, req: ResetPasswordRequest):
+    """Set a new password for a client who has lost theirs. Their existing
+    sessions are signed out."""
+    from fastapi import HTTPException
+    if not user_store.exists(username):
+        raise HTTPException(404, "No such user")
+    try:
+        user_store.set_password(username, req.password)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    logger.info("password reset by admin for %s", username.strip().lower())
+    return {"username": username.strip().lower(), "password_reset": True}
+
+
+@app.get("/api/admin/status")
+def admin_status():
+    """What the server is doing and how much room it has."""
+    import shutil
+    from app.services.dataset_store import store as dataset_store
+    from app.services.alerts import recent_errors
+    from app.services.backups import list_backups
+    from app.services.limits import job_gate
+    rss_mb = None
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS"):
+                    rss_mb = int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    disk = shutil.disk_usage(config.data_dir)
+    return {"memory_mb": rss_mb, "heavy_jobs": job_gate.stats(),
+            "datasets_in_memory": dataset_store.memory_stats(),
+            "disk_free_mb": disk.free // 2**20, "disk_total_mb": disk.total // 2**20,
+            "clients": len(user_store.list()),
+            "recent_errors": recent_errors()[:20],
+            "alerts_configured": bool(config.alert_webhook_url),
+            "backups": list_backups(),
+            "backup_every_hours": config.backup_every_hours,
+            "limits": {"max_file_mb": config.max_file_mb,
+                       "max_storage_mb_per_client": config.max_storage_mb_per_owner,
+                       "max_datasets_per_client": config.max_datasets_per_owner,
+                       "data_ttl_days": config.data_ttl_days}}
+
+
+@app.get("/api/admin/backup")
+def admin_backup():
+    """Everything the server stores (accounts, the signing key, every
+    client's data) as one .tar.gz, to keep somewhere other than this
+    server. Restore by unpacking it into DATA_DIR before starting."""
+    import tempfile
+    from starlette.background import BackgroundTask
+    from app.services.backups import write_archive
+    fd, path = tempfile.mkstemp(suffix=".tar.gz", prefix="analytiq-backup-")
+    os.close(fd)
+    write_archive(path)
+    name = "analytiq-backup-{}.tar.gz".format(time.strftime("%Y%m%d-%H%M"))
+    return FileResponse(path, media_type="application/gzip", filename=name,
+                        background=BackgroundTask(os.unlink, path))
+
+
+@app.post("/api/admin/backups")
+def admin_take_backup():
+    """Take a snapshot now, kept on the data disk with the scheduled ones."""
+    from fastapi import HTTPException
+    from app.services.backups import take_backup
+    made = take_backup()
+    if made is None:
+        raise HTTPException(507, "Not enough free disk space for a snapshot.")
+    return made
+
+
+@app.get("/api/admin/backups/{name}")
+def admin_get_backup(name: str):
+    from fastapi import HTTPException
+    from app.services.backups import backup_path
+    path = backup_path(name)
+    if path is None:
+        raise HTTPException(404, "No such backup")
+    return FileResponse(path, media_type="application/gzip", filename=name)
 
 
 @app.delete("/api/admin/users/{username}")

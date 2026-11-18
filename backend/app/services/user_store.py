@@ -9,6 +9,7 @@ hashlib) to match the rest of the project's minimal-dependency style.
 from __future__ import annotations
 import logging
 
+import base64
 import hashlib
 import hmac
 import os
@@ -34,6 +35,13 @@ class User:
     password_hash: bytes
     created_at: float
     is_admin: bool = False
+    # When the password was last set. Tokens issued before it stop working,
+    # so changing a password signs out every other device.
+    password_changed_at: float = 0.0
+    # SHA-256 of the key this client's Claude connector signs in with (the
+    # key itself is shown once and never stored), and when it was made.
+    connector_key_hash: bytes = b""
+    connector_key_at: float = 0.0
 
 
 @dataclass
@@ -42,6 +50,41 @@ class PublicUser:
     username: str
     created_at: float
     is_admin: bool = False
+    password_changed_at: float = 0.0
+    connector_key_at: float = 0.0      # 0 when there is no connector key
+
+
+CONNECTOR_KEY_PREFIX = "aqk-"
+
+
+# The passwords tried first in any guessing attack. "password" was accepted.
+_COMMON_PASSWORDS = {
+    "password", "password1", "password12", "password123", "passw0rd", "12345678",
+    "123456789", "1234567890", "qwertyui", "qwerty123", "qwertyuiop", "11111111",
+    "00000000", "iloveyou", "admin123", "administrator", "letmein1", "welcome1",
+    "welcome123", "abc12345", "abcd1234", "1q2w3e4r", "changeme", "analytiq",
+    "analytiq123", "football", "baseball", "sunshine", "princess", "trustno1",
+}
+
+
+def check_password(password: str, username: str = "") -> None:
+    """Raise ValueError saying what is wrong with a new password."""
+    if len(password or "") < 8:
+        raise ValueError("Password must be at least 8 characters")
+    if len(password) > 200:
+        raise ValueError("Password must be at most 200 characters")
+    low = password.lower()
+    if low in _COMMON_PASSWORDS or len(set(low)) < 4:
+        raise ValueError("That password is too easy to guess; choose a less common one")
+    if username and low == username.lower():
+        raise ValueError("Password must not be the username")
+
+
+def _public(user: "User") -> PublicUser:
+    return PublicUser(user.username, user.created_at, user.is_admin,
+                      float(getattr(user, "password_changed_at", 0.0) or 0.0),
+                      float(getattr(user, "connector_key_at", 0.0) or 0.0)
+                      if getattr(user, "connector_key_hash", b"") else 0.0)
 
 
 def _hash_password(password: str, salt: bytes) -> bytes:
@@ -128,8 +171,7 @@ class UserStore:
                 "'-', starting with a letter or digit")
         if username in _RESERVED_USERNAMES:
             raise ValueError(f"'{username}' is reserved")
-        if len(password) < 8:
-            raise ValueError("Password must be at least 8 characters")
+        check_password(password, username)
         with self._lock:
             if username in self._users:
                 raise ValueError(f"User '{username}' already exists")
@@ -143,7 +185,69 @@ class UserStore:
             )
             self._users[username] = user
             self._save()
-        return PublicUser(username, user.created_at, user.is_admin)
+        return _public(user)
+
+    def set_password(self, username: str, new_password: str) -> PublicUser:
+        """Set a new password (admin reset, or after the old one was
+        verified). Every token issued before now stops working."""
+        username = username.strip().lower()
+        check_password(new_password, username)
+        with self._lock:
+            user = self._users.get(username)
+            if user is None:
+                raise ValueError("No such user")
+            user.salt = secrets.token_bytes(16)
+            user.password_hash = _hash_password(new_password, user.salt)
+            user.password_changed_at = time.time()
+            self._save()
+            return _public(user)
+
+    def new_connector_key(self, username: str) -> str:
+        """A new key for this client's Claude connector, replacing any
+        earlier one. Unlike a sign-in token it does not expire, so the
+        connector keeps working until the key is replaced or removed; it
+        opens the analysis tools only, not the web app or the account.
+        Returned once: only its hash is kept."""
+        username = username.strip().lower()
+        with self._lock:
+            user = self._users.get(username)
+            if user is None:
+                raise ValueError("No such user")
+            name = base64.urlsafe_b64encode(username.encode()).rstrip(b"=").decode()
+            key = f"{CONNECTOR_KEY_PREFIX}{name}-{secrets.token_urlsafe(32)}"
+            user.connector_key_hash = hashlib.sha256(key.encode()).digest()
+            user.connector_key_at = time.time()
+            self._save()
+        return key
+
+    def revoke_connector_key(self, username: str) -> bool:
+        username = username.strip().lower()
+        with self._lock:
+            user = self._users.get(username)
+            if user is None or not getattr(user, "connector_key_hash", b""):
+                return False
+            user.connector_key_hash = b""
+            user.connector_key_at = 0.0
+            self._save()
+        return True
+
+    def user_for_connector_key(self, key: str) -> Optional[PublicUser]:
+        """The account a connector key belongs to, or None. The key comes
+        straight from a request header, so anything can be in it."""
+        try:
+            if not key.startswith(CONNECTOR_KEY_PREFIX) or len(key) > 400:
+                return None
+            name = key[len(CONNECTOR_KEY_PREFIX):].split("-", 1)[0]
+            username = base64.urlsafe_b64decode(name + "=" * (-len(name) % 4)).decode()
+            digest = hashlib.sha256(key.encode()).digest()
+        except (ValueError, UnicodeError):
+            return None
+        with self._lock:
+            user = self._users.get(username)
+        stored = getattr(user, "connector_key_hash", b"") if user else b""
+        if not stored or not hmac.compare_digest(stored, digest):
+            return None
+        return _public(user)
 
     def verify(self, username: str, password: str) -> Optional[PublicUser]:
         username = username.strip().lower()
@@ -155,17 +259,16 @@ class UserStore:
         candidate = _hash_password(password, user.salt)
         if not hmac.compare_digest(candidate, user.password_hash):
             return None
-        return PublicUser(user.username, user.created_at, user.is_admin)
+        return _public(user)
 
     def get(self, username: str) -> Optional[PublicUser]:
         with self._lock:
             user = self._users.get(username.strip().lower())
-        return PublicUser(user.username, user.created_at, user.is_admin) if user else None
+        return _public(user) if user else None
 
     def list(self) -> list[PublicUser]:
         with self._lock:
-            out = [PublicUser(u.username, u.created_at, u.is_admin)
-                   for u in self._users.values()]
+            out = [_public(u) for u in self._users.values()]
         out.sort(key=lambda u: u.created_at)
         return out
 
