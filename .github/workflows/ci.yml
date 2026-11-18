@@ -66,8 +66,9 @@ jobs:
       - run: pip-audit -r backend/requirements.txt --progress-spinner off
       # Risky code patterns (medium and high severity); see backend/.bandit.yml.
       - run: bandit -c backend/.bandit.yml -r backend/app -ll -q
-      # Known vulnerabilities in the frontend's dependencies.
-      - run: npm ci && npm audit --audit-level=moderate
+      # Known vulnerabilities in the frontend's dependencies (moderate and
+      # above), with the dated exceptions recorded in scripts/audit.mjs.
+      - run: npm ci && node scripts/audit.mjs
         working-directory: frontend
 
   e2e:
