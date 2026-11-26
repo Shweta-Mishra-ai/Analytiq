@@ -165,3 +165,35 @@ class RateLimiter:
 
 
 rate_limiter = RateLimiter(config.rate_limit_per_minute)
+
+
+
+# ── who is calling, by network ──────────────────────────────────────────
+
+def client_ip(request) -> str:
+    """The caller's address: the connecting one, or, behind a proxy on a
+    private network (Render, Railway, nginx), the last X-Forwarded-For entry,
+    the one the proxy appended (the first is whatever the caller wrote)."""
+    import ipaddress
+    peer = request.client.host if request.client else "unknown"
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        try:
+            behind_proxy = ipaddress.ip_address(peer).is_private
+        except ValueError:
+            behind_proxy = False
+        if behind_proxy:
+            return fwd.split(",")[-1].strip()
+    return peer
+
+
+def network_of(ip: str) -> str:
+    """The network an address belongs to: its /24 (IPv4) or /64 (IPv6).
+    A home or office gets new addresses within these, not outside them."""
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    prefix = 24 if addr.version == 4 else 64
+    return str(ipaddress.ip_network(f"{ip}/{prefix}", strict=False))

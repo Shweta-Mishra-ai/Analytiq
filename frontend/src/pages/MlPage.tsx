@@ -330,7 +330,7 @@ export default function MlPage() {
               }`}
             >
               <div className="mb-0.5 text-xs text-mute uppercase">
-                Can {report.target_col} be predicted?
+                Verdict
               </div>
               {report.summary}
             </div>

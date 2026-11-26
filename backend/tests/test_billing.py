@@ -467,3 +467,51 @@ def test_a_rejected_upi_report_adds_nothing(client, world, monkeypatch):
                     json={"approve": False, "note": "not found in bank statement"})
     assert r.json()["status"] == "rejected"
     assert credit_store.balance("upi_fake")["paid"] == 0
+
+
+def test_a_bank_statement_approves_matching_upi_payments(client, world, monkeypatch):
+    import pandas as pd
+    monkeypatch.setattr(config, "upi_id", "shop@okaxis")
+    h1, h2, h3 = world("stmt_a"), world("stmt_b"), world("stmt_c")
+    a = client.post("/api/billing/upi", headers=h1, json={"pack": "starter", "utr": "412345678901"}).json()
+    b = client.post("/api/billing/upi", headers=h2, json={"pack": "pro", "utr": "512345678902"}).json()
+    c = client.post("/api/billing/upi", headers=h3, json={"pack": "starter", "utr": "612345678903"}).json()
+    # A bank CSV: the UTR inside the narration, amounts with separators.
+    csv = ("Date,Narration,Chq./Ref.No.,Withdrawal Amt.,Deposit Amt.,Closing Balance\n"
+           "26/11/26,UPI-ASHA-asha@okhdfc-HDFC0001-412345678901-PAYMENT,0000412345678901,,199.00,\"10,199.00\"\n"
+           "26/11/26,UPI-RAVI-ravi@ybl-YESB0001-512345678902-CREDITS,0000512345678902,,99.00,\"10,298.00\"\n")
+    r = client.post("/api/admin/upi-payments/statement", headers=ADMIN,
+                    files={"file": ("statement.csv", csv.encode(), "text/csv")})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert [i["id"] for i in out["approved"]] == [a["id"]]
+    # Right UTR, wrong amount (Rs 99 for a Rs 499 pack): left for a person.
+    assert [i["id"] for i in out["wrong_amount"]] == [b["id"]]
+    assert {i["id"] for i in out["still_pending"]} == {b["id"], c["id"]}
+    assert credit_store.balance("stmt_a")["paid"] == 50
+    assert credit_store.balance("stmt_b")["paid"] == 0
+    # An Excel export from a UPI app, UTR in its own column.
+    import io as _io
+    buf = _io.BytesIO()
+    pd.DataFrame({"Txn ID": ["612345678903"], "Amount (INR)": ["₹199"], "Status": ["SUCCESS"]}) \
+        .to_excel(buf, index=False)
+    r = client.post("/api/admin/upi-payments/statement", headers=ADMIN,
+                    files={"file": ("upi.xlsx", buf.getvalue(),
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert [i["id"] for i in r.json()["approved"]] == [c["id"]]
+    assert credit_store.balance("stmt_c")["paid"] == 50
+    assert client.post("/api/admin/upi-payments/statement", headers=h1,
+                       files={"file": ("s.csv", csv.encode(), "text/csv")}).status_code == 401
+
+
+def test_a_reported_upi_payment_alerts_the_operator(client, world, monkeypatch):
+    from app.services import emails
+    sent = []
+    monkeypatch.setattr(config, "upi_id", "shop@okaxis")
+    monkeypatch.setattr(config, "smtp_host", "smtp.test")
+    monkeypatch.setattr(config, "support_email", "owner@example.com")
+    monkeypatch.setattr(emails, "_deliver", lambda m: sent.append(m))
+    h = world("alert_buyer")
+    client.post("/api/billing/upi", headers=h, json={"pack": "starter", "utr": "712345678904"})
+    assert len(sent) == 1 and sent[0]["To"] == "owner@example.com"
+    assert "712345678904" in sent[0].get_content()

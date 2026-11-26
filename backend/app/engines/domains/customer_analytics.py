@@ -559,3 +559,104 @@ def run_customer_analytics(df: pd.DataFrame, insights: List, findings: List,
     cohort_retention(df, insights, findings, risks, opps)
     rfm_segments(df, insights, findings, risks, opps)
     revenue_concentration(df, insights, findings, risks, opps)
+
+
+# ══════════════════════════════════════════════════════════
+#  CUSTOMER CHURN
+# ══════════════════════════════════════════════════════════
+
+_CHURN_WORDS = {"churn", "churned", "exited", "cancelled", "canceled", "lapsed",
+                "attrited", "left", "lost", "unsubscribed"}
+_YES = {"yes", "1", "1.0", "true", "y", "churned", "exited", "left", "cancelled",
+        "canceled", "lost"}
+
+
+def find_churn_col(df: pd.DataFrame) -> Optional[str]:
+    """A yes/no column saying whether a customer left: 'Churn', 'churned',
+    'Exited', 'is_cancelled'. Only two values, and one of them reads as yes."""
+    from app.engines.data_loader import _name_words
+    for col in df.columns:
+        if not (_name_words(col) & _CHURN_WORDS):
+            continue
+        vals = df[col].dropna().astype(str).str.strip().str.lower()
+        if vals.nunique() == 2 and vals.isin(_YES).any() and not vals.isin(_YES).all():
+            return col
+    return None
+
+
+def customer_churn(df: pd.DataFrame, insights: List, findings: List,
+                   risks: List, opps: List) -> None:
+    """How many customers left and what separates them from those who
+    stayed. The driver tests are the attrition engine's (each factor tested,
+    corrected for the number tested); the words are about customers. A
+    customer file used to be read as a workforce one: "1,020 of 3,000
+    employees left", against an HR planning band."""
+    col = find_churn_col(df)
+    if col is None:
+        return
+    try:
+        from app.engines.domains.hr import _run_attrition
+        work = df.copy()
+        work[col] = work[col].astype(str).str.strip().str.lower().isin(_YES).map(
+            {True: "yes", False: "no"})
+        work = work.rename(columns={col: "churned"}) if col != "churned" else work
+        if "churned" in df.columns and col != "churned":
+            return
+        a = _run_attrition(work)
+        if a is None or a.n_total < 30:
+            return
+        who = "customers"
+        findings.insert(0, "Churn is {:.1f}%: {:,} of {:,} {} left.".format(
+            a.rate, a.n_left, a.n_total, who))
+        lead = a.top_drivers[0] if a.top_drivers else None
+        if lead is None:
+            findings.insert(1, "No factor in this data separates the customers who left "
+                               "from those who stayed beyond chance.")
+            return
+        q = lead.get("q_value", lead.get("p_value", 1.0))
+        qtxt = "q<0.001" if q < 0.001 else "q={:.3f}".format(q)
+        if lead["type"] == "categorical":
+            line = ("Churn is highest for '{}' = '{}': {:.0f}%, against {:.0f}% for '{}' "
+                    "({}, corrected for the number of factors tested).").format(
+                        lead["factor"], lead["worst_cat"], lead["worst_rate"],
+                        lead["best_rate"], lead["best_cat"], qtxt)
+        else:
+            line = ("Customers who left had a {} '{}' ({:.2f} on average, against {:.2f} "
+                    "for those who stayed; {}, corrected for the number of factors "
+                    "tested).").format(lead["direction"], lead["factor"], lead["left_mean"],
+                                       lead["stay_mean"], qtxt)
+        findings.insert(1, line)
+        evidence = "; ".join(
+            ("'{}': {}".format(d["factor"], d["detail"])) for d in a.top_drivers[:4])
+        value_col = find_value_col(df)
+        impact = "{:,} customers left in this data.".format(a.n_left)
+        if value_col and value_col in work.columns:
+            lost = pd.to_numeric(work.loc[work["churned"] == "yes", value_col],
+                                 errors="coerce").sum()
+            total = pd.to_numeric(work[value_col], errors="coerce").sum()
+            if total > 0 and lost > 0:
+                impact = ("The customers who left account for {:.0f}% of '{}' in this "
+                          "data.".format(lost / total * 100, value_col))
+        insights.append(build_insight(
+            title="Churn {:.1f}%: '{}' separates who leaves".format(a.rate, lead["factor"]),
+            problem="{:,} of {:,} customers left ({:.1f}%).".format(a.n_left, a.n_total, a.rate),
+            cause="These factors differ between customers who left and those who stayed. "
+                  "That is an association: it shows where to look, not what caused it.",
+            evidence=evidence,
+            action="1. Look at the customers in the highest-churn group first  "
+                   "2. Ask a sample of recent leavers why they left  "
+                   "3. Test one change on that group against a held-back control",
+            impact=impact,
+            severity="high" if a.rate >= 20 else "warning", category="customer_churn"))
+        # The group to act on: the strongest categorical driver, which the
+        # summary's lead line may not be.
+        group = next((d for d in a.top_drivers if d["type"] == "categorical"), None)
+        if group is not None:
+            gq = group.get("q_value", group.get("p_value", 1.0))
+            risks.insert(0, "Customers with '{}' = '{}' churn at {:.0f}%, against {:.0f}% "
+                            "for '{}' ({}).".format(
+                                group["factor"], group["worst_cat"], group["worst_rate"],
+                                group["best_rate"], group["best_cat"],
+                                "q<0.001" if gq < 0.001 else "q={:.3f}".format(gq)))
+    except Exception:
+        logger.warning("customer churn analysis failed", exc_info=True)

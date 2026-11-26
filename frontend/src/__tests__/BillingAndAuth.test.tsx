@@ -122,6 +122,7 @@ describe('AuthGate', () => {
       username: 'newbie',
       password: 'a-good-passphrase',
       email: 'n@example.com',
+      captcha: '',
     })
   })
 

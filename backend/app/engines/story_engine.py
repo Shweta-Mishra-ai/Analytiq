@@ -59,12 +59,47 @@ DOMAIN_KEYWORDS = {
 }
 
 
+# Words only a workforce file has. "tenure", "satisfaction", "performance"
+# and "left" describe customers just as well: a customer-churn file
+# (tenure_months, support_tickets, plan, churned) was reported as "1,020 of
+# 3,000 employees left", against an HR attrition planning band.
+_WORKFORCE_WORDS = {"employee", "employees", "emp", "staff", "salary", "salaries",
+                    "department", "dept", "attrition", "hire", "hired", "hiring",
+                    "job", "jobrole", "manager", "bonus", "promotion", "headcount",
+                    "workforce", "payroll", "designation", "overtime", "appraisal",
+                    "ctc", "grade", "joining"}
+_CUSTOMER_CHURN_WORDS = {"churn", "churned", "churning", "subscriber", "subscribers",
+                         "subscription", "customer", "customers", "client",
+                         "clients", "cancelled", "canceled", "cancellation", "plan",
+                         "renewal", "renewed", "account", "accounts", "member"}
+
+
+def _column_words(df: pd.DataFrame) -> set:
+    from app.engines.data_loader import _name_words
+    out = set()
+    for c in df.columns:
+        out |= _name_words(c)
+    return out
+
+
+def _has_keyword(words: set, kw: str) -> bool:
+    """A column-name word is the keyword, starts with it ("employees",
+    "clicks"), or, for longer keywords, contains it ("totalsales",
+    "unitprice"). Short keywords inside other words ("left" in "leftover",
+    "hire" in "shire") no longer count."""
+    return any(w == kw or w.startswith(kw) or (len(kw) >= 5 and kw in w) for w in words)
+
+
 def detect_domain(df: pd.DataFrame) -> Tuple[str, float]:
-    col_text = " ".join(df.columns.str.lower().tolist())
-    scores   = {}
+    words = _column_words(df)
+    scores = {}
     for domain, keywords in DOMAIN_KEYWORDS.items():
-        hits = sum(1 for kw in keywords if kw in col_text)
+        hits = sum(1 for kw in keywords if _has_keyword(words, kw))
         scores[domain] = hits / len(keywords)
+    workforce = any(_has_keyword(words, w) for w in _WORKFORCE_WORDS if len(w) >= 4) \
+        or bool(words & _WORKFORCE_WORDS)
+    if not workforce:
+        scores["hr"] = 0.0
     best  = max(scores, key=scores.get)
     score = scores[best]
     return (best, round(score, 2)) if score > 0.04 else ("general", 0.0)
@@ -332,6 +367,15 @@ def generate_story(df: pd.DataFrame) -> StoryReport:
         raw = _insights_marketing(df, all_stats, corrs)
     else:
         raw = _insights_general(df, all_stats, corrs)
+
+    # Customers leaving, in any file that is not a workforce one: a churn
+    # column used to be read only by the HR engine, in words about staff.
+    if domain != "hr":
+        from app.engines.domains.customer_analytics import customer_churn
+        for key in ("findings", "risks", "opportunities", "insights"):
+            raw.setdefault(key, [])
+        customer_churn(df, raw["insights"], raw["findings"], raw["risks"],
+                       raw["opportunities"])
 
     # A month that breaks from the ones before it matters whatever the data
     # is about; the general engine runs this check itself.

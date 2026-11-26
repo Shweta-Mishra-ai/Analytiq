@@ -131,7 +131,12 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
     # ── Segment-difference insight — works on ANY dataset ────────────────
     # Best categorical × numeric pair, tested with Kruskal-Wallis so the
     # report can say "segment X outperforms Y" with a defensible p-value.
-    seg, mixed = _best_segment_difference(df, num_cols)
+    # Not split by a churn column: "'Churn' segments differ on tenure"
+    # restated the churn analysis as a puzzle about which end is better.
+    from app.engines.domains.customer_analytics import find_churn_col
+    outcome = find_churn_col(df)
+    seg, mixed = _best_segment_difference(
+        df.drop(columns=[outcome]) if outcome else df, num_cols)
     if mixed:
         mixed = {**mixed, "lo_txt": _num(mixed["lo"]), "hi_txt": _num(mixed["hi"])}
         insights.append(build_insight(
@@ -163,15 +168,22 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
                     "{k} groups, n={n:,}. "
                     "Highest: '{hi_seg}' (median {hi_txt}) | Lowest: '{lo_seg}' "
                     "(median {lo_txt}).".format(**seg))
+        from app.engines.scorecard import _is_spending
+        spending = _is_spending(df, seg["num"])
         if mix:
             # Product groups differ in what they sell for. Headlined as
             # "segments differ significantly", it read as a performance gap.
             insights.append(build_insight(
-                title="'{num}' per record differs by '{cat}' (price mix)".format(**seg),
+                title=("'{num}' per record differs by '{cat}' (spending mix)" if spending
+                       else "'{num}' per record differs by '{cat}' (price mix)").format(**seg),
                 problem=("Median '{num}' ranges from {lo_txt} in '{lo_seg}' to {hi_txt} "
                          "in '{hi_seg}' across '{cat}' groups.".format(**seg)),
-                cause="Between product groups this mostly reflects what each sells for, "
-                      "not how well it performs.",
+                # Expense categories do not "sell for" anything: the price-mix
+                # sentence read oddly on a budget file.
+                cause=("Between spending categories this mostly reflects what each one "
+                       "pays for, not how well it is managed." if spending else
+                       "Between product groups this mostly reflects what each sells for, "
+                       "not how well it performs."),
                 evidence=evidence,
                 action=("Compare the '{cat}' groups on margin, volume or growth rather "
                         "than on value per record.".format(**seg)),
@@ -202,9 +214,13 @@ def _insights_general(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
             # Supplies' trails on sales" was a price difference reported as
             # an underperformance risk.
             findings.append(
-                "Median '{num}' per record differs across '{cat}' ({lo_txt} in "
-                "'{lo_seg}' to {hi_txt} in '{hi_seg}'); between product groups this "
-                "mostly reflects what each sells for, not how well it performs."
+                ("Median '{num}' per record differs across '{cat}' ({lo_txt} in "
+                 "'{lo_seg}' to {hi_txt} in '{hi_seg}'); between spending categories this "
+                 "mostly reflects what each one pays for, not how well it is managed."
+                 if spending else
+                 "Median '{num}' per record differs across '{cat}' ({lo_txt} in "
+                 "'{lo_seg}' to {hi_txt} in '{hi_seg}'); between product groups this "
+                 "mostly reflects what each sells for, not how well it performs.")
                 .format(**seg))
         elif direction:
             weak, strong = ((seg["lo_seg"], seg["hi_seg"]) if direction > 0

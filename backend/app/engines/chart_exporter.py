@@ -397,7 +397,11 @@ def _trend(df, T, metric, date_col) -> Optional[ReportChart]:
     keep = monthly.index
     if len(keep) and first.day > 3:
         keep = keep[1:]
-    if len(keep) and last.day < 25:
+    # The same rule as the scorecard: a last month missing more than three
+    # days is cut. "Before the 25th" kept a month ending on the 26th, four
+    # days short, and a chart title read "-28% in Nov" beside a scorecard
+    # that had rightly stopped at October.
+    if len(keep) and ((last + pd.offsets.MonthEnd(0)).normalize() - last.normalize()).days > 3:
         keep = keep[:-1]
     monthly = monthly.loc[keep]
     monthly = monthly[days.loc[keep] > 0]

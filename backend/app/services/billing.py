@@ -478,7 +478,38 @@ class UpiQueue:
             self._save()
         logger.info("UPI payment reported by %s: %s credits, UTR ending %s",
                     username, p["credits"], utr[-4:])
+        _notify_admin(item)
         return dict(item)
+
+    def match_statement(self, rows: list[list[str]]) -> dict:
+        """Approve every pending payment whose UTR appears in a statement
+        row together with its exact amount. A UTR in the wrong amount's row
+        is left for a person: it may be a different payment."""
+        import re
+        from app.engines.data_loader import decorated_numbers
+        import pandas as pd
+        found: dict[str, set] = {}
+        for row in rows:
+            cells = [str(c) for c in row if c is not None and str(c).strip() not in ("", "nan")]
+            text = " ".join(cells)
+            utrs = set(re.findall(r"(?<!\d)\d{12}(?!\d)", text))
+            if not utrs:
+                continue
+            nums = decorated_numbers(pd.Series(cells)).dropna()
+            amounts = {int(round(float(v) * 100)) for v in nums if 0 < abs(float(v)) < 1e9}
+            for u in utrs:
+                found.setdefault(u, set()).update(amounts)
+        approved, wrong_amount = [], []
+        for item in self.pending():
+            amounts = found.get(item["utr"])
+            if amounts is None:
+                continue
+            if item["amount"] in amounts:
+                approved.append(self.decide(item["id"], True, "matched in bank statement"))
+            else:
+                wrong_amount.append(item)
+        return {"approved": approved, "wrong_amount": wrong_amount,
+                "still_pending": self.pending()}
 
     def for_user(self, username: str) -> list:
         with self._lock:
@@ -509,6 +540,25 @@ class UpiQueue:
 
 
 upi_queue = UpiQueue()
+
+
+def _notify_admin(item: dict) -> None:
+    """Tell the operator a UPI payment is waiting, so it is not left for
+    days: by email to SUPPORT_EMAIL and by ALERT_WEBHOOK_URL, when set.
+    Never fails the buyer's request."""
+    text = ("UPI payment to check: {} reports Rs {:,.2f} for {} credits, UTR {}. "
+            "Approve or reject it on /admin.").format(
+                item["user"], item["amount"] / 100, item["credits"], item["utr"])
+    try:
+        from app.services import emails
+        if emails.enabled() and config.support_email:
+            emails.send(config.support_email, "UPI payment to check", text)
+    except Exception:
+        logger.warning("UPI notification email not sent", exc_info=True)
+    if config.alert_webhook_url:
+        import threading as _t
+        from app.services.alerts import _post
+        _t.Thread(target=_post, args=(config.alert_webhook_url, text), daemon=True).start()
 
 
 def upi_link(p: dict) -> str:

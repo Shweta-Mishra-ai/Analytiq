@@ -351,7 +351,10 @@ def test_the_result_opens_with_a_plain_answer(client, hr_csv_bytes):
     ds = client.post("/api/datasets/upload",
                      files={"file": ("hr.csv", _io.BytesIO(hr_csv_bytes), "text/csv")}).json()["meta"]["dataset_id"]
     body = client.post(f"/api/ml/{ds}/train", json={"target": "salary"}).json()
-    assert body["summary"].startswith(("Yes", "No"))
+    # A verdict that stands on its own (the PDF and the Claude connector
+    # print it without the question the app shows above it).
+    assert body["summary"].startswith("'salary' can") or \
+        body["summary"].startswith("'salary' cannot"), body["summary"]
     assert not any("target (" in w for w in body["warnings"])     # the task reason is not a warning
 
 

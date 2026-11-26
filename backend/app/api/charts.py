@@ -117,8 +117,10 @@ def kpis(ds_id: str, body: FiltersBody, owner: str = Depends(current_owner)):
     return {"kpis": to_jsonable(cards)}
 
 
-_CARD_ORDER = ("Revenue", "Profit", "Profit margin", "Orders", "Records",
-               "Average order value", "Revenue per record", "Average discount",
+_CARD_ORDER = ("Revenue", "Deal value", "Spend", "Profit", "Profit margin", "Orders", "Records",
+               "Average order value", "Revenue per record", "Deal value per record",
+               "Spend per record",
+               "Average discount",
                "Customers", "Units")
 _UP_IS_BAD = {"Average discount"}
 

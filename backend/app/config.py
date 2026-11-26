@@ -113,6 +113,14 @@ class AppConfig(BaseSettings):
     # JSON overriding what an action costs, e.g. {"pdf_report": 3, "chat": 1}.
     # Actions: pdf_report, health_report, ml_train, chat, kb_report.
     credit_costs: str = Field(default="", alias="CREDIT_COSTS")
+    # Free credits a day shared by every account that signed up from one
+    # network (/24): opening more accounts from one place gains nothing.
+    # 0 turns the pool off. Accounts an admin made are not counted.
+    free_credits_per_network: int = Field(default=30, alias="FREE_CREDITS_PER_NETWORK")
+    # Cloudflare Turnstile on the sign-up form (free; dash.cloudflare.com):
+    # stops scripts creating accounts. Both keys switch it on.
+    turnstile_site_key: str = Field(default="", alias="TURNSTILE_SITE_KEY")
+    turnstile_secret: str = Field(default="", alias="TURNSTILE_SECRET")
     # Comma-separated usernames that are never charged (e.g. your own).
     free_users: str = Field(default="", alias="FREE_USERS")
     # JSON list of packs; prices in the smallest unit (paise, cents).

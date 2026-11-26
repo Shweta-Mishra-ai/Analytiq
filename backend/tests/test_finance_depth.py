@@ -319,3 +319,52 @@ def test_finance_findings_all_carry_a_number(known_cost_structure):
     out = _insights_finance(known_cost_structure, {}, [])
     for f in out["findings"]:
         assert re.search(r"\d", f), "finding states no figure: {!r}".format(f)
+
+
+def _expenses(overspend=1.3, seed=11, n=1800):
+    rng = np.random.default_rng(seed)
+    cat = rng.choice(["Travel", "Software", "Office", "Marketing", "Salaries"], n,
+                     p=[.15, .15, .2, .2, .3])
+    amt = np.select([cat == "Salaries", cat == "Software"],
+                    [rng.normal(60000, 5000, n), rng.normal(8000, 2000, n)], rng.gamma(2, 2500, n))
+    dates = pd.to_datetime("2025-04-01") + pd.to_timedelta(rng.integers(0, 365, n), unit="D")
+    budget = amt * rng.normal(1.0, 0.1, n)
+    late = (cat == "Marketing") & (dates >= "2026-01-01")
+    amt = np.where(late, amt * overspend, amt)
+    return pd.DataFrame({"txn_date": dates, "category": cat,
+                         "vendor": rng.choice([f"V{i}" for i in range(40)], n),
+                         "amount": amt.round(2), "budget": budget.round(2)})
+
+
+def test_a_category_drifting_over_budget_is_found_and_named():
+    """'amount' beside 'budget' had no variance analysis (only a column named
+    'actual' was used), and a 30% marketing overrun went unreported."""
+    from app.engines.story_engine import generate_story
+    s = generate_story(_expenses())
+    text = " ".join(s.business_risks + [i.title for i in s.top_insights])
+    assert "'Marketing' overspending since Jan 2026" in text, text
+    assert "Salaries" not in " ".join(s.business_risks)
+
+
+def test_no_drift_reported_when_spending_tracks_budget():
+    from app.engines.story_engine import generate_story
+    s = generate_story(_expenses(overspend=1.0))
+    assert not any("overspending since" in i.title for i in s.top_insights)
+
+
+def test_an_expense_file_is_spend_not_revenue():
+    from app.engines.scorecard import build_scorecard
+    sc = build_scorecard(_expenses())
+    assert sc.revenue_label == "Spend"
+    assert all(not m.title.startswith("Revenue") for m in sc.messages)
+
+
+def test_hindi_expense_report_is_fully_translated(client):
+    import io as _io
+    from app import i18n
+    ds = client.post("/api/datasets/upload", files={"file": (
+        "exp.csv", _io.BytesIO(_expenses().to_csv(index=False).encode()), "text/csv")}).json()["meta"]["dataset_id"]
+    i18n.misses()
+    for kind in ("pdf", "health-pdf"):
+        assert client.post(f"/api/reports/{ds}/{kind}", json={"language": "hi"}).status_code == 200
+    assert i18n.misses() == {}

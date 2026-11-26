@@ -112,6 +112,9 @@ class Scorecard:
     metrics: List[Metric] = field(default_factory=list)
     messages: List[Message] = field(default_factory=list)
     total_revenue: float = 0.0
+    # "Deal value" for a deal pipeline: its amount column counts open and
+    # lost deals too, and was reported as "Revenue fell 9.3%".
+    revenue_label: str = "Revenue"
 
     @property
     def has_comparison(self) -> bool:
@@ -195,6 +198,28 @@ def _periods(dates: pd.Series, bounds=None):
 
 # ── scorecard ────────────────────────────────────────────────────────────
 
+_REVENUE_NAME_WORDS = {"revenue", "sales", "sale", "income", "turnover", "gmv", "billing",
+                       "billed", "receipts"}
+_SPEND_CONTEXT = {"budget", "vendor", "vendors", "supplier", "suppliers", "payee", "expense",
+                  "expenses", "expenditure", "spend", "spent", "cost", "costs", "ledger",
+                  "gl", "invoice"}
+_SALE_CONTEXT = {"customer", "customers", "client", "order", "orders", "product", "products",
+                 "sku", "quantity", "qty", "units", "price", "discount"}
+
+
+def _is_spending(df: pd.DataFrame, money_col: str) -> bool:
+    """Money going out rather than coming in: an 'amount' beside a budget,
+    vendor or expense account, with nothing that says sale. An expense file
+    was reported as "Revenue grew 9.2%"."""
+    from app.engines.data_loader import _name_words
+    if _name_words(money_col) & _REVENUE_NAME_WORDS:
+        return False
+    words = set()
+    for c in df.columns:
+        words |= _name_words(c)
+    return bool(words & _SPEND_CONTEXT) and not (words & _SALE_CONTEXT)
+
+
 def build_scorecard(df: pd.DataFrame, bounds=None) -> Scorecard:
     """The scorecard of `df`. `bounds` (from period_bounds on the whole
     dataset) fixes the comparison periods for a filtered view."""
@@ -203,6 +228,16 @@ def build_scorecard(df: pd.DataFrame, bounds=None) -> Scorecard:
     if rev is None:
         return sc
     sc.revenue_col = rev
+    try:
+        from app.engines.domains.pipeline import detect_columns
+        pc = detect_columns(df)
+        if pc.usable and pc.amount == rev:
+            sc.revenue_label = "Deal value"
+    except Exception:
+        logger.debug("pipeline check for the scorecard failed", exc_info=True)
+    if sc.revenue_label == "Revenue" and _is_spending(df, rev):
+        sc.revenue_label = "Spend"
+    label = sc.revenue_label
     profit = _measure(df, _PROFIT, exclude=("pct", "percent", "rate", "ratio", "margin"))
     sc.profit_col = profit
     qty = _measure(df, _QTY, exclude=("price",))
@@ -225,7 +260,7 @@ def build_scorecard(df: pd.DataFrame, bounds=None) -> Scorecard:
 
     def figures(part: pd.DataFrame) -> dict:
         r = float(part[rev].sum())
-        out = {"Revenue": ("money", r)}
+        out = {label: ("money", r)}
         if profit:
             p = float(part[profit].sum())
             out["Profit"] = ("money", p)
@@ -236,7 +271,7 @@ def build_scorecard(df: pd.DataFrame, bounds=None) -> Scorecard:
         n_orders = part.loc[~part["_cancel"], order].nunique() if order else len(part)
         out["Orders" if order else "Records"] = ("count", float(n_orders))
         if n_orders:
-            out["Average order value" if order else "Revenue per record"] = (
+            out["Average order value" if order else label + " per record"] = (
                 "money", r / n_orders)
         if customer:
             out["Customers"] = ("count", float(
@@ -291,7 +326,7 @@ def _messages(sc, data, rev, profit, disc, customer, periods):
     by = {m.label: m for m in sc.metrics}
 
     # 1. Growth against the prior period, with the margin beside it.
-    r = by.get("Revenue")
+    r = by.get(sc.revenue_label)
     if r and r.change is not None:
         up = r.change >= 0
         detail = "{} against {} in the {}.".format(fmt(r.value), fmt(r.prior), sc.prior_period)
@@ -310,8 +345,8 @@ def _messages(sc, data, rev, profit, disc, customer, periods):
         if drivers:
             detail += " " + drivers
         sc.messages.append(Message(
-            title="Revenue {} {:.1f}% to {} in the {}".format(
-                "grew" if up else "fell", abs(r.change), fmt(r.value), sc.period),
+            title="{} {} {:.1f}% to {} in the {}".format(
+                sc.revenue_label, "grew" if up else "fell", abs(r.change), fmt(r.value), sc.period),
             detail=detail,
             action=("Confirm which segments carried the change before setting next year's "
                     "targets on it." if up else

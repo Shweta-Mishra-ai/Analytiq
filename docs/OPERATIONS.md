@@ -57,6 +57,21 @@ Anyone can also create their own account at the sign-in screen
 (`SIGNUP_ENABLED`, on by default; at most 5 new accounts an hour from one
 address). Set `SIGNUP_ENABLED=0` to create every account yourself.
 
+Keeping free credits for real people:
+
+- **Email confirmation** (with email set up, below): free credits start only
+  once the address is confirmed; one mailbox, one account; throwaway inboxes
+  refused.
+- **Robot check**: set `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET` (free, from
+  Cloudflare: dash.cloudflare.com → Turnstile → add a widget for your domain)
+  and the sign-up form asks for it. Scripts cannot open accounts.
+- **One pool per network**: accounts that signed up from the same network
+  share `FREE_CREDITS_PER_NETWORK` (30) free credits a day, so opening more
+  accounts from one place gains nothing. An office whose staff all sign up
+  from one connection shares the pool too; raise it, or give those accounts
+  credits on `/admin`. Accounts you create, and bought credits, are never in
+  a pool.
+
 ## Credits and payments
 
 Every account gets `FREE_DAILY_CREDITS` (5) free credits a day, renewed at
@@ -106,6 +121,13 @@ After paying, the buyer enters the 12-digit UPI reference (UTR). It waits
 under **UPI payments to check** on `/admin`: find the reference and amount
 in your bank or UPI app, then **Approve** (credits and an invoice are issued)
 or **Reject** with a reason the buyer sees. A reference can be used once.
+
+Faster: download your bank or UPI app's statement (CSV or Excel) and use
+**Match bank statement** on `/admin`. Every waiting payment whose 12-digit
+reference appears in the statement with the same amount is approved at once;
+a reference found with a different amount is left for you, as it may be
+another payment. You are told of each reported payment by email to
+`SUPPORT_EMAIL` and at `ALERT_WEBHOOK_URL`, when those are set.
 
 ### Invoices
 
@@ -225,5 +247,25 @@ with their reference, path, duration and client.
 - Copying backups off the server: schedule the `curl` above somewhere else.
 - Without SMTP settings, no email is sent: sign-ups get free credits
   without confirming, and an admin resets lost passwords on `/admin`.
-- More than one server process: the queue, rate limit and login throttle are
-  per process, and data is on one disk.
+- More than one server process: the queue, rate limit, login throttle and
+  dataset cache are per process, and data is on one disk. See "Growing" below.
+
+## Growing
+
+One server is the right size until the measurements below say otherwise.
+Measured on this app: 12 clients each generating reports at the same time,
+with a 520,000-row file in the mix, peaked at 1.3 GB of memory with no
+errors; the slowest report then took 59 s because `MAX_HEAVY_JOBS` (2) let
+two run at once and the rest queued.
+
+In order, as clients grow:
+
+1. **Watch `/admin`**: memory, heavy jobs waiting, disk free.
+2. **Bigger instance, more parallel jobs**: with 4 GB and 2 CPUs set
+   `MAX_HEAVY_JOBS=4`; with 8 GB and 4 CPUs, 8. This is a settings change.
+3. **More than one server** needs a shared database for accounts and credits
+   (Postgres), shared file storage for datasets (an S3-style bucket) and a
+   shared store for rate limits (Redis). That is a project of its own, worth
+   starting when one large instance is regularly busy, not before: until
+   then it adds monthly cost and moving parts without serving anyone
+   faster.

@@ -230,3 +230,27 @@ def test_high_risk_profile_names_the_riskiest_group_not_the_largest():
     assert res is not None and res.high_risk_profile
     assert "Engineering" not in res.high_risk_profile, res.high_risk_profile
     assert "Overtime = 'Yes'" in res.high_risk_profile, res.high_risk_profile
+
+
+def test_measures_named_index_or_number_are_not_identifiers():
+    """'Price Index' and 'Number of Employees' were identifiers by name and
+    were left out of every statistic and model."""
+    from app.engines.domains.base import is_id_column
+    rng = np.random.default_rng(0)
+    assert not is_id_column("price_index", pd.Series(rng.normal(size=200)))
+    assert not is_id_column("Number of Employees", pd.Series(rng.integers(1, 50, 200)))
+    assert not is_id_column("No of Visits", pd.Series(rng.integers(0, 9, 200)))
+    assert not is_id_column("Key Account", pd.Series(rng.choice(["Yes", "No"], 200)))
+    assert is_id_column("Invoice No", pd.Series(np.arange(1000, 1200)))
+    assert is_id_column("Product Code", pd.Series([f"P{i % 30}" for i in range(200)]))
+    assert is_id_column("customer_id", pd.Series(rng.integers(0, 50, 200)))
+
+
+def test_a_model_keeps_a_driver_named_index():
+    from app.engines.ml_engine import run_ml_pipeline
+    rng = np.random.default_rng(1)
+    n = 800
+    df = pd.DataFrame({"ad_spend": rng.normal(50, 10, n), "price_index": rng.normal(0, 1, n)})
+    df["revenue"] = 3 * df["ad_spend"] + 8 * df["price_index"] + rng.normal(0, 3, n)
+    rep = run_ml_pipeline(df, "revenue")
+    assert "price_index" in rep.feature_cols

@@ -116,6 +116,29 @@ class CreditStore:
             a["free_day"], a["free_used"] = _today(), 0
         return a
 
+    def _net_left(self, a: dict) -> Optional[int]:
+        """Free credits left today in the pool of the network this account
+        signed up from; None when it is not in one."""
+        cap = config.free_credits_per_network
+        net = a.get("net")
+        if not net or cap <= 0:
+            return None
+        day = self._data.setdefault("nets", {})
+        if day.get("day") != _today():
+            self._data["nets"] = day = {"day": _today(), "used": {}}
+        return max(0, cap - int(day["used"].get(net, 0)))
+
+    def _net_take(self, a: dict, n: int) -> None:
+        if a.get("net") and self._net_left(a) is not None:
+            used = self._data["nets"]["used"]
+            used[a["net"]] = max(0, int(used.get(a["net"], 0)) + n)
+
+    def set_network(self, username: str, network: str) -> None:
+        """Record where a self-service account was opened (at sign-up)."""
+        with self._lock:
+            self._acct(username)["net"] = network
+            self._save()
+
     # ── reading ─────────────────────────────────────────
     def is_unlimited(self, username: str, is_admin: bool = False) -> bool:
         from app.services.auth import LOCAL_OWNER
@@ -148,7 +171,12 @@ class CreditStore:
         with self._lock:
             a = self._acct(username)
             free_left = max(0, allowance - a["free_used"])
+            net_left = self._net_left(a)
+            network_limited = net_left is not None and net_left < free_left
+            if network_limited:
+                free_left = net_left
             return {"unlimited": unlimited, "free_left": free_left,
+                    "network_limited": network_limited,
                     "free_daily": allowance, "needs_verification":
                         allowance == 0 and config.free_daily_credits > 0,
                     "paid": int(a["paid"]),
@@ -179,6 +207,14 @@ class CreditStore:
         with self._lock:
             a = self._acct(username)
             free_left = max(0, allowance - a["free_used"])
+            net_left = self._net_left(a)
+            if net_left is not None and net_left < free_left:
+                free_left = net_left
+                if free_left + a["paid"] < cost:
+                    raise HTTPException(
+                        402, "Today's free credits for accounts on your network are "
+                             "used up. They renew tomorrow, or buy credits on the "
+                             "Billing page.")
             if free_left + a["paid"] < cost:
                 if allowance == 0 and config.free_daily_credits > 0 and not a["paid"]:
                     raise HTTPException(
@@ -190,6 +226,7 @@ class CreditStore:
             from_free = min(free_left, cost)
             from_paid = cost - from_free
             a["free_used"] += from_free
+            self._net_take(a, from_free)
             a["paid"] -= from_paid
             self._save()
             self._log(username, -cost, "spend", ACTIONS.get(action, action))
@@ -203,6 +240,7 @@ class CreditStore:
             # Free credits come back only on the day they were taken from.
             if taken.get("day") == a["free_day"]:
                 a["free_used"] = max(0, a["free_used"] - taken["free"])
+                self._net_take(a, -taken["free"])
             a["paid"] += taken["paid"]
             self._save()
             self._log(username, taken["free"] + taken["paid"], "refund",

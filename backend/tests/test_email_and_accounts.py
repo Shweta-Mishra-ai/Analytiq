@@ -169,3 +169,51 @@ def test_a_purchase_emails_the_receipt_as_a_pdf(client, mail, tmp_path):
         assert files and files[0].get_content()[:4] == b"%PDF"
     finally:
         invoice_book.open()
+
+
+# ── farming: one network, one daily pool; robots kept out ───────────────
+
+def test_accounts_from_one_network_share_one_free_pool(client, mail, monkeypatch):
+    outbox, names = mail
+    monkeypatch.setattr(config, "smtp_host", "")          # no verification step
+    monkeypatch.setattr(config, "free_credits_per_network", 8)
+    toks = []
+    for i in range(3):
+        r = _signup(client, names, f"farm{i}", "")
+        toks.append({"Authorization": "Bearer " + r.json()["token"]})
+    from app.services.credits import credit_store as cs
+    for _ in range(4):
+        cs.spend("farm0", "chat")                            # 4 of the pool
+    cs.spend("farm1", "chat")
+    for _ in range(3):
+        cs.spend("farm1", "chat")                            # pool now 8 of 8
+    bal = client.get("/api/account", headers=toks[2]).json()["credits"]
+    assert bal["free_left"] == 0 and bal["network_limited"]
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        cs.spend("farm2", "chat")
+    assert e.value.status_code == 402 and "network" in e.value.detail
+    # Bought credits are not limited by the pool.
+    cs.grant("farm2", 3, "test")
+    cs.spend("farm2", "chat")
+    # Accounts an admin made are not in any pool.
+    names.append("admin_made")
+    user_store.create("admin_made", PASSWORD)
+    assert cs.balance("admin_made")["free_left"] == 5
+
+
+def test_signup_needs_the_robot_check_when_it_is_on(client, mail, monkeypatch):
+    outbox, names = mail
+    from app.services import captcha
+    monkeypatch.setattr(config, "smtp_host", "")
+    monkeypatch.setattr(config, "turnstile_site_key", "site")
+    monkeypatch.setattr(config, "turnstile_secret", "secret")
+    seen = []
+    monkeypatch.setattr(captcha, "_post", lambda d: seen.append(d) or {"success": d["response"] == "good"})
+    assert client.get("/api/health").json()["turnstile_site_key"] == "site"
+    assert _signup(client, names, "robot1", "").status_code == 400
+    bad = client.post("/api/auth/signup", json={"username": "robot2", "password": PASSWORD, "captcha": "bad"})
+    assert bad.status_code == 400
+    names.append("human1")
+    ok = client.post("/api/auth/signup", json={"username": "human1", "password": PASSWORD, "captcha": "good"})
+    assert ok.status_code == 200 and seen[-1]["secret"] == "secret"

@@ -99,12 +99,12 @@ export default function AdminPage() {
     if (key) load(key)
   }, [key, load])
 
-  const act = async (fn: () => Promise<unknown>, ok: string) => {
+  const act = async <T,>(fn: () => Promise<T>, ok: string | ((result: T) => string)) => {
     setError('')
     setNote('')
     try {
-      await fn()
-      setNote(ok)
+      const result = await fn()
+      setNote(typeof ok === 'function' ? ok(result) : ok)
       await load(key)
     } catch (e) {
       setError((e as Error).message)
@@ -231,9 +231,43 @@ export default function AdminPage() {
 
       {upi.length > 0 && (
         <div className="rounded-xl border border-amber/40 bg-panel p-4" data-testid="upi-queue">
-          <h2 className="text-sm font-bold text-ink">UPI payments to check ({upi.length})</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-bold text-ink">UPI payments to check ({upi.length})</h2>
+            <label className={`${btn} cursor-pointer`}>
+              Match bank statement (CSV / Excel)
+              <input
+                type="file"
+                accept=".csv,.xlsx,.xls,.tsv,.txt"
+                className="hidden"
+                data-testid="statement-file"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  e.target.value = ''
+                  if (!f) return
+                  act(async () => {
+                    const form = new FormData()
+                    form.append('file', f)
+                    const res = await fetch('/api/admin/upi-payments/statement', {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${key}` },
+                      body: form,
+                    })
+                    const body = await res.json()
+                    if (!res.ok) throw new Error(String(body.detail ?? res.statusText))
+                    return body as { approved: unknown[]; wrong_amount: unknown[] }
+                  }, (body) =>
+                    `${body.approved.length} payment(s) found in the statement and approved.` +
+                    (body.wrong_amount.length
+                      ? ` ${body.wrong_amount.length} had the right reference but a different amount: check them by hand.`
+                      : ''),
+                  )
+                }}
+              />
+            </label>
+          </div>
           <p className="mt-1 text-xs text-mute">
-            Find each reference (UTR) and amount in your bank or UPI app before approving.
+            Upload your bank or UPI-app statement to approve every payment whose reference (UTR)
+            and amount it shows, or find each one yourself before approving.
           </p>
           <table className="mt-3 w-full text-left text-xs">
             <thead className="text-[10px] uppercase text-mute">

@@ -106,3 +106,15 @@ def test_charts_are_drawn_in_the_report_colours(domain):
     px = np.asarray(Image.open(io.BytesIO(chart.png)).convert("RGB")).reshape(-1, 3)
     share = (np.abs(px.astype(int) - target).sum(axis=1) < 30).mean()
     assert share > 0.03, f"accent {accent} covers only {share:.1%} of the chart"
+
+
+def test_a_month_four_days_short_is_not_charted():
+    """Data ending 26 Nov: the chart drew November as a whole month and its
+    title reported a fall that was four missing days."""
+    import numpy as np
+    import pandas as pd
+    from app.engines.domains.general_depth import _complete_months
+    days = pd.date_range("2025-01-01", "2025-11-26", freq="D")
+    df = pd.DataFrame({"created": days, "amount": np.full(len(days), 100.0)})
+    monthly, _ = _complete_months(df, "amount", "created")
+    assert monthly.index[-1].month == 10

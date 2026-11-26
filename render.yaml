@@ -60,6 +60,10 @@ services:
         sync: false        # direct UPI transfers, approved on /admin
       - key: GSTIN
         sync: false        # with it, tax invoices; confirm the setup with your CA
+      - key: TURNSTILE_SITE_KEY
+        sync: false        # robot check on sign-up (Cloudflare, free)
+      - key: TURNSTILE_SECRET
+        sync: false
       - key: DATA_DIR
         value: /srv/data
     disk:

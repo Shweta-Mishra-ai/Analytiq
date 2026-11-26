@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from pydantic import BaseModel
 
 from app.config import config
@@ -189,6 +189,36 @@ def upi_payments():
 class UpiDecision(BaseModel):
     approve: bool
     note: str = ""
+
+
+@admin_router.post("/upi-payments/statement")
+async def match_upi_statement(file: UploadFile = File(...)):
+    """Approve the UPI payments found in a bank or UPI-app statement
+    (CSV or Excel): same UTR and same amount."""
+    from fastapi import HTTPException
+    from starlette.concurrency import run_in_threadpool
+    data = await file.read()
+    if len(data) > 10 * 2**20:
+        raise HTTPException(413, "A statement larger than 10 MB is not expected.")
+
+    def _rows():
+        from app.api.datasets import _UploadShim
+        from app.engines.data_loader import load_file
+        res = load_file(_UploadShim(file.filename or "statement.csv", data))
+        if not res.success:
+            raise HTTPException(422, "The statement could not be read: {}".format(res.error))
+        df = res.df.astype(str)
+        # The header row too: a statement's first line is sometimes a payment.
+        return [list(df.columns)] + df.values.tolist()
+
+    rows = await run_in_threadpool(_rows)
+    out = await run_in_threadpool(billing.upi_queue.match_statement, rows)
+    logger.info("UPI statement matched: %d approved, %d wrong amount",
+                len(out["approved"]), len(out["wrong_amount"]))
+    return out
+
+
+# Before "/upi-payments/{item_id}", which would take "statement" as an id.
 
 
 @admin_router.post("/upi-payments/{item_id}")

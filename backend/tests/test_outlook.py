@@ -158,3 +158,43 @@ def test_hindi_reports_with_the_outlook_are_fully_translated(client):
         for kind in ("pdf", "health-pdf"):
             assert client.post(f"/api/reports/{ds}/{kind}", json={"language": "hi"}).status_code == 200
         assert i18n.misses() == {}
+
+
+def test_a_growing_seasonal_business_is_forecast_within_its_range():
+    """Three years of 1.5%-a-month growth with a December peak 40% above
+    the year's level. Only an additive season was fitted, and the next
+    quarter came out 10-16% too high, none of it inside the stated range.
+    Checked on the months after the data, not on the backtest."""
+    import numpy as np
+    import pandas as pd
+    from app.engines.forecast import forecast
+    rng = np.random.default_rng(1)
+    months = pd.date_range("2022-01-01", periods=39, freq="MS")
+    season = np.array([0.85, 0.8, 0.95, 1.0, 1.05, 1.0, 0.95, 1.0, 1.05, 1.1, 1.25, 1.4])
+    totals = 1_000_000 * 1.015 ** np.arange(39) * season[months.month - 1] * rng.normal(1, 0.03, 39)
+    rows = []
+    for m, total in zip(months[:36], totals[:36]):
+        for k in range(30):
+            rows.append({"order_date": m + pd.Timedelta(days=k % m.days_in_month),
+                         "sales": total / 30})
+    f = forecast(pd.DataFrame(rows))
+    assert f is not None
+    for point, actual in zip(f.points, totals[36:]):
+        assert abs(point.value / actual - 1) < 0.06, (f.method, point.value, actual)
+        assert point.low <= actual <= point.high, (f.method, point.low, actual, point.high)
+
+
+def test_a_forecast_range_is_never_zero_width_on_a_short_history():
+    """Twelve months of history leave two test months: the range came out
+    '3.3M to 3.3M' and the text still claimed 8 in 10 fell inside it."""
+    import numpy as np
+    import pandas as pd
+    from app.engines.forecast import forecast
+    rng = np.random.default_rng(2)
+    days = pd.date_range("2025-04-01", "2026-03-31", freq="D")
+    df = pd.DataFrame({"date": days, "amount": rng.gamma(2, 50000, len(days))})
+    f = forecast(df)
+    assert f is not None
+    for p in f.points:
+        assert p.high > p.low * 1.05, (p.low, p.high)
+    assert "8 in 10" not in " ".join(f.sentences)

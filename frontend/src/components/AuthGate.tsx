@@ -3,13 +3,52 @@
  * key set, or at least one client account exists). Open mode (fresh
  * install, zero setup) passes through untouched.
  */
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Database, Lock, Mail, User } from 'lucide-react'
 import { ApiError, apiGet, apiPost, getToken, setToken } from '../api/client'
 import { useApp } from '../store/app'
 
 type Status = 'checking' | 'open' | 'locked' | 'authed'
+
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (el: HTMLElement, opts: Record<string, unknown>) => string
+      reset: (id?: string) => void
+    }
+  }
+}
+
+/** Cloudflare Turnstile, shown on the sign-up form when the server has it
+ *  switched on. Calls back with a token to send with the sign-up. */
+function RobotCheck({ siteKey, onToken }: { siteKey: string; onToken: (t: string) => void }) {
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    let cancelled = false
+    const draw = () => {
+      if (!cancelled && box.current && window.turnstile && !box.current.hasChildNodes())
+        window.turnstile.render(box.current, {
+          sitekey: siteKey,
+          theme: 'dark',
+          callback: (t: string) => onToken(t),
+          'expired-callback': () => onToken(''),
+        })
+    }
+    if (window.turnstile) draw()
+    else {
+      const s = document.createElement('script')
+      s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
+      s.async = true
+      s.onload = draw
+      document.body.appendChild(s)
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [siteKey, onToken])
+  return <div ref={box} className="mt-3" />
+}
 
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>('checking')
@@ -21,6 +60,8 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [emailOn, setEmailOn] = useState(false)
   const [emailRequired, setEmailRequired] = useState(false)
   const [info, setInfo] = useState('')
+  const [siteKey, setSiteKey] = useState('')
+  const [captcha, setCaptcha] = useState('')
   const [email, setEmail] = useState('')
   const [signupOpen, setSignupOpen] = useState(false)
 
@@ -31,7 +72,9 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         signup_enabled?: boolean
         email_enabled?: boolean
         email_required?: boolean
+        turnstile_site_key?: string
       }>('/api/health')
+      setSiteKey(h.turnstile_site_key ?? '')
       setSignupOpen(Boolean(h.signup_enabled))
       setEmailOn(Boolean(h.email_enabled))
       setEmailRequired(Boolean(h.email_required))
@@ -95,7 +138,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       try {
         const r = await apiPost<{ token: string }>(
           mode === 'signup' ? '/api/auth/signup' : '/api/auth/login',
-          mode === 'signup' ? { username, password, email } : { username, password },
+          mode === 'signup' ? { username, password, email, captcha } : { username, password },
         )
         setToken(r.token)
         setStatus('authed')
@@ -168,11 +211,17 @@ export default function AuthGate({ children }: { children: ReactNode }) {
               />
             </>
           )}
+          {mode === 'signup' && siteKey && <RobotCheck siteKey={siteKey} onToken={setCaptcha} />}
           {error && <p className="mt-2 text-xs text-rose">{error}</p>}
           {info && <p className="mt-2 text-xs text-teal">{info}</p>}
           <button
             type="submit"
-            disabled={busy || !username || (mode !== 'forgot' && !password)}
+            disabled={
+              busy ||
+              !username ||
+              (mode !== 'forgot' && !password) ||
+              (mode === 'signup' && Boolean(siteKey) && !captcha)
+            }
             className="mt-4 w-full rounded-lg bg-accent py-2 text-sm font-semibold text-white disabled:opacity-40"
           >
             {busy

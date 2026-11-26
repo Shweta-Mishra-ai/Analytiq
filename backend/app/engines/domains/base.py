@@ -49,6 +49,41 @@ def severity_display(sev: str) -> str:
 
 _ID_NAME_TOKENS = ("id", "ids", "uuid", "guid", "index", "idx", "code",
                    "ref", "reference", "key", "number", "no", "sku", "rowid")
+# Words that name an identifier and nothing else.
+_STRONG_ID_TOKENS = {"id", "ids", "uuid", "guid", "sku", "rowid"}
+# Words that also name measures: "Number of Employees", "No of Visits",
+# "Price Index", "Satisfaction Index". By name alone every one of these was
+# an identifier and left out of every statistic and model: a churn model
+# lost "Number of Support Calls", a revenue model "Price Index".
+_WEAK_ID_TOKENS = {"index", "idx", "code", "ref", "reference", "key", "number", "no"}
+
+
+def _values_look_like_ids(tokens: set, series) -> bool:
+    """For a column with an ambiguous name: do its values identify rows?
+    Text does (codes, references). Numbers do only when they are whole and
+    nearly all different (row numbers, invoice numbers); fractions and
+    counts that repeat are measures. "Number of" / "No of" is a count."""
+    import pandas as _pd
+    from app.services.dtypes import is_text_dtype
+    if series is None:
+        return True
+    if series.dropna().nunique() <= 2:
+        return False         # a yes/no flag ("Key Account") names no row
+    if is_text_dtype(series):
+        return True
+    if "of" in tokens and tokens & {"number", "no"}:
+        return False
+    if _pd.api.types.is_bool_dtype(series) or not _pd.api.types.is_numeric_dtype(series):
+        return True
+    s = _pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty:
+        return True
+    whole = bool((s == s.round()).all())
+    if not whole:
+        return False
+    if tokens & {"code", "ref", "reference"}:
+        return True          # numeric codes are labels, not quantities
+    return s.nunique() >= 0.9 * len(s)
 
 
 def is_id_column(col: str, series=None) -> bool:
@@ -67,7 +102,9 @@ def is_id_column(col: str, series=None) -> bool:
     import re as _re
     name = _re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', str(col)).lower()
     tokens = set(_re.split(r'[^a-z0-9]+', name))
-    if tokens & set(_ID_NAME_TOKENS):
+    if tokens & _STRONG_ID_TOKENS:
+        return True
+    if tokens & _WEAK_ID_TOKENS and _values_look_like_ids(tokens, series):
         return True
     # An order or invoice number named only for what it numbers ("Invoice",
     # "Order", "Receipt") is still an identifier when its values are text.

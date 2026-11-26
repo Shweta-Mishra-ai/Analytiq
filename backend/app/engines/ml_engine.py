@@ -1163,23 +1163,26 @@ def _summary(report: MLReport) -> str:
     if report.task == "classification":
         label, base = max((report.class_balance or {"": 0}).items(), key=lambda kv: kv[1])
         if report.no_signal:
-            return ("No — the other columns do not predict '{}'. On {:,} rows it had not "
-                    "seen, the model was right {:.0f}% of the time, no better than always "
+            return ("'{}' cannot be predicted from the other columns. On {:,} rows it had "
+                    "not seen, the model was right {:.0f}% of the time, no better than always "
                     "answering '{}' ({:.0f}%).".format(t, n_test, best.test_score * 100,
                                                        label, base * 100))
-        return ("Yes{} — on {:,} rows it had not seen, the model predicted '{}' correctly "
-                "{:.0f}% of the time; always answering '{}' would be right {:.0f}% of the "
-                "time.".format(", partly" if best.test_score - base < 0.15 else "", n_test, t,
-                               best.test_score * 100, label, base * 100))
+        # It used to answer an unstated question ("Yes, partly — ..."), which
+        # read as a fragment wherever the question was not printed above it.
+        return ("'{}' can be predicted{}: on {:,} rows it had not seen, the model was "
+                "right {:.0f}% of the time, where always answering '{}' would be right "
+                "{:.0f}% of the time.".format(
+                    t, ", partly" if best.test_score - base < 0.15 else "", n_test,
+                    best.test_score * 100, label, base * 100))
     typical = best.mae
     if report.no_signal:
-        return ("No — the other columns do not explain '{}'. The model's predictions are no "
-                "better than guessing its average for every row.".format(t))
+        return ("'{}' cannot be predicted from the other columns: the model's predictions "
+                "are no better than guessing its average for every row.".format(t))
     strength = ("well" if best.test_score >= 0.7 else "partly" if best.test_score >= 0.3
                 else "only a little")
-    return ("Yes, {} — the other columns explain {:.0f}% of the differences in '{}' between "
-            "rows. On {:,} rows it had not seen, its predictions were off by {} on "
-            "average.".format(strength, best.test_score * 100, t, n_test,
+    return ("'{}' can be predicted {}: the other columns explain {:.0f}% of its differences "
+            "between rows. On {:,} rows it had not seen, the predictions were off by {} on "
+            "average.".format(t, strength, best.test_score * 100, n_test,
                               _fmt_input(typical) if typical is not None else "an unknown amount"))
 
 

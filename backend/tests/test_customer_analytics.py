@@ -391,3 +391,41 @@ def test_one_small_weak_cohort_is_not_reported_as_a_decline():
     assert out["findings"], "retention should still be reported"
     assert not out["risks"] and not out["insights"], \
         "reported noise as a retention decline: {}".format(_text(out)[:300])
+
+
+# ══════════════════════════════════════════════════════════
+#  Customer churn (not employee attrition)
+# ══════════════════════════════════════════════════════════
+
+def _churn_frame(col="Churn", yes="Yes", no="No", seed=11, n=3000):
+    rng = np.random.default_rng(seed)
+    tenure = rng.exponential(24, n)
+    support = rng.poisson(2, n)
+    plan = rng.choice(["Basic", "Pro"], n, p=[.6, .4])
+    p = 1 / (1 + np.exp(-(-1.0 - 0.06 * tenure + 0.5 * support + 0.8 * (plan == "Basic"))))
+    churn = rng.random(n) < p
+    df = pd.DataFrame({"tenure_months": tenure.round(1), "support_tickets": support,
+                       "plan": plan, col: np.where(churn, yes, no)})
+    return df, churn, plan
+
+
+@pytest.mark.parametrize("col,yes,no", [("Churn", "Yes", "No"), ("Exited", 1, 0),
+                                        ("churned", "True", "False")])
+def test_a_customer_churn_file_is_about_customers_not_employees(col, yes, no):
+    from app.engines.story_engine import detect_domain, generate_story
+    df, churn, plan = _churn_frame(col, yes, no)
+    assert detect_domain(df)[0] != "hr"
+    story = generate_story(df)
+    text = " ".join(story.key_findings + story.business_risks + [story.executive_summary])
+    assert "employee" not in text.lower() and "planning band" not in text
+    assert "Churn is {:.1f}%".format(churn.mean() * 100) in text, text[:300]
+    basic = churn[plan == "Basic"].mean() * 100
+    assert "'plan' = 'Basic' churn at {:.0f}%".format(basic) in text, text
+    assert "segments differ on" not in text
+
+
+def test_a_workforce_file_is_still_hr():
+    from app.engines.story_engine import detect_domain
+    cols = ["EmployeeID", "Department", "Tenure_Years", "Overtime", "Annual_Salary", "Attrition"]
+    assert detect_domain(pd.DataFrame(columns=cols))[0] == "hr"
+    assert detect_domain(pd.DataFrame(columns=["Age", "Attrition", "JobRole", "MonthlyIncome"]))[0] == "hr"

@@ -4,7 +4,7 @@ Single responsibility: P&L, margin, budget variance, and cost driver insights.
 """
 from __future__ import annotations
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -172,11 +172,119 @@ def _finance_revenue_trend(df, cols, stats, insights, findings, risks, opps) -> 
         logger.warning("Revenue trend analysis failed", exc_info=True)
 
 
+_ACTUAL_WORDS = ("amount", "spend", "spent", "expense", "expenditure", "cost", "value",
+                 "total", "paid")
+
+
+def _actual_column(df, cols) -> Optional[str]:
+    """The money column a budget is compared with: one named 'actual', or,
+    beside a budget, the amount spent ('amount', 'spend', 'expense'...).
+    Only a column literally named 'actual' was used, so the commonest layout,
+    'amount' next to 'budget', had no variance analysis at all."""
+    if cols["actual"] and cols["actual"] != cols["budget"]:
+        return cols["actual"]
+    from app.engines.data_loader import _name_words
+    for c in df.columns:
+        if c == cols["budget"] or not pd.api.types.is_numeric_dtype(df[c]):
+            continue
+        if _name_words(c) & set(_ACTUAL_WORDS):
+            return c
+    return None
+
+
+def _variance_breakdown(df, budget_col, actual_col, cols, insights, findings, risks) -> None:
+    """Which categories are over budget, and which moved in the latest
+    quarter. An overall variance near zero can hide one category 30% over
+    and another under, and a drift that began last quarter is invisible in
+    a year's total."""
+    cat = cols.get("cat")
+    if not cat or cat not in df.columns or df[cat].nunique() > 40:
+        return
+    data = df[[cat, budget_col, actual_col]].copy()
+    data[budget_col] = pd.to_numeric(data[budget_col], errors="coerce")
+    data[actual_col] = pd.to_numeric(data[actual_col], errors="coerce")
+    data = data.dropna()
+    total_budget = float(data[budget_col].sum())
+    if total_budget <= 0:
+        return
+    g = data.groupby(cat)[[budget_col, actual_col]].sum()
+    g = g[g[budget_col] > 0]
+    g["over"] = g[actual_col] - g[budget_col]
+    g["pct"] = g["over"] / g[budget_col] * 100
+    material = g[(g["pct"].abs() >= 5) & (g["over"].abs() >= 0.01 * total_budget)]
+    if not material.empty:
+        worst = material.sort_values("over", ascending=False)
+        top = worst.head(3)
+        findings.append("Budget variance by '{}': {}.".format(cat, " · ".join(
+            "{} {:+.1f}% ({:+,.0f})".format(k, r["pct"], r["over"]) for k, r in top.iterrows())))
+    # Latest three months against the months before, per category.
+    dates = df.select_dtypes(include="datetime")
+    if dates.empty:
+        return
+    when = dates[dates.notna().sum().idxmax()]
+    last = when.max()
+    if pd.isna(last):
+        return
+    start = (last - pd.DateOffset(months=3)).normalize()
+    recent = when > start
+    if recent.sum() < 10 or (~recent).sum() < 10:
+        return
+    # A category has drifted when its lines' actual-to-budget ratios in the
+    # latest three months differ from its earlier ones beyond line-to-line
+    # noise (Mann-Whitney, Bonferroni over the categories), by 10 points or
+    # more. Measured against the whole budget instead, a 30% overrun in
+    # marketing was lost beside the salary bill.
+    from scipy.stats import mannwhitneyu
+    rows = []
+    groups = list(df.groupby(cat))
+    for k, part in groups:
+        r, e = part[recent.loc[part.index]], part[~recent.loc[part.index]]
+        rb, ra = pd.to_numeric(r[budget_col], errors="coerce"), pd.to_numeric(r[actual_col], errors="coerce")
+        eb, ea = pd.to_numeric(e[budget_col], errors="coerce"), pd.to_numeric(e[actual_col], errors="coerce")
+        if rb.sum() <= 0 or eb.sum() <= 0 or len(r) < 8 or len(e) < 8:
+            continue
+        rr = (ra / rb.where(rb > 0)).dropna()
+        er = (ea / eb.where(eb > 0)).dropna()
+        try:
+            p = float(mannwhitneyu(rr, er, alternative="greater").pvalue) * len(groups)
+        except ValueError:
+            continue
+        rows.append((k, (ra.sum() - rb.sum()) / rb.sum() * 100,
+                     (ea.sum() - eb.sum()) / eb.sum() * 100, ra.sum() - rb.sum(), min(p, 1.0)))
+    drift = [x for x in rows if x[1] - x[2] >= 10 and x[4] < 0.01
+             and x[3] >= 0.001 * total_budget]
+    drift.sort(key=lambda x: -(x[1] - x[2]))
+    if drift:
+        k, now, before, amt, _p = drift[0]
+        line = ("'{}' ran {:+.1f}% against budget in the latest three months (to {}), "
+                "against {:+.1f}% before: {:+,.0f} over in those months.").format(
+                    k, now, last.strftime("%d %b %Y"), before, amt)
+        risks.insert(0, line)
+        insights.append(build_insight(
+            title="'{}' overspending since {}: {:+.1f}% against budget".format(
+                k, (start + pd.Timedelta(days=1)).strftime("%b %Y"), now),
+            problem=line,
+            cause="The data shows when the spending moved away from its budget, not why: "
+                  "a price rise, more volume, or a budget set too low.",
+            evidence=" · ".join("{}: {:+.1f}% recent vs {:+.1f}% before".format(a, b, c)
+                               for a, b, c, _, _ in sorted(rows, key=lambda x: -(x[1] - x[2]))[:5]),
+            action="1. List the '{}' lines in the latest three months by size  "
+                   "2. Check them against the commitments behind the budget  "
+                   "3. Decide whether to rein the spending in or re-forecast".format(k),
+            impact="{:,.0f} over budget in three months; at that rate about {:,.0f} a "
+                   "year.".format(amt, amt * 4),
+            severity="high" if now >= 20 else "warning", category="finance_budget"))
+
+
 def _finance_budget_variance(df, cols, stats, insights, findings, risks, opps) -> None:
     """Budget vs actual variance analysis."""
-    budget_col, actual_col = cols["budget"], cols["actual"]
+    budget_col, actual_col = cols["budget"], _actual_column(df, cols)
     if not (budget_col and actual_col and budget_col != actual_col):
         return
+    try:
+        _variance_breakdown(df, budget_col, actual_col, cols, insights, findings, risks)
+    except Exception:
+        logger.warning("budget variance breakdown failed", exc_info=True)
     try:
         total_budget = float(df[budget_col].sum())
         total_actual = float(df[actual_col].sum())

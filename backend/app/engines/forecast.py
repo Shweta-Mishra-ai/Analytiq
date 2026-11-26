@@ -69,13 +69,15 @@ def _seasonal_naive(y: np.ndarray) -> np.ndarray:
     return np.array([y[len(y) - 12 + h] for h in range(HORIZON)])
 
 
-def _ets(y: np.ndarray, seasonal: bool) -> np.ndarray:
+def _ets(y: np.ndarray, seasonal: bool, proportional: bool = False) -> np.ndarray:
     from statsmodels.tsa.holtwinters import ExponentialSmoothing
+    if proportional and not (y > 0).all():
+        raise ValueError("a proportional season needs positive values")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         model = ExponentialSmoothing(
             y, trend="add", damped_trend=True,
-            seasonal="add" if seasonal else None,
+            seasonal=("mul" if proportional else "add") if seasonal else None,
             seasonal_periods=12 if seasonal else None,
             initialization_method="estimated").fit()
         return np.asarray(model.forecast(HORIZON), dtype=float)
@@ -90,13 +92,22 @@ def _methods(n: int) -> Dict[str, Callable[[np.ndarray], np.ndarray]]:
         # A season is estimated from at least two full years before the
         # first test month.
         m["trend and yearly season (Holt-Winters)"] = lambda y: _ets(y, True)
+        # A growing business's season grows with it: December is 40% above
+        # the year's level, not a fixed amount above it. Only the additive
+        # season was fitted, and on three years of 1.5%-a-month growth it
+        # forecast the next quarter 10-16% too high, outside its own range.
+        m[PROPORTIONAL] = lambda y: _ets(y, True, proportional=True)
     return m
+
+
+PROPORTIONAL = "trend and yearly season in proportion (Holt-Winters)"
 
 
 # History each method needs before its first test month: a season is
 # learnt from two full years. Tested earlier, Holt-Winters failed and
 # dropped out, and a worse method was chosen for seasonal data.
-_MIN_HISTORY = {"same month last year": 12, "trend and yearly season (Holt-Winters)": 24}
+_MIN_HISTORY = {"same month last year": 12, "trend and yearly season (Holt-Winters)": 24,
+                "trend and yearly season in proportion (Holt-Winters)": 24}
 
 
 def _first_origin(n: int, names) -> int:
@@ -123,7 +134,10 @@ def _backtest(y: np.ndarray, fn, start: int) -> Optional[List[Tuple[int, float, 
     return out or None
 
 
-def _spreads(tests) -> List[Tuple[str, float]]:
+MIN_RANGE_TESTS = 6   # test months below which the range also uses the history's own swings
+
+
+def _spreads(tests, history: Optional[np.ndarray] = None) -> List[Tuple[str, float]]:
     """For each step ahead, (kind, half-width) of an 80% range
     from the backtest errors.
 
@@ -141,7 +155,15 @@ def _spreads(tests) -> List[Tuple[str, float]]:
         errs = np.asarray(errs, dtype=float)
         n = len(errs)
         if n < 3:
-            out.append(("ratio" if positive else "add", prev))
+            # Too few errors for a spread of their own: the history's
+            # swings alone (below) size the range, never zero width.
+            width = prev
+            if history is not None and positive and (history > 0).all() and len(history) >= 4:
+                steps = np.diff(np.log(history))
+                width = max(width, float(student.ppf(0.9, df=len(steps) - 1))
+                            * float(np.std(steps, ddof=1)) * np.sqrt(h + 1))
+            prev = width
+            out.append(("ratio" if positive else "add", width))
             continue
         sd = float(np.std(errs, ddof=1)) * np.sqrt(1 + 1 / n)
         width = float(student.ppf(0.9, df=n - 1)) * sd
@@ -151,6 +173,17 @@ def _spreads(tests) -> List[Tuple[str, float]]:
                           for hh, f, a in tests if hh == h], dtype=float)
         if len(own) >= 3:
             width *= max(1.0, float(np.std(own, ddof=1)) / max(float(np.std(errs, ddof=1)), 1e-12))
+        # With few test months the errors understate the uncertainty: two
+        # lucky months gave "range 3.3M to 3.3M". The range is then at
+        # least what the history's own month-to-month swings imply over h+1
+        # months (a random walk), which needs no test months at all.
+        n_h = sum(1 for hh, _, _ in tests if hh == h)
+        if history is not None and n_h < MIN_RANGE_TESTS and positive and (history > 0).all() \
+                and len(history) >= 4:
+            steps = np.diff(np.log(history))
+            walk = float(student.ppf(0.9, df=len(steps) - 1)) * float(np.std(steps, ddof=1)) \
+                * np.sqrt(h + 1)
+            width = max(width, walk)
         width = max(width, prev)
         prev = width
         out.append(("ratio" if positive else "add", width))
@@ -217,7 +250,7 @@ def forecast(df: pd.DataFrame) -> Optional[Forecast]:
         logger.warning("final forecast failed", exc_info=True)
         return None
 
-    spreads = _spreads(tests)
+    spreads = _spreads(tests, y)
     floor = 0.0 if (y >= 0).all() else None
     out = Forecast(measure=measure, method=name, error_pct=err, naive_error_pct=naive_err,
                    n_tests=len(tests), n_months=sum(1 for h, _, _ in tests if h == 0),
@@ -260,9 +293,15 @@ def _sentences(f: Forecast) -> List[str]:
                  "holding last month's level{}.".format(
                      f.method, f.n_months, f.error_pct, f.naive_error_pct,
                      "" if better >= 1 else " — little better, so treat the trend as tentative"))
-    s.append("8 in 10 of its past forecasts fell within the range given; it assumes the "
-             "next months behave like the history, so a promotion, price change or "
-             "lost customer will not be in it.")
+    if f.n_months >= MIN_RANGE_TESTS:
+        s.append("8 in 10 of its past forecasts fell within the range given; it assumes the "
+                 "next months behave like the history, so a promotion, price change or "
+                 "lost customer will not be in it.")
+    else:
+        # Two test months cannot show that 8 in 10 fall inside a range.
+        s.append("With only {} months to test it on, the range is a rough guide, sized "
+                 "from how much the history moves from month to month; it assumes the "
+                 "next months behave like the history.".format(f.n_months))
     return s
 
 

@@ -78,11 +78,14 @@ _SECURITY_HEADERS = {
     "Content-Security-Policy": (
         # checkout.razorpay.com: Razorpay's payment window (cards, UPI),
         # which loads its script and opens in a frame on api.razorpay.com.
-        "default-src 'self'; script-src 'self' https://checkout.razorpay.com; "
+        # challenges.cloudflare.com: the Turnstile robot check on sign-up.
+        "default-src 'self'; script-src 'self' https://checkout.razorpay.com "
+        "https://challenges.cloudflare.com; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob: https://*.razorpay.com; font-src 'self' data:; "
         "connect-src 'self' https://*.razorpay.com; "
-        "frame-src https://api.razorpay.com https://checkout.razorpay.com; "
+        "frame-src https://api.razorpay.com https://checkout.razorpay.com "
+        "https://challenges.cloudflare.com; "
         "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"),
 }
 
@@ -100,17 +103,8 @@ def _caller_key(request: Request) -> str:
     if auth:
         import hashlib
         return "t:" + hashlib.sha256(auth.encode("utf-8", "replace")).hexdigest()[:24]
-    peer = request.client.host if request.client else "unknown"
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        import ipaddress
-        try:
-            behind_proxy = ipaddress.ip_address(peer).is_private
-        except ValueError:
-            behind_proxy = False
-        if behind_proxy:
-            return "ip:" + fwd.split(",")[-1].strip()
-    return "ip:" + peer
+    from app.services.limits import client_ip
+    return "ip:" + client_ip(request)
 
 
 class GuardMiddleware(BaseHTTPMiddleware):
@@ -224,6 +218,7 @@ class SignupRequest(BaseModel):
     username: str
     password: str
     email: str = ""
+    captcha: str = ""
 
 
 class _SignupLimiter:
@@ -273,6 +268,10 @@ def signup(req: SignupRequest, request: Request):
     email = req.email.strip()
     if email or verify:
         email = emails.check_address(email)
+    from app.services import captcha
+    from app.services.limits import client_ip, network_of
+    ip = client_ip(request)
+    captcha.check(req.captcha, ip)
     if not signup_limiter.allow(_caller_key(request)):
         raise HTTPException(429, "Too many new accounts from this address. "
                                  "Try again in an hour.", headers={"Retry-After": "3600"})
@@ -281,6 +280,8 @@ def signup(req: SignupRequest, request: Request):
                                  email_verified=False if verify else None)
     except ValueError as e:
         raise HTTPException(422, str(e))
+    from app.services.credits import credit_store
+    credit_store.set_network(user.username, network_of(ip))
     logger.info("account created by sign-up: %s", user.username)
     sent = False
     if verify:
@@ -563,6 +564,7 @@ async def health():
         "data_ttl_days": config.data_ttl_days,
         "chat_available": _chat_available(),
         "signup_enabled": config.signup_enabled,
+        "turnstile_site_key": config.turnstile_site_key if config.turnstile_secret else "",
         "email_enabled": bool(config.smtp_host),
         "email_required": bool(config.smtp_host and config.require_email_verification),
         "business": {"name": config.business_name, "address": config.business_address,

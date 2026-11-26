@@ -354,7 +354,20 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
         rep_perf = (df.groupby(rep_col)[rev_col]
                     .agg(["sum", "median", "count"]))
         rep_perf = rep_perf[rep_perf["count"] >= 3].sort_values("median", ascending=False)
-        if len(rep_perf) >= 4:
+        # Is the spread real? Four reps drawing deals from the same mix show
+        # a top-to-bottom gap of 10-20% by chance alone, and that gap was
+        # reported with a "coachable, measured upside" in money. The reps'
+        # deal values must differ beyond chance first.
+        rep_p = None
+        if len(rep_perf) >= 2:
+            from scipy.stats import kruskal
+            groups = [pd.to_numeric(g, errors="coerce").dropna().values
+                      for _, g in df[df[rep_col].isin(rep_perf.index)].groupby(rep_col)[rev_col]]
+            try:
+                rep_p = float(kruskal(*groups).pvalue)
+            except ValueError:
+                rep_p = None
+        if len(rep_perf) >= 4 and rep_p is not None and rep_p < 0.05:
             n_reps    = len(rep_perf)
             top_q     = rep_perf.head(max(1, n_reps // 4))
             bot_q     = rep_perf.tail(max(1, n_reps // 4))
@@ -371,10 +384,16 @@ def _insights_sales(df: pd.DataFrame, stats: Dict, corrs: List) -> Dict:
             bot_recs  = int(bot_q["count"].sum())
             coach_val = max(0.0, (team_med - bot_med)) * bot_recs
 
+            few = n_reps < 8      # a "quartile" of four reps is one person
+            top_lbl, bot_lbl = (("the highest rep", "the lowest") if few
+                                else ("top-quartile reps", "the bottom quartile"))
             insights.append(build_insight(
-                title="Rep Performance Spread: Top Quartile {:.1f}x the Bottom".format(spread),
-                problem="Top-quartile reps post a median of {:,.0f} vs {:,.0f} for the "
-                        "bottom quartile ({:.1f}x).".format(top_med, bot_med, spread),
+                title=("Rep Performance Spread: Highest Rep {:.1f}x the Lowest" if few else
+                       "Rep Performance Spread: Top Quartile {:.1f}x the Bottom").format(spread),
+                problem="{} post a median of {:,.0f} vs {:,.0f} for {} ({:.1f}x; "
+                        "Kruskal-Wallis p={}).".format(
+                            top_lbl[0].upper() + top_lbl[1:], top_med, bot_med, bot_lbl,
+                            spread, "<0.001" if rep_p < 0.001 else "{:.3f}".format(rep_p)),
                 cause="Consistent spreads this wide usually reflect skill, territory "
                       "quality, or account mix differences — confirm which before acting.",
                 evidence="{} reps with >=3 records. Top 20% of reps generate {:.0f}% of "

@@ -173,3 +173,27 @@ def test_a_usual_monthly_swing_is_not_reported_as_a_risk():
     df = _monthly_campaigns([10, 22, 9, 24, 10, 21, 9, 23, 10, 22])
     risks = " ".join(generate_story(df).business_risks)
     assert "Cost per conversion rose" not in risks, risks
+
+
+def test_a_deal_pipeline_reports_deal_value_not_revenue(client):
+    """Open and lost deals are in a pipeline's amount: 'Revenue fell 9.3%'
+    described deal value created as money earned."""
+    import io as _io
+    import numpy as np
+    import pandas as pd
+    from app.engines.scorecard import build_scorecard
+    rng = np.random.default_rng(3)
+    n = 900
+    df = pd.DataFrame({
+        "deal_id": [f"D{i}" for i in range(n)],
+        "owner": rng.choice(["Ana", "Ben", "Chen", "Dev"], n),
+        "stage": rng.choice(["Prospect", "Qualified", "Proposal", "Won", "Lost"], n),
+        "amount": rng.gamma(2, 50000, n).round(0),
+        "created": pd.to_datetime("2025-01-01") + pd.to_timedelta(rng.integers(0, 330, n), unit="D")})
+    sc = build_scorecard(df)
+    labels = [m.label for m in sc.metrics]
+    assert "Deal value" in labels and "Revenue" not in labels
+    assert all("Revenue" not in m.title for m in sc.messages)
+    ds = client.post("/api/datasets/upload", files={"file": ("p.csv", _io.BytesIO(df.to_csv(index=False).encode()), "text/csv")}).json()["meta"]["dataset_id"]
+    cards = client.post(f"/api/charts/{ds}/kpis", json={}).json()["kpis"]
+    assert cards[0]["label"] == "Deal value"

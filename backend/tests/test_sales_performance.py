@@ -259,3 +259,33 @@ def test_sales_engine_runs_the_outcome_analyses():
     out = _insights_sales(df, stats, [])
     blob = " ".join(out["findings"] + out["risks"] + out["opportunities"])
     assert "Win rate" in blob, "rep analysis not reached by the sales orchestrator"
+
+
+def test_reps_who_differ_only_by_chance_get_no_coaching_upside():
+    """Four reps drawing deals from one distribution: the top-to-bottom gap
+    is chance, and was reported with a 'coachable, measured upside'."""
+    import numpy as np
+    import pandas as pd
+    from app.engines.story_engine import generate_story
+    rng = np.random.default_rng(5)
+    n = 900
+    df = pd.DataFrame({"owner": rng.choice(["Ana", "Ben", "Chen", "Dev"], n),
+                       "revenue": rng.gamma(2, 50000, n).round(0),
+                       "region": rng.choice(["N", "S"], n)})
+    story = generate_story(df)
+    text = " ".join(story.key_findings + story.opportunities + [i.title for i in story.top_insights])
+    assert "upside" not in text and "Rep Performance Spread" not in text, text
+
+
+def test_a_real_rep_gap_is_still_reported():
+    import numpy as np
+    import pandas as pd
+    from app.engines.story_engine import generate_story
+    rng = np.random.default_rng(6)
+    n = 900
+    owner = rng.choice(["Ana", "Ben", "Chen", "Dev"], n)
+    scale = np.where(owner == "Ana", 90000, 40000)
+    df = pd.DataFrame({"owner": owner, "revenue": rng.gamma(2, scale).round(0),
+                       "region": rng.choice(["N", "S"], n)})
+    titles = [i.title for i in generate_story(df).top_insights]
+    assert any("Rep Performance Spread" in t for t in titles), titles
