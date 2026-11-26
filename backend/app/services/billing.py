@@ -79,6 +79,7 @@ def pack(pack_id: str) -> dict:
 
 def providers() -> dict[str, bool]:
     return {
+        "upi": bool(config.upi_id),
         "razorpay": bool(config.razorpay_key_id and config.razorpay_key_secret),
         "stripe": bool(config.stripe_secret_key),
         "paypal": bool(config.paypal_client_id and config.paypal_client_secret),
@@ -159,7 +160,22 @@ def _fulfil(key: str, order: dict, amount: int, currency: str, provider_ref: str
     order_book.mark(key, "paid", provider_ref=provider_ref)
     if added:
         logger.info("credited %s credits to %s for %s", order["credits"], order["user"], key)
+        _invoice(order["user"], order["pack"], order["credits"], order["amount"],
+                 order["currency"], order["provider"], key)
     return added
+
+
+def _invoice(user, pack_id, credits, amount, currency, provider, ref):
+    """Issue the purchase's invoice. A failure here is logged, never undoes
+    the credits: the payment is real either way."""
+    try:
+        from app.services.invoices import issue_and_send
+        name = next((p["name"] for p in packs() if p["id"] == pack_id), str(pack_id))
+        issue_and_send(user=user, description="{} credits — {} pack".format(credits, name),
+                       credits=credits, amount=amount, currency=currency,
+                       provider=provider, ref=ref)
+    except Exception:
+        logger.exception("invoice for %s could not be issued", ref)
 
 
 # ── HTTP ────────────────────────────────────────────────────
@@ -409,3 +425,97 @@ def reconcile(username: str) -> int:
         except HTTPException:
             continue
     return credited
+
+
+# ── direct UPI transfers, approved by hand ──────────────────────────────
+
+class UpiQueue:
+    """Payments made straight to the business's UPI ID. The app cannot see
+    the bank account, so the buyer gives the transaction reference (UTR)
+    and an admin approves it after finding the money in the account."""
+
+    MAX_PENDING = 3
+
+    def __init__(self, root: Optional[str] = None):
+        self._lock = threading.RLock()
+        self.open(root)
+
+    def open(self, root: Optional[str] = None) -> None:
+        self.path = os.path.join(root or os.path.join(config.data_dir, "billing"),
+                                 "upi_requests.json")
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        with self._lock:
+            self._items: list = []
+            if os.path.exists(self.path):
+                with open(self.path, encoding="utf-8") as f:
+                    self._items = json.load(f)
+
+    def _save(self):
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self._items, f)
+        os.replace(tmp, self.path)
+
+    def submit(self, username: str, pack_id: str, utr: str) -> dict:
+        if not config.upi_id:
+            raise HTTPException(400, "UPI transfers are not switched on.")
+        utr = "".join(utr.split())
+        if not (utr.isdigit() and len(utr) == 12):
+            raise HTTPException(422, "The UPI reference (UTR) is the 12-digit number in "
+                                     "your UPI app's payment details.")
+        p = pack(pack_id)
+        with self._lock:
+            if any(i["utr"] == utr for i in self._items if i["status"] != "rejected"):
+                raise HTTPException(409, "That UPI reference has already been submitted.")
+            pending = [i for i in self._items if i["user"] == username and i["status"] == "pending"]
+            if len(pending) >= self.MAX_PENDING:
+                raise HTTPException(429, "You have payments waiting to be checked; please "
+                                         "wait for them before sending another.")
+            item = {"id": secrets.token_hex(6), "user": username, "pack": p["id"],
+                    "credits": p["credits"], "amount": p["inr"], "utr": utr,
+                    "created": time.time(), "status": "pending", "note": ""}
+            self._items.append(item)
+            self._save()
+        logger.info("UPI payment reported by %s: %s credits, UTR ending %s",
+                    username, p["credits"], utr[-4:])
+        return dict(item)
+
+    def for_user(self, username: str) -> list:
+        with self._lock:
+            return [dict(i) for i in self._items if i["user"] == username][-10:][::-1]
+
+    def pending(self) -> list:
+        with self._lock:
+            return [dict(i) for i in self._items if i["status"] == "pending"]
+
+    def decide(self, item_id: str, approve: bool, note: str = "") -> dict:
+        with self._lock:
+            item = next((i for i in self._items if i["id"] == item_id), None)
+            if item is None:
+                raise HTTPException(404, "No such UPI payment.")
+            if item["status"] != "pending":
+                raise HTTPException(409, "This payment was already {}.".format(item["status"]))
+            item["status"] = "approved" if approve else "rejected"
+            item["note"] = note[:200]
+            item["decided"] = time.time()
+            self._save()
+        if approve:
+            ref = "upi:" + item["utr"]
+            if credit_store.grant(item["user"], item["credits"],
+                                  "{} pack via UPI transfer".format(item["pack"]), ref=ref):
+                _invoice(item["user"], item["pack"], item["credits"], item["amount"],
+                         "INR", "upi", ref)
+        return dict(item)
+
+
+upi_queue = UpiQueue()
+
+
+def upi_link(p: dict) -> str:
+    """A upi:// link that opens any UPI app with the payee and amount
+    filled in (on a phone)."""
+    from urllib.parse import quote
+    return "upi://pay?pa={}&pn={}&am={:.2f}&cu=INR&tn={}".format(
+        quote(config.upi_id), quote(config.upi_payee_name or config.business_name
+                                    or config.app_name),
+        p["inr"] / 100, quote("{} credits".format(p["credits"])))

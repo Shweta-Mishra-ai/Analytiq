@@ -30,6 +30,7 @@ import {
   CREDITS_EVENT,
   OUT_OF_CREDITS_EVENT,
   apiGet,
+  apiPost,
   getToken,
   setToken,
 } from '../api/client'
@@ -38,17 +39,28 @@ interface Credits {
   unlimited: boolean
   total: number
   free_left: number
+  free_daily?: number
+  needs_verification?: boolean
+}
+interface EmailState {
+  address: string
+  verified: boolean
+  can_send: boolean
 }
 
 /** The balance in the sidebar; refreshed after anything that may have
  *  used or added credits. */
-function useCredits(): Credits | null {
+function useCredits(): { credits: Credits | null; email: EmailState | null } {
   const [c, setC] = useState<Credits | null>(null)
+  const [email, setEmail] = useState<EmailState | null>(null)
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined
     const load = () =>
-      apiGet<{ credits?: Credits }>('/api/account')
-        .then((a) => setC(a.credits ?? null))
+      apiGet<{ credits?: Credits; email?: EmailState | null }>('/api/account')
+        .then((a) => {
+          setC(a.credits ?? null)
+          setEmail(a.email ?? null)
+        })
         .catch(() => {})
     const soon = () => {
       clearTimeout(timer)
@@ -61,7 +73,44 @@ function useCredits(): Credits | null {
       window.removeEventListener(CREDITS_EVENT, soon)
     }
   }, [])
-  return c
+  return { credits: c, email }
+}
+
+/** Asks a signed-up user to confirm their address: until they do, their
+ *  free daily credits are off. */
+function VerifyBanner({ email }: { email: EmailState }) {
+  const [state, setState] = useState<'idle' | 'sending' | 'sent' | string>('idle')
+  const send = async () => {
+    setState('sending')
+    try {
+      await apiPost('/api/auth/resend-verification')
+      setState('sent')
+    } catch (e) {
+      setState((e as Error).message)
+    }
+  }
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-accent/30 bg-accent/10 px-6 py-3 text-sm text-ink2">
+      <span>
+        Confirm <b>{email.address}</b> to switch on your free daily credits: open the link
+        we emailed you.
+      </span>
+      {state === 'sent' ? (
+        <span className="text-teal">Sent. Check your inbox and spam folder.</span>
+      ) : (
+        <button
+          onClick={send}
+          disabled={state === 'sending'}
+          className="rounded-lg border border-accent/40 px-3 py-1.5 text-xs font-semibold text-accent hover:bg-accent/10"
+        >
+          {state === 'sending' ? 'Sending…' : 'Send the link again'}
+        </button>
+      )}
+      {state !== 'idle' && state !== 'sending' && state !== 'sent' && (
+        <span className="w-full text-xs text-rose">{state}</span>
+      )}
+    </div>
+  )
 }
 
 // Grouped by the order work is done in: load and check the data, explore
@@ -146,7 +195,7 @@ export default function Layout() {
   const location = useLocation()
   useEffect(() => setOpen(false), [location.pathname])
 
-  const credits = useCredits()
+  const { credits, email } = useCredits()
   // Shown over any page whose action ran out of credits.
   const [outOfCredits, setOutOfCredits] = useState('')
   useEffect(() => {
@@ -294,6 +343,7 @@ export default function Layout() {
         )}
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto">
+        {email && !email.verified && email.can_send && <VerifyBanner email={email} />}
         {outOfCredits && (
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber/30 bg-amber/10 px-6 py-3 text-sm text-amber">
             <span>{outOfCredits}</span>

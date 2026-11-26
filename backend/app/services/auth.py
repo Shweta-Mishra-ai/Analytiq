@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 # endpoints that must stay reachable without a token
 PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/signup",
+                "/api/auth/verify-email", "/api/auth/forgot-password",
+                "/api/auth/reset-password",
                 "/api/billing/plans",
                 # Called by the payment providers, which have no token; each
                 # verifies the provider's signature itself.

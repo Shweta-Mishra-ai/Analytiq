@@ -48,6 +48,18 @@ services:
         sync: false
       - key: PAYPAL_MODE
         value: sandbox     # switch to live after a test purchase
+      - key: SMTP_HOST
+        sync: false        # email: verification, password reset, receipts
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: UPI_ID
+        sync: false        # direct UPI transfers, approved on /admin
+      - key: GSTIN
+        sync: false        # with it, tax invoices; confirm the setup with your CA
       - key: DATA_DIR
         value: /srv/data
     disk:

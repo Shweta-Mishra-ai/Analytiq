@@ -82,3 +82,22 @@ def uploaded_dataset_id(client, hr_csv_bytes):
     )
     assert r.status_code == 200, r.text
     return r.json()["meta"]["dataset_id"]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_billing_state(tmp_path_factory):
+    """Each test starts with empty credit, order, invoice and UPI stores.
+
+    They are saved under DATA_DIR, which outlives a test run: an account
+    that used its free credits in one test (or an earlier run the same day)
+    had none left in the next, and a test about something else failed with
+    "This needs 2 credits"."""
+    from app.services import billing
+    from app.services.credits import credit_store
+    from app.services.invoices import invoice_book
+    root = str(tmp_path_factory.mktemp("billing"))
+    for store in (credit_store, billing.order_book, billing.upi_queue, invoice_book):
+        store.open(root)
+    yield
+    for store in (credit_store, billing.order_book, billing.upi_queue, invoice_book):
+        store.open(root)

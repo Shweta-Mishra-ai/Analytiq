@@ -25,6 +25,16 @@ interface Status {
   backup_every_hours: number
 }
 
+interface UpiPayment {
+  id: string
+  user: string
+  pack: string
+  credits: number
+  amount: number
+  utr: string
+  created: number
+}
+
 const KEY = 'analytiq-admin-key'
 
 async function call<T>(key: string, path: string, method = 'GET', body?: unknown): Promise<T> {
@@ -60,16 +70,19 @@ export default function AdminPage() {
   const [note, setNote] = useState('')
   const [name, setName] = useState('')
   const [pass, setPass] = useState('')
+  const [upi, setUpi] = useState<UpiPayment[]>([])
 
   const load = useCallback(async (k: string) => {
     setError('')
     try {
-      const [u, s] = await Promise.all([
+      const [u, s, p] = await Promise.all([
         call<{ users: ClientUser[] }>(k, '/api/admin/users'),
         call<Status>(k, '/api/admin/status'),
+        call<{ pending: UpiPayment[] }>(k, '/api/admin/upi-payments'),
       ])
       setUsers(u.users)
       setStatus(s)
+      setUpi(p.pending)
       try {
         sessionStorage.setItem(KEY, k)
       } catch {
@@ -215,6 +228,68 @@ export default function AdminPage() {
           <button className="rounded-lg bg-accent px-4 py-2 text-xs font-semibold text-white">Create</button>
         </form>
       </div>
+
+      {upi.length > 0 && (
+        <div className="rounded-xl border border-amber/40 bg-panel p-4" data-testid="upi-queue">
+          <h2 className="text-sm font-bold text-ink">UPI payments to check ({upi.length})</h2>
+          <p className="mt-1 text-xs text-mute">
+            Find each reference (UTR) and amount in your bank or UPI app before approving.
+          </p>
+          <table className="mt-3 w-full text-left text-xs">
+            <thead className="text-[10px] uppercase text-mute">
+              <tr>
+                <th className="py-1.5">Client</th>
+                <th>Amount</th>
+                <th>UTR</th>
+                <th>Reported</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {upi.map((p) => (
+                <tr key={p.id} className="border-t border-edge text-ink2">
+                  <td className="py-2 font-semibold">{p.user}</td>
+                  <td>
+                    ₹{(p.amount / 100).toLocaleString('en-IN')} ({p.credits} credits)
+                  </td>
+                  <td className="font-data">{p.utr}</td>
+                  <td>{new Date(p.created * 1000).toLocaleString()}</td>
+                  <td className="space-x-2 text-right">
+                    <button
+                      className={`${btn} text-teal`}
+                      onClick={() =>
+                        act(
+                          () => call(key, `/api/admin/upi-payments/${p.id}`, 'POST', { approve: true }),
+                          `Approved: ${p.credits} credits added to '${p.user}'.`,
+                        )
+                      }
+                    >
+                      Approve
+                    </button>
+                    <button
+                      className={`${btn} text-rose`}
+                      onClick={() => {
+                        const why = window.prompt('Reason (shown to the client):', 'Payment not found')
+                        if (why !== null)
+                          act(
+                            () =>
+                              call(key, `/api/admin/upi-payments/${p.id}`, 'POST', {
+                                approve: false,
+                                note: why,
+                              }),
+                            `Rejected the payment reported by '${p.user}'.`,
+                          )
+                      }}
+                    >
+                      Reject
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="rounded-xl border border-edge bg-panel p-4">
         <div className="flex items-center justify-between">

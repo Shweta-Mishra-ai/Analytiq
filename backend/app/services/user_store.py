@@ -43,6 +43,10 @@ class User:
     connector_key_hash: bytes = b""
     connector_key_at: float = 0.0
     email: str = ""
+    # False until the owner opens the link sent to `email`. None on accounts
+    # made before verification existed and on accounts an admin created:
+    # those are trusted as they are.
+    email_verified: Optional[bool] = None
 
 
 @dataclass
@@ -54,6 +58,7 @@ class PublicUser:
     password_changed_at: float = 0.0
     connector_key_at: float = 0.0      # 0 when there is no connector key
     email: str = ""
+    email_verified: bool = True
 
 
 CONNECTOR_KEY_PREFIX = "aqk-"
@@ -87,7 +92,8 @@ def _public(user: "User") -> PublicUser:
                       float(getattr(user, "password_changed_at", 0.0) or 0.0),
                       float(getattr(user, "connector_key_at", 0.0) or 0.0)
                       if getattr(user, "connector_key_hash", b"") else 0.0,
-                      str(getattr(user, "email", "") or ""))
+                      str(getattr(user, "email", "") or ""),
+                      getattr(user, "email_verified", None) is not False)
 
 
 def _hash_password(password: str, salt: bytes) -> bytes:
@@ -164,7 +170,8 @@ class UserStore:
             return username.strip().lower() in self._users
 
     def create(self, username: str, password: str,
-               is_admin: bool = False, email: str = "") -> PublicUser:
+               is_admin: bool = False, email: str = "",
+               email_verified: Optional[bool] = None) -> PublicUser:
         username = username.strip().lower()
         if not username or not password:
             raise ValueError("Username and password are required")
@@ -178,6 +185,8 @@ class UserStore:
         with self._lock:
             if username in self._users:
                 raise ValueError(f"User '{username}' already exists")
+            if email and self._by_email(email) is not None:
+                raise ValueError("An account with that email address already exists")
             salt = secrets.token_bytes(16)
             user = User(
                 username=username,
@@ -186,6 +195,7 @@ class UserStore:
                 created_at=time.time(),
                 is_admin=is_admin,
                 email=email,
+                email_verified=email_verified,
             )
             self._users[username] = user
             self._save()
@@ -264,6 +274,36 @@ class UserStore:
         if not hmac.compare_digest(candidate, user.password_hash):
             return None
         return _public(user)
+
+    def _by_email(self, email: str) -> Optional[User]:
+        from app.services.emails import normalize_email
+        key = normalize_email(email)
+        if not key:
+            return None
+        for u in self._users.values():
+            if normalize_email(getattr(u, "email", "") or "") == key:
+                return u
+        return None
+
+    def find_by_email(self, email: str) -> Optional[PublicUser]:
+        """The account registered with this address, matched the way the
+        mailbox would be (case, and Gmail's dots and +tags, ignored)."""
+        with self._lock:
+            user = self._by_email(email)
+        return _public(user) if user else None
+
+    def set_email_verified(self, username: str) -> None:
+        with self._lock:
+            user = self._users.get(username.strip().lower())
+            if user is None:
+                raise ValueError("No such user")
+            user.email_verified = True
+            self._save()
+
+    def password_changed_at(self, username: str) -> float:
+        with self._lock:
+            user = self._users.get(username.strip().lower())
+            return float(getattr(user, "password_changed_at", 0.0) or 0.0) if user else -1.0
 
     def get(self, username: str) -> Optional[PublicUser]:
         with self._lock:

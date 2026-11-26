@@ -268,19 +268,141 @@ def signup(req: SignupRequest, request: Request):
     if setup_required():
         raise HTTPException(503, "This server is not set up yet: its administrator "
                                  "must set APP_ADMIN_KEY.")
+    from app.services import emails
+    verify = emails.verification_required()
     email = req.email.strip()
-    if email and (len(email) > 200 or "@" not in email or " " in email):
-        raise HTTPException(422, "That email address does not look right.")
+    if email or verify:
+        email = emails.check_address(email)
     if not signup_limiter.allow(_caller_key(request)):
         raise HTTPException(429, "Too many new accounts from this address. "
                                  "Try again in an hour.", headers={"Retry-After": "3600"})
     try:
-        user = user_store.create(req.username, req.password, email=email)
+        user = user_store.create(req.username, req.password, email=email,
+                                 email_verified=False if verify else None)
     except ValueError as e:
         raise HTTPException(422, str(e))
     logger.info("account created by sign-up: %s", user.username)
+    sent = False
+    if verify:
+        try:
+            _send_verification(request, user.username, email)
+            sent = True
+        except HTTPException:
+            pass   # the account stands; the page offers to send it again
     return {"token": issue_token(user.username), "username": user.username,
-            "is_admin": False}
+            "is_admin": False, "verification_sent": sent}
+
+
+def _public_base(request: Request) -> str:
+    if config.public_url:
+        return config.public_url.rstrip("/")
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+    return f"{proto}://{host}"
+
+
+def _send_verification(request: Request, username: str, email: str) -> None:
+    from app.services import emails
+    from app.services.tokens import issue_purpose_token
+    tok = issue_purpose_token("verify", username, 48 * 3600, e=email)
+    emails.send_verification(email, username, f"{_public_base(request)}/verify-email?token={tok}")
+
+
+@app.post("/api/auth/resend-verification")
+def resend_verification(request: Request):
+    from fastapi import HTTPException
+    from app.services.auth import LOCAL_OWNER
+    username = getattr(request.state, "username", LOCAL_OWNER)
+    user = user_store.get(username)
+    if user is None or not user.email:
+        raise HTTPException(400, "This account has no email address to confirm.")
+    if user.email_verified:
+        return {"already": True}
+    if not signup_limiter.allow("verify:" + username):
+        raise HTTPException(429, "Several emails were already sent; check your inbox and "
+                                 "spam folder, or try again in an hour.")
+    _send_verification(request, username, user.email)
+    return {"sent": True}
+
+
+class TokenRequest(BaseModel):
+    token: str
+
+
+@app.post("/api/auth/verify-email")
+def verify_email(req: TokenRequest):
+    from fastapi import HTTPException
+    from app.services.tokens import verify_purpose_token
+    claims = verify_purpose_token(req.token, "verify")
+    user = user_store.get(claims["u"]) if claims else None
+    # The link names the address it was sent to: after a change of address
+    # an old link does not confirm the new one.
+    if user is None or claims.get("e") != user.email:
+        raise HTTPException(400, "This link is invalid or has expired. Sign in and ask "
+                                 "for a new one.")
+    user_store.set_email_verified(user.username)
+    logger.info("email confirmed for %s", user.username)
+    return {"verified": True, "username": user.username}
+
+
+class ForgotRequest(BaseModel):
+    login: str
+
+
+_FORGOT_REPLY = ("If an account with that username or email exists and has an email "
+                 "address, a link to reset the password is on its way.")
+
+
+@app.post("/api/auth/forgot-password")
+def forgot_password(req: ForgotRequest, request: Request):
+    """Email a reset link. The answer is the same whether or not the
+    account exists, so it cannot be used to find out who has one."""
+    from fastapi import HTTPException
+    from app.services import emails
+    from app.services.tokens import issue_purpose_token
+    if not emails.enabled():
+        raise HTTPException(503, "Password reset by email is not available here; "
+                                 "please contact support.")
+    if not signup_limiter.allow("forgot:" + _caller_key(request)):
+        raise HTTPException(429, "Too many requests. Try again in an hour.")
+    login = req.login.strip()
+    user = user_store.find_by_email(login) if "@" in login else user_store.get(login)
+    if user is not None and user.email and signup_limiter.allow("forgot-user:" + user.username):
+        tok = issue_purpose_token("reset", user.username, 3600,
+                                  pc=user_store.password_changed_at(user.username))
+        try:
+            emails.send_password_reset(user.email, user.username,
+                                       f"{_public_base(request)}/reset-password?token={tok}")
+        except HTTPException:
+            logger.warning("password reset email for %s not sent", user.username)
+    return {"message": _FORGOT_REPLY}
+
+
+class ResetRequest(BaseModel):
+    token: str
+    password: str
+
+
+@app.post("/api/auth/reset-password")
+def reset_password(req: ResetRequest):
+    from fastapi import HTTPException
+    from app.services.tokens import issue_token, verify_purpose_token
+    claims = verify_purpose_token(req.token, "reset")
+    # Bound to the password it replaces: once used (or the password changed
+    # any other way) the link stops working.
+    if (claims is None or not user_store.exists(claims["u"])
+            or claims.get("pc") != user_store.password_changed_at(claims["u"])):
+        raise HTTPException(400, "This link is invalid, expired or already used. Ask "
+                                 "for a new one.")
+    try:
+        user_store.set_password(claims["u"], req.password)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    # Opening the emailed link proves the mailbox too.
+    if not user_store.get(claims["u"]).email_verified:
+        user_store.set_email_verified(claims["u"])
+    logger.info("password reset by email for %s", claims["u"])
+    return {"token": issue_token(claims["u"]), "username": claims["u"]}
 
 
 class ChangePasswordRequest(BaseModel):
@@ -328,7 +450,17 @@ def account(request: Request):
         "support_email": config.support_email,
         "connector": _connector_info(request, username),
         "credits": _credits(request, username),
+        "email": _user_email(username),
     }
+
+
+def _user_email(username: str):
+    from app.services import emails
+    user = user_store.get(username)
+    if user is None:
+        return None
+    return {"address": user.email, "verified": user.email_verified,
+            "can_send": emails.enabled()}
 
 
 def _credits(request: Request, username: str) -> dict:
@@ -431,6 +563,8 @@ async def health():
         "data_ttl_days": config.data_ttl_days,
         "chat_available": _chat_available(),
         "signup_enabled": config.signup_enabled,
+        "email_enabled": bool(config.smtp_host),
+        "email_required": bool(config.smtp_host and config.require_email_verification),
         "business": {"name": config.business_name, "address": config.business_address,
                      "phone": config.business_phone, "email": config.support_email},
         # What will actually happen to a narrative request, so a client

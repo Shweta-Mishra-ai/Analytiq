@@ -141,6 +141,33 @@ class AppConfig(BaseSettings):
     business_address: str = Field(default="", alias="BUSINESS_ADDRESS")
     business_phone: str = Field(default="", alias="BUSINESS_PHONE")
 
+    # Outgoing email (services/emails.py): verification, password reset,
+    # receipts. Any SMTP server; port 465 uses SSL, others STARTTLS.
+    smtp_host: str = Field(default="", alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, alias="SMTP_PORT")
+    smtp_user: str = Field(default="", alias="SMTP_USER")
+    smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
+    smtp_from: str = Field(default="", alias="SMTP_FROM")
+    # Encrypt with STARTTLS on ports other than 465. Turn off only for a
+    # relay on the same machine or private network that does not offer it.
+    smtp_starttls: bool = Field(default=True, alias="SMTP_STARTTLS")
+    # With email set up, a new sign-up gets free credits only once its
+    # address is confirmed.
+    require_email_verification: bool = Field(default=True, alias="REQUIRE_EMAIL_VERIFICATION")
+
+    # Invoices (services/invoices.py). With GSTIN set, INR purchases get a
+    # tax invoice showing the GST included in the price at GST_RATE; without
+    # it, a receipt. Confirm the rate, SAC and place of supply with your CA.
+    gstin: str = Field(default="", alias="GSTIN")
+    gst_rate: float = Field(default=18.0, alias="GST_RATE")
+    invoice_sac: str = Field(default="", alias="INVOICE_SAC")
+    invoice_prefix: str = Field(default="AQ", alias="INVOICE_PREFIX")
+
+    # Direct UPI transfers (no gateway): the buyer pays this UPI ID and
+    # enters the transaction reference; an admin approves it on /admin.
+    upi_id: str = Field(default="", alias="UPI_ID")
+    upi_payee_name: str = Field(default="", alias="UPI_PAYEE_NAME")
+
     # ── App meta ─────────────────────────────────────────
     app_name: str = "Analytiq"
     app_version: str = "2.0.0"

@@ -34,8 +34,11 @@ def world(client, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "credit_costs", "")
     monkeypatch.setattr(config, "credit_packs", "")
     monkeypatch.setattr(main, "signup_limiter", main._SignupLimiter())
+    from app.services.invoices import invoice_book
     credit_store.open(str(tmp_path / "billing"))
     billing.order_book.open(str(tmp_path / "billing"))
+    billing.upi_queue.open(str(tmp_path / "billing"))
+    invoice_book.open(str(tmp_path / "billing"))
     made = []
 
     def make(name):
@@ -49,6 +52,8 @@ def world(client, tmp_path, monkeypatch):
         user_store.delete(name)
     credit_store.open()
     billing.order_book.open()
+    billing.upi_queue.open()
+    invoice_book.open()
 
 
 ADMIN = {"Authorization": "Bearer billing-admin-key"}
@@ -259,7 +264,8 @@ def test_plans_are_public_and_show_which_providers_are_on(client, world, fake):
     assert r.status_code == 200
     body = r.json()
     assert [p["credits"] for p in body["packs"]] == [50, 150, 600]
-    assert body["providers"] == {"razorpay": True, "stripe": True, "paypal": True}
+    assert {k: body["providers"][k] for k in ("razorpay", "stripe", "paypal")} == \
+        {"razorpay": True, "stripe": True, "paypal": True}
 
 
 def test_razorpay_upi_payment_adds_credits_once(client, world, fake):
@@ -379,3 +385,85 @@ def test_a_provider_without_keys_is_refused(client, world, monkeypatch):
     assert r.status_code == 400
     r = client.post("/api/billing/checkout", headers=h, json={"provider": "stripe", "pack": "nope"})
     assert r.status_code in (400, 404)
+
+
+# ── invoices ─────────────────────────────────────────────────
+
+def _buy_with_razorpay(client, h, fake, pay_id="pay_inv", pack="starter", amount=19900):
+    client.post("/api/billing/checkout", headers=h, json={"provider": "razorpay", "pack": pack})
+    fake.payments[pay_id] = {"id": pay_id, "order_id": "order_TEST1", "status": "captured",
+                             "amount": amount, "currency": "INR"}
+    return client.post("/api/billing/razorpay/verify", headers=h, json={
+        "order_id": "order_TEST1", "payment_id": pay_id,
+        "signature": _rzp_sig("order_TEST1", pay_id)})
+
+
+def test_a_purchase_gets_one_numbered_invoice_with_gst_shown(client, world, fake, monkeypatch):
+    import pypdf
+    monkeypatch.setattr(config, "gstin", "27ABCDE1234F1Z5")
+    monkeypatch.setattr(config, "gst_rate", 18.0)
+    h = world("inv_user")
+    assert _buy_with_razorpay(client, h, fake).status_code == 200
+    # Confirmed twice (return + webhook): still one invoice.
+    _buy_with_razorpay(client, h, fake)
+    invs = client.get("/api/billing", headers=h).json()["invoices"]
+    assert len(invs) == 1 and invs[0]["tax_invoice"]
+    from app.services.invoices import invoice_book
+    inv = invoice_book.get(invs[0]["number"])
+    assert inv["taxable"] + inv["gst"] == 19900 and inv["taxable"] == 16864
+    pdf = client.get("/api/billing/invoices/" + invs[0]["number"], headers=h)
+    assert pdf.status_code == 200 and pdf.content[:4] == b"%PDF"
+    text = "".join(pg.extract_text() for pg in pypdf.PdfReader(io.BytesIO(pdf.content)).pages)
+    assert "Tax Invoice" in text and "27ABCDE1234F1Z5" in text and "199.00" in text
+    other = world("inv_other")
+    assert client.get("/api/billing/invoices/" + invs[0]["number"], headers=other).status_code == 404
+
+
+def test_invoice_numbers_run_in_order_and_without_gst_it_is_a_receipt(client, world, fake, monkeypatch):
+    monkeypatch.setattr(config, "gstin", "")
+    from app.services.invoices import invoice_book
+    a = invoice_book.issue(user="x", email="", description="d", credits=1, amount=100,
+                           currency="INR", provider="razorpay", ref="r1")
+    b = invoice_book.issue(user="x", email="", description="d", credits=1, amount=100,
+                           currency="INR", provider="razorpay", ref="r2")
+    assert int(b["number"][-5:]) == int(a["number"][-5:]) + 1
+    assert not a["tax_invoice"] and a["gst"] == 0
+
+
+# ── manual UPI ───────────────────────────────────────────────
+
+def test_upi_transfer_is_credited_only_when_an_admin_approves_it(client, world, monkeypatch):
+    monkeypatch.setattr(config, "upi_id", "shop@okaxis")
+    h = world("upi_buyer")
+    plans = client.get("/api/billing/plans").json()
+    assert plans["providers"]["upi"] and plans["upi"]["links"]["starter"].startswith("upi://pay?pa=shop%40okaxis")
+    bad = client.post("/api/billing/upi", headers=h, json={"pack": "starter", "utr": "12345"})
+    assert bad.status_code == 422
+    r = client.post("/api/billing/upi", headers=h, json={"pack": "starter", "utr": "4123 5678 9012"})
+    assert r.status_code == 200 and r.json()["status"] == "pending"
+    assert credit_store.balance("upi_buyer")["paid"] == 0
+    dup = client.post("/api/billing/upi", headers=world("upi_other"),
+                      json={"pack": "starter", "utr": "412356789012"})
+    assert dup.status_code == 409
+    pending = client.get("/api/admin/upi-payments", headers=ADMIN).json()["pending"]
+    assert len(pending) == 1
+    assert client.post(f"/api/admin/upi-payments/{pending[0]['id']}",
+                       headers=h, json={"approve": True}).status_code == 401
+    ok = client.post(f"/api/admin/upi-payments/{pending[0]['id']}", headers=ADMIN,
+                     json={"approve": True})
+    assert ok.status_code == 200 and ok.json()["status"] == "approved"
+    assert credit_store.balance("upi_buyer")["paid"] == 50
+    assert client.get("/api/billing", headers=h).json()["invoices"]
+    again = client.post(f"/api/admin/upi-payments/{pending[0]['id']}", headers=ADMIN,
+                        json={"approve": True})
+    assert again.status_code == 409 and credit_store.balance("upi_buyer")["paid"] == 50
+
+
+def test_a_rejected_upi_report_adds_nothing(client, world, monkeypatch):
+    monkeypatch.setattr(config, "upi_id", "shop@okaxis")
+    h = world("upi_fake")
+    item = client.post("/api/billing/upi", headers=h, json={"pack": "pro", "utr": "999988887777"}).json()
+    r = client.post(f"/api/admin/upi-payments/{item['id']}", headers=ADMIN,
+                    json={"approve": False, "note": "not found in bank statement"})
+    assert r.json()["status"] == "rejected"
+    assert credit_store.balance("upi_fake")["paid"] == 0

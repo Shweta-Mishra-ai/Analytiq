@@ -117,3 +117,39 @@ def verify_token_claims(token: str) -> Optional[dict]:
     if not isinstance(iat, (int, float)):
         iat = exp - config.token_ttl_days * 86400
     return {"u": username, "iat": float(iat), "exp": float(exp)}
+
+
+# ── single-purpose links (email verification, password reset) ──────────
+#
+# Signed with a key derived for this use only, so a link mailed to someone
+# can never be presented as a sign-in token, and a sign-in token can never
+# be presented as a link.
+
+def _purpose_key() -> bytes:
+    return hmac.new(_get_secret(), b"analytiq-purpose-link-v1", hashlib.sha256).digest()
+
+
+def issue_purpose_token(purpose: str, username: str, ttl_sec: int, **claims) -> str:
+    payload = dict(claims, p=purpose, u=username, exp=time.time() + ttl_sec)
+    body = _b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    sig = hmac.new(_purpose_key(), body.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{body}.{sig}"
+
+
+def verify_purpose_token(token: str, purpose: str) -> Optional[dict]:
+    """The claims of a valid, unexpired link for `purpose`, else None."""
+    if not token or "." not in token or len(token) > 2000:
+        return None
+    body, _, sig = token.partition(".")
+    try:
+        expected = hmac.new(_purpose_key(), body.encode("ascii"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig.encode("ascii"), expected.encode("ascii")):
+            return None
+        payload = json.loads(_b64url_decode(body))
+    except Exception:
+        return None
+    if (not isinstance(payload, dict) or payload.get("p") != purpose
+            or not isinstance(payload.get("exp"), (int, float))
+            or payload["exp"] < time.time() or not isinstance(payload.get("u"), str)):
+        return None
+    return payload

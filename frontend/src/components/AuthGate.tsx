@@ -17,14 +17,24 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin')
+  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>('signin')
+  const [emailOn, setEmailOn] = useState(false)
+  const [emailRequired, setEmailRequired] = useState(false)
+  const [info, setInfo] = useState('')
   const [email, setEmail] = useState('')
   const [signupOpen, setSignupOpen] = useState(false)
 
   const probe = async () => {
     try {
-      const h = await apiGet<{ auth_required: boolean; signup_enabled?: boolean }>('/api/health')
+      const h = await apiGet<{
+        auth_required: boolean
+        signup_enabled?: boolean
+        email_enabled?: boolean
+        email_required?: boolean
+      }>('/api/health')
       setSignupOpen(Boolean(h.signup_enabled))
+      setEmailOn(Boolean(h.email_enabled))
+      setEmailRequired(Boolean(h.email_required))
       if (!h.auth_required) return setStatus('open')
       if (!getToken()) return setStatus('locked')
       // verify the stored token still works
@@ -68,6 +78,20 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       e.preventDefault()
       setBusy(true)
       setError('')
+      setInfo('')
+      if (mode === 'forgot') {
+        try {
+          const r = await apiPost<{ message: string }>('/api/auth/forgot-password', {
+            login: username,
+          })
+          setInfo(r.message)
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err))
+        } finally {
+          setBusy(false)
+        }
+        return
+      }
       try {
         const r = await apiPost<{ token: string }>(
           mode === 'signup' ? '/api/auth/signup' : '/api/auth/login',
@@ -92,7 +116,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
             <div className="text-sm font-bold">Analytiq</div>
           </div>
           <label className="mb-1 flex items-center gap-1.5 text-xs text-mute">
-            <User className="h-3.5 w-3.5" /> Username
+            <User className="h-3.5 w-3.5" /> {mode === 'forgot' ? 'Username or email' : 'Username'}
           </label>
           <input
             type="text"
@@ -102,20 +126,39 @@ export default function AuthGate({ children }: { children: ReactNode }) {
             autoCapitalize="off"
             className="mb-3 w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
           />
-          <label className="mb-1 flex items-center gap-1.5 text-xs text-mute">
-            <Lock className="h-3.5 w-3.5" /> Password
-          </label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
-          />
+          {mode !== 'forgot' && (
+            <>
+              <label className="mb-1 flex items-center gap-1.5 text-xs text-mute">
+                <Lock className="h-3.5 w-3.5" /> Password
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
+              />
+            </>
+          )}
+          {mode === 'signin' && emailOn && (
+            <button
+              type="button"
+              onClick={() => {
+                setMode('forgot')
+                setError('')
+              }}
+              className="mt-1.5 text-[11px] text-mute hover:text-accent"
+            >
+              Forgot password?
+            </button>
+          )}
           {mode === 'signup' && (
             <>
               <p className="mt-1 text-[11px] text-faint">At least 8 characters, not a common password.</p>
               <label className="mt-3 mb-1 flex items-center gap-1.5 text-xs text-mute">
-                <Mail className="h-3.5 w-3.5" /> Email (for receipts and password help)
+                <Mail className="h-3.5 w-3.5" />{' '}
+                {emailRequired
+                  ? 'Email (we send a link to confirm it)'
+                  : 'Email (for receipts and password help)'}
               </label>
               <input
                 type="email"
@@ -126,14 +169,34 @@ export default function AuthGate({ children }: { children: ReactNode }) {
             </>
           )}
           {error && <p className="mt-2 text-xs text-rose">{error}</p>}
+          {info && <p className="mt-2 text-xs text-teal">{info}</p>}
           <button
             type="submit"
-            disabled={busy || !username || !password}
+            disabled={busy || !username || (mode !== 'forgot' && !password)}
             className="mt-4 w-full rounded-lg bg-accent py-2 text-sm font-semibold text-white disabled:opacity-40"
           >
-            {busy ? 'Please wait…' : mode === 'signup' ? 'Create free account' : 'Sign in'}
+            {busy
+              ? 'Please wait…'
+              : mode === 'signup'
+                ? 'Create free account'
+                : mode === 'forgot'
+                  ? 'Email me a reset link'
+                  : 'Sign in'}
           </button>
-          {signupOpen && (
+          {mode === 'forgot' && (
+            <button
+              type="button"
+              onClick={() => {
+                setMode('signin')
+                setInfo('')
+                setError('')
+              }}
+              className="mt-3 w-full text-center text-xs text-accent hover:underline"
+            >
+              Back to sign in
+            </button>
+          )}
+          {signupOpen && mode !== 'forgot' && (
             <button
               type="button"
               onClick={() => {

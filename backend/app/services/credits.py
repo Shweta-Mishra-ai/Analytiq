@@ -131,13 +131,27 @@ class CreditStore:
         with self._lock:
             return bool(self._data["accounts"].get(username, {}).get("unlimited"))
 
+    @staticmethod
+    def free_allowance(username: str) -> int:
+        """Free credits a day for this account: none until a signed-up
+        account confirms its email (see services/emails.py), which is what
+        keeps one person from collecting them on many accounts."""
+        from app.services.user_store import user_store
+        account = user_store.get(username)
+        if account is not None and not account.email_verified:
+            return 0
+        return config.free_daily_credits
+
     def balance(self, username: str, is_admin: bool = False) -> dict:
         unlimited = self.is_unlimited(username, is_admin)
+        allowance = self.free_allowance(username)
         with self._lock:
             a = self._acct(username)
-            free_left = max(0, config.free_daily_credits - a["free_used"])
+            free_left = max(0, allowance - a["free_used"])
             return {"unlimited": unlimited, "free_left": free_left,
-                    "free_daily": config.free_daily_credits, "paid": int(a["paid"]),
+                    "free_daily": allowance, "needs_verification":
+                        allowance == 0 and config.free_daily_credits > 0,
+                    "paid": int(a["paid"]),
                     "total": free_left + int(a["paid"]),
                     "account_unlimited": bool(a.get("unlimited"))}
 
@@ -161,10 +175,17 @@ class CreditStore:
         cost = costs().get(action, 0)
         if cost <= 0 or self.is_unlimited(username, is_admin):
             return {"free": 0, "paid": 0}
+        allowance = self.free_allowance(username)
         with self._lock:
             a = self._acct(username)
-            free_left = max(0, config.free_daily_credits - a["free_used"])
+            free_left = max(0, allowance - a["free_used"])
             if free_left + a["paid"] < cost:
+                if allowance == 0 and config.free_daily_credits > 0 and not a["paid"]:
+                    raise HTTPException(
+                        402, "Confirm your email address to start using your free daily "
+                             "credits: open the link we sent you (or send it again from "
+                             "the banner at the top of the page). You can also buy "
+                             "credits on the Billing page.")
                 raise OutOfCredits(cost, free_left + int(a["paid"]))
             from_free = min(free_left, cost)
             from_paid = cost - from_free

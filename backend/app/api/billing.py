@@ -28,6 +28,10 @@ def _public_plans() -> dict:
         "providers": billing.providers(),
         "stripe_currency": (config.stripe_currency or "usd").upper(),
         "signup_enabled": config.signup_enabled,
+        "upi": ({"id": config.upi_id,
+                 "payee": config.upi_payee_name or config.business_name or config.app_name,
+                 "links": {p["id"]: billing.upi_link(p) for p in billing.packs()}}
+                if config.upi_id else None),
     }
 
 
@@ -46,9 +50,42 @@ def overview(request: Request, owner: str = Depends(current_owner)):
     """Balance and recent activity. Also credits any payment of this
     account's that was completed but never confirmed."""
     caught_up = billing.reconcile(owner)
+    from app.services.invoices import invoice_book
     return {"balance": credit_store.balance(owner, _admin(request)),
             "history": credit_store.history(owner, 30),
+            "invoices": [{"number": i["number"], "issued_at": i["issued_at"],
+                          "amount": i["amount"], "currency": i["currency"],
+                          "credits": i["credits"], "tax_invoice": i["tax_invoice"]}
+                         for i in invoice_book.for_user(owner)],
+            "upi_requests": billing.upi_queue.for_user(owner),
             "recovered": caught_up, **_public_plans()}
+
+
+@router.get("/invoices/{number}")
+def invoice_pdf(number: str, request: Request, owner: str = Depends(current_owner)):
+    from fastapi import HTTPException
+    from fastapi.responses import Response
+    from app.services.invoices import invoice_book, render_pdf
+    inv = invoice_book.get(number)
+    if inv is None or (inv["user"] != owner and not _admin(request)):
+        raise HTTPException(404, "No such invoice.")
+    return Response(render_pdf(inv), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{number}.pdf"'})
+
+
+class UpiReport(BaseModel):
+    pack: str
+    utr: str
+
+
+@router.post("/upi")
+def report_upi_payment(req: UpiReport, owner: str = Depends(current_owner)):
+    """The buyer has paid the UPI ID directly; an admin will check it."""
+    from fastapi import HTTPException
+    from app.services.user_store import user_store
+    if user_store.get(owner) is None:
+        raise HTTPException(400, "Buying credits needs a signed-in account.")
+    return billing.upi_queue.submit(owner, req.pack, req.utr)
 
 
 class CheckoutRequest(BaseModel):
@@ -141,6 +178,24 @@ def grant_credits(username: str, req: GrantRequest):
     credit_store.grant(username, req.amount, req.note or "given by the administrator")
     logger.info("admin gave %s credits to %s", req.amount, username)
     return credit_store.balance(username)
+
+
+@admin_router.get("/upi-payments")
+def upi_payments():
+    """UPI transfers waiting for you to find them in the bank account."""
+    return {"pending": billing.upi_queue.pending()}
+
+
+class UpiDecision(BaseModel):
+    approve: bool
+    note: str = ""
+
+
+@admin_router.post("/upi-payments/{item_id}")
+def decide_upi_payment(item_id: str, req: UpiDecision):
+    item = billing.upi_queue.decide(item_id, req.approve, req.note)
+    logger.info("UPI payment %s %s", item_id, item["status"])
+    return item
 
 
 class UnlimitedRequest(BaseModel):

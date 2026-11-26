@@ -27,6 +27,8 @@ const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const AccountPage = lazy(() => import('./pages/AccountPage'))
 const AdminPage = lazy(() => import('./pages/AdminPage'))
 const BillingPage = lazy(() => import('./pages/BillingPage'))
+const VerifyEmailPage = lazy(() => import('./pages/AccountLinks').then((m) => ({ default: m.VerifyEmailPage })))
+const ResetPasswordPage = lazy(() => import('./pages/AccountLinks').then((m) => ({ default: m.ResetPasswordPage })))
 const PricingPage = lazy(() => import('./pages/PublicPages').then((m) => ({ default: m.PricingPage })))
 const TermsPage = lazy(() => import('./pages/PublicPages').then((m) => ({ default: m.TermsPage })))
 const PrivacyPage = lazy(() => import('./pages/PublicPages').then((m) => ({ default: m.PrivacyPage })))
@@ -86,6 +88,8 @@ export default function App() {
             <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/refunds" element={<RefundsPage />} />
             <Route path="/contact" element={<ContactPage />} />
+            <Route path="/verify-email" element={<VerifyEmailPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/*" element={<ClientApp />} />
           </Routes>
         </Suspense>

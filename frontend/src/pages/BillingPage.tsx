@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { CheckCircle2, Coins, CreditCard, Infinity as InfinityIcon, Smartphone } from 'lucide-react'
-import { apiGet, apiPost } from '../api/client'
+import { apiBlob, apiGet, apiPost, downloadBlob } from '../api/client'
 import { Badge, Btn, ErrorBox, PageHeader, Panel, Skeleton, Stat } from '../components/Ui'
 
 interface Pack {
@@ -17,6 +17,7 @@ interface Balance {
   free_daily: number
   paid: number
   total: number
+  needs_verification?: boolean
 }
 interface Entry {
   t: number
@@ -31,8 +32,110 @@ interface Overview {
   packs: Pack[]
   costs: { action: string; label: string; credits: number }[]
   free_daily: number
-  providers: { razorpay: boolean; stripe: boolean; paypal: boolean }
+  providers: { razorpay: boolean; stripe: boolean; paypal: boolean; upi?: boolean }
   stripe_currency: string
+  invoices: {
+    number: string
+    issued_at: number
+    amount: number
+    currency: string
+    credits: number
+    tax_invoice: boolean
+  }[]
+  upi: { id: string; payee: string; links: Record<string, string> } | null
+  upi_requests: { id: string; pack: string; credits: number; utr: string; status: string; created: number; note: string }[]
+}
+
+const money = (amount: number, currency: string) =>
+  currency === 'INR' ? inr(amount) : currency === 'USD' ? usd(amount) : `${currency} ${amount / 100}`
+
+/** Paying the business's UPI ID straight from a UPI app, then giving the
+ *  reference so an admin can match it in the bank account. */
+function UpiDirect({ data, onDone }: { data: Overview; onDone: () => void }) {
+  const [packId, setPackId] = useState(data.packs[0]?.id ?? '')
+  const [utr, setUtr] = useState('')
+  const [msg, setMsg] = useState('')
+  const [err, setErr] = useState('')
+  const upi = data.upi!
+  const pack = data.packs.find((p) => p.id === packId) ?? data.packs[0]
+  const submit = async () => {
+    setErr('')
+    setMsg('')
+    try {
+      await apiPost('/api/billing/upi', { pack: packId, utr })
+      setMsg('Thank you. We will check the payment and add your credits, usually within a working day.')
+      setUtr('')
+      onDone()
+    } catch (e) {
+      setErr((e as Error).message)
+    }
+  }
+  return (
+    <Panel
+      title="Pay directly by UPI"
+      subtitle="Pay from any UPI app, then enter the 12-digit UPI reference (UTR). Credits are added once the payment is checked."
+    >
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="space-y-2 text-sm">
+          <label className="block text-xs text-mute">Pack</label>
+          <select
+            value={packId}
+            onChange={(e) => setPackId(e.target.value)}
+            className="w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-ink"
+          >
+            {data.packs.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}: {p.credits} credits for {inr(p.inr)}
+              </option>
+            ))}
+          </select>
+          <div className="rounded-lg border border-edge bg-panel2 p-3">
+            <div className="text-xs text-mute">Pay exactly {pack ? inr(pack.inr) : ''} to</div>
+            <div className="font-data text-base text-ink" data-testid="upi-id">{upi.id}</div>
+            <div className="text-xs text-faint">{upi.payee}</div>
+            <a
+              href={upi.links[packId]}
+              className="btn-primary mt-3 inline-block rounded-lg px-3 py-1.5 text-xs font-semibold text-white md:hidden"
+            >
+              Open UPI app
+            </a>
+          </div>
+        </div>
+        <div className="space-y-2 text-sm">
+          <label className="block text-xs text-mute">UPI reference (UTR), after paying</label>
+          <input
+            value={utr}
+            onChange={(e) => setUtr(e.target.value)}
+            inputMode="numeric"
+            placeholder="12 digits, e.g. 412345678901"
+            className="w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-ink focus:border-accent focus:outline-none"
+          />
+          <Btn onClick={submit} disabled={utr.replace(/\s/g, '').length !== 12} size="sm">
+            I have paid — check my payment
+          </Btn>
+          {msg && <p className="text-teal">{msg}</p>}
+          {err && <p className="text-rose">{err}</p>}
+          {data.upi_requests.length > 0 && (
+            <ul className="mt-2 space-y-1 text-xs">
+              {data.upi_requests.map((r) => (
+                <li key={r.id} className="flex justify-between gap-2">
+                  <span className="text-ink2">
+                    {r.credits} credits · UTR …{r.utr.slice(-4)}
+                    {r.status === 'rejected' && r.note && (
+                      <span className="block text-rose">{r.note}</span>
+                    )}
+                  </span>
+                  <Badge tone={r.status === 'approved' ? 'teal' : r.status === 'rejected' ? 'rose' : 'amber'}>
+                    {r.status === 'pending' ? 'being checked' : r.status}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </Panel>
+  )
 }
 
 type RazorpayResponse = {
@@ -167,7 +270,8 @@ export default function BillingPage() {
     )
 
   const b = data.balance
-  const anyProvider = data.providers.razorpay || data.providers.stripe || data.providers.paypal
+  const anyProvider =
+    data.providers.razorpay || data.providers.stripe || data.providers.paypal || data.providers.upi
 
   return (
     <div className="mx-auto max-w-5xl p-6 lg:p-8">
@@ -200,7 +304,11 @@ export default function BillingPage() {
           <Stat
             label="Free today"
             value={`${b.free_left} of ${b.free_daily}`}
-            hint="Renews every midnight (India time)"
+            hint={
+              b.needs_verification
+                ? 'Confirm your email to switch these on'
+                : 'Renews every midnight (India time)'
+            }
           />
           <Stat label="Bought credits" value={b.paid} hint="Never expire" />
         </div>
@@ -261,6 +369,45 @@ export default function BillingPage() {
           ))}
         </div>
       </Panel>
+
+      {data.upi && (
+        <div className="mt-6">
+          <UpiDirect data={data} onDone={load} />
+        </div>
+      )}
+
+      {data.invoices.length > 0 && (
+        <div className="mt-6">
+          <Panel title="Invoices and receipts">
+            <ul className="space-y-1.5 text-sm">
+              {data.invoices.map((i) => (
+                <li key={i.number} className="flex items-center justify-between gap-3">
+                  <span className="text-ink2">
+                    <span className="font-data">{i.number}</span>
+                    <span className="ml-2 text-xs text-faint">
+                      {new Date(i.issued_at * 1000).toLocaleDateString()} · {i.credits} credits ·{' '}
+                      {money(i.amount, i.currency)}
+                    </span>
+                  </span>
+                  <Btn
+                    variant="ghost"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        downloadBlob(await apiBlob(`/api/billing/invoices/${i.number}`), `${i.number}.pdf`)
+                      } catch (e) {
+                        setError((e as Error).message)
+                      }
+                    }}
+                  >
+                    {i.tax_invoice ? 'Tax invoice' : 'Receipt'} PDF
+                  </Btn>
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        </div>
+      )}
 
       <div className="mt-6 grid gap-6 md:grid-cols-2">
         <Panel title="What uses credits">
