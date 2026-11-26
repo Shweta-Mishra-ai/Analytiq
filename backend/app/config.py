@@ -105,6 +105,42 @@ class AppConfig(BaseSettings):
     # "/slack" and Teams-style incoming webhooks all accept it).
     alert_webhook_url: str = Field(default="", alias="ALERT_WEBHOOK_URL")
 
+    # ── Credits and payments (services/credits.py, billing.py) ──
+    # Free credits every account gets each day; they renew at midnight in
+    # CREDITS_TIMEZONE and do not carry over. Bought credits never expire.
+    free_daily_credits: int = Field(default=5, alias="FREE_DAILY_CREDITS")
+    credits_timezone: str = Field(default="Asia/Kolkata", alias="CREDITS_TIMEZONE")
+    # JSON overriding what an action costs, e.g. {"pdf_report": 3, "chat": 1}.
+    # Actions: pdf_report, health_report, ml_train, chat, kb_report.
+    credit_costs: str = Field(default="", alias="CREDIT_COSTS")
+    # Comma-separated usernames that are never charged (e.g. your own).
+    free_users: str = Field(default="", alias="FREE_USERS")
+    # JSON list of packs; prices in the smallest unit (paise, cents).
+    # Default: 50 / 150 / 600 credits at Rs 199 / 499 / 1,499 or $5 / $12 / $35.
+    credit_packs: str = Field(default="", alias="CREDIT_PACKS")
+    # Anyone may create an account (and gets the free daily credits).
+    signup_enabled: bool = Field(default=True, alias="SIGNUP_ENABLED")
+    # Razorpay: cards, UPI, netbanking and wallets, charged in INR.
+    razorpay_key_id: str = Field(default="", alias="RAZORPAY_KEY_ID")
+    razorpay_key_secret: str = Field(default="", alias="RAZORPAY_KEY_SECRET")
+    razorpay_webhook_secret: str = Field(default="", alias="RAZORPAY_WEBHOOK_SECRET")
+    # Stripe Checkout. STRIPE_CURRENCY "usd" uses the USD pack prices, "inr"
+    # the INR ones.
+    stripe_secret_key: str = Field(default="", alias="STRIPE_SECRET_KEY")
+    stripe_webhook_secret: str = Field(default="", alias="STRIPE_WEBHOOK_SECRET")
+    stripe_currency: str = Field(default="usd", alias="STRIPE_CURRENCY")
+    # PayPal Checkout (Orders v2), charged in USD. PAYPAL_MODE: sandbox | live.
+    paypal_client_id: str = Field(default="", alias="PAYPAL_CLIENT_ID")
+    paypal_client_secret: str = Field(default="", alias="PAYPAL_CLIENT_SECRET")
+    paypal_mode: str = Field(default="sandbox", alias="PAYPAL_MODE")
+
+    # Shown on the public Contact, Terms, Privacy and Refund pages. Payment
+    # providers check these pages before switching an account on, so set
+    # them to the registered business name and address.
+    business_name: str = Field(default="", alias="BUSINESS_NAME")
+    business_address: str = Field(default="", alias="BUSINESS_ADDRESS")
+    business_phone: str = Field(default="", alias="BUSINESS_PHONE")
+
     # ── App meta ─────────────────────────────────────────
     app_name: str = "Analytiq"
     app_version: str = "2.0.0"

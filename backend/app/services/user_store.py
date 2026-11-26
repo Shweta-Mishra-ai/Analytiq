@@ -42,6 +42,7 @@ class User:
     # key itself is shown once and never stored), and when it was made.
     connector_key_hash: bytes = b""
     connector_key_at: float = 0.0
+    email: str = ""
 
 
 @dataclass
@@ -52,6 +53,7 @@ class PublicUser:
     is_admin: bool = False
     password_changed_at: float = 0.0
     connector_key_at: float = 0.0      # 0 when there is no connector key
+    email: str = ""
 
 
 CONNECTOR_KEY_PREFIX = "aqk-"
@@ -84,7 +86,8 @@ def _public(user: "User") -> PublicUser:
     return PublicUser(user.username, user.created_at, user.is_admin,
                       float(getattr(user, "password_changed_at", 0.0) or 0.0),
                       float(getattr(user, "connector_key_at", 0.0) or 0.0)
-                      if getattr(user, "connector_key_hash", b"") else 0.0)
+                      if getattr(user, "connector_key_hash", b"") else 0.0,
+                      str(getattr(user, "email", "") or ""))
 
 
 def _hash_password(password: str, salt: bytes) -> bytes:
@@ -161,7 +164,7 @@ class UserStore:
             return username.strip().lower() in self._users
 
     def create(self, username: str, password: str,
-               is_admin: bool = False) -> PublicUser:
+               is_admin: bool = False, email: str = "") -> PublicUser:
         username = username.strip().lower()
         if not username or not password:
             raise ValueError("Username and password are required")
@@ -182,6 +185,7 @@ class UserStore:
                 password_hash=_hash_password(password, salt),
                 created_at=time.time(),
                 is_admin=is_admin,
+                email=email,
             )
             self._users[username] = user
             self._save()

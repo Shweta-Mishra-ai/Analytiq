@@ -26,6 +26,12 @@ const RagPage = lazy(() => import('./pages/RagPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const AccountPage = lazy(() => import('./pages/AccountPage'))
 const AdminPage = lazy(() => import('./pages/AdminPage'))
+const BillingPage = lazy(() => import('./pages/BillingPage'))
+const PricingPage = lazy(() => import('./pages/PublicPages').then((m) => ({ default: m.PricingPage })))
+const TermsPage = lazy(() => import('./pages/PublicPages').then((m) => ({ default: m.TermsPage })))
+const PrivacyPage = lazy(() => import('./pages/PublicPages').then((m) => ({ default: m.PrivacyPage })))
+const RefundsPage = lazy(() => import('./pages/PublicPages').then((m) => ({ default: m.RefundsPage })))
+const ContactPage = lazy(() => import('./pages/PublicPages').then((m) => ({ default: m.ContactPage })))
 
 function RouteFallback() {
   return (
@@ -57,6 +63,7 @@ function ClientApp() {
           <Route path="/rag" element={<RagPage />} />
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/account" element={<AccountPage />} />
+          <Route path="/billing" element={<BillingPage />} />
         </Route>
       </Routes>
     </AuthGate>
@@ -73,6 +80,12 @@ export default function App() {
           <Routes>
             {/* The operator's screen uses the admin key, not a client sign-in. */}
             <Route path="/admin" element={<AdminPage />} />
+            {/* Public: read before signing up, and checked by payment providers. */}
+            <Route path="/pricing" element={<PricingPage />} />
+            <Route path="/terms" element={<TermsPage />} />
+            <Route path="/privacy" element={<PrivacyPage />} />
+            <Route path="/refunds" element={<RefundsPage />} />
+            <Route path="/contact" element={<ContactPage />} />
             <Route path="/*" element={<ClientApp />} />
           </Routes>
         </Suspense>

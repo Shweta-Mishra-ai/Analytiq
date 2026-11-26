@@ -142,6 +142,28 @@ def validate_dataframe(df: pd.DataFrame) -> ValidationResult:
             "until you run Auto-clean on the Data Quality page.".format(
                 dup_count, dup_pct))
 
+    # Labels written several ways ("South", "south ", "SOUTH"): until
+    # Auto-clean merges them, every breakdown shows each spelling as its
+    # own group, and the dashboard drew "south" as a tiny fifth region.
+    for col in df.columns:
+        s = df[col]
+        if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
+            continue
+        texts = s.dropna()
+        texts = texts[texts.map(lambda v: isinstance(v, str))]
+        n_labels = texts.nunique()
+        if n_labels < 2 or n_labels > 200 or n_labels > 0.5 * max(len(texts), 1):
+            continue
+        labels = texts.unique()
+        canon = pd.Series(labels).str.strip().str.casefold()
+        if canon.nunique() < len(labels):
+            groups = pd.Series(labels).groupby(canon.values).apply(list)
+            example = next(g for g in groups if len(g) > 1)
+            result.warnings.append(
+                "'{}' has labels written in more than one way (e.g. {}), so each is "
+                "counted as a separate group until you run Auto-clean on the Data "
+                "Quality page.".format(col, ", ".join("'{}'".format(x) for x in example[:3])))
+
     # Problematic column names
     bad_names = [c for c in df.columns
                  if not str(c).strip()

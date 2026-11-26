@@ -9,6 +9,8 @@ interface ClientUser {
   username: string
   created_at: number
   usage: { used_mb: number; datasets: number; quota_mb: number }
+  email?: string
+  credits?: { unlimited: boolean; account_unlimited: boolean; paid: number; free_left: number }
 }
 interface Status {
   memory_mb: number | null
@@ -228,19 +230,58 @@ export default function AdminPage() {
               <th>Created</th>
               <th>Datasets</th>
               <th>Storage</th>
+              <th>Credits</th>
               <th />
             </tr>
           </thead>
           <tbody>
             {users.map((u) => (
               <tr key={u.username} className="border-t border-edge text-ink2">
-                <td className="py-2 font-semibold">{u.username}</td>
+                <td className="py-2">
+                  <div className="font-semibold">{u.username}</div>
+                  {u.email && <div className="text-[10px] text-mute">{u.email}</div>}
+                </td>
                 <td>{new Date(u.created_at * 1000).toLocaleDateString()}</td>
                 <td>{u.usage.datasets}</td>
                 <td>
                   {u.usage.used_mb} MB{u.usage.quota_mb ? ` of ${u.usage.quota_mb}` : ''}
                 </td>
+                <td>
+                  {u.credits?.unlimited
+                    ? 'Unlimited'
+                    : `${u.credits?.paid ?? 0} bought · ${u.credits?.free_left ?? 0} free today`}
+                </td>
                 <td className="space-x-2 text-right">
+                  <button
+                    className={btn}
+                    onClick={() => {
+                      const a = window.prompt(
+                        `Credits to give ${u.username} (e.g. for a payment you received outside the app):`,
+                      )
+                      const n = Number(a)
+                      if (a && Number.isInteger(n) && n > 0)
+                        act(
+                          () => call(key, `/api/admin/users/${u.username}/credits`, 'POST', { amount: n }),
+                          `${n} credits given to '${u.username}'.`,
+                        )
+                    }}
+                  >
+                    Give credits
+                  </button>
+                  <button
+                    className={btn}
+                    onClick={() => {
+                      const on = !u.credits?.account_unlimited
+                      act(
+                        () => call(key, `/api/admin/users/${u.username}/unlimited`, 'POST', { unlimited: on }),
+                        on
+                          ? `'${u.username}' is now never charged.`
+                          : `'${u.username}' is charged as usual again.`,
+                      )
+                    }}
+                  >
+                    {u.credits?.account_unlimited ? 'Stop free use' : 'Make unlimited'}
+                  </button>
                   <button
                     className={btn}
                     onClick={() => {
@@ -268,7 +309,7 @@ export default function AdminPage() {
             ))}
             {users.length === 0 && (
               <tr>
-                <td colSpan={5} className="py-4 text-center text-mute">
+                <td colSpan={6} className="py-4 text-center text-mute">
                   No clients yet. Create the first one above.
                 </td>
               </tr>

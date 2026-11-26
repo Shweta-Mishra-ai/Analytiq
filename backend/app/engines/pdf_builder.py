@@ -662,6 +662,19 @@ class _ReportDoc(BaseDocTemplate):
 #  EXECUTIVE SUMMARY
 # ══════════════════════════════════════════════════════════
 
+# Findings about the shape of a column's values: useful to an analyst, not
+# what a reader of the summary acts on. They crowded the summary's five
+# lines while the main business finding sat on a later page.
+_SHAPE_WORDS = ("skewed", "top 10% of rows", "extreme values", "report median",
+                "median rather than the mean")
+
+
+def _business_first(findings):
+    """Business findings in their order, then distribution-shape notes."""
+    shape = [f for f in findings if any(w in str(f).lower() for w in _SHAPE_WORDS)]
+    return [f for f in findings if f not in shape] + shape
+
+
 def _exec_summary(story, s, T, summary, findings, risks, opps, CW, scorecard=None):
     """Key messages first, then the scorecard, then the supporting findings.
 
@@ -696,7 +709,7 @@ def _exec_summary(story, s, T, summary, findings, risks, opps, CW, scorecard=Non
         _scorecard_table(story, s, T, scorecard, CW)
     if findings:
         story.append(Paragraph("Further findings" if msgs else "Key Findings", s["h3"]))
-        for f in findings[:4 if msgs else 5]:
+        for f in _business_first(findings)[:4 if msgs else 5]:
             story.append(Paragraph("• " + _clean(str(f)), s["bl"]))
         story.append(Spacer(1, 2*mm))
     if risks:

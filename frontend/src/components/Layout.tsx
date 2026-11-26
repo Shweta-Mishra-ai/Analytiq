@@ -22,9 +22,47 @@ import {
   GitCompare,
   Gauge,
   UserCog,
+  Coins,
 } from 'lucide-react'
 import { useApp } from '../store/app'
-import { ApiError, apiGet, getToken, setToken } from '../api/client'
+import {
+  ApiError,
+  CREDITS_EVENT,
+  OUT_OF_CREDITS_EVENT,
+  apiGet,
+  getToken,
+  setToken,
+} from '../api/client'
+
+interface Credits {
+  unlimited: boolean
+  total: number
+  free_left: number
+}
+
+/** The balance in the sidebar; refreshed after anything that may have
+ *  used or added credits. */
+function useCredits(): Credits | null {
+  const [c, setC] = useState<Credits | null>(null)
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const load = () =>
+      apiGet<{ credits?: Credits }>('/api/account')
+        .then((a) => setC(a.credits ?? null))
+        .catch(() => {})
+    const soon = () => {
+      clearTimeout(timer)
+      timer = setTimeout(load, 400)
+    }
+    load()
+    window.addEventListener(CREDITS_EVENT, soon)
+    return () => {
+      clearTimeout(timer)
+      window.removeEventListener(CREDITS_EVENT, soon)
+    }
+  }, [])
+  return c
+}
 
 // Grouped by the order work is done in: load and check the data, explore
 // it, analyse and model it, then deliver. "Advanced" mixed statistical
@@ -107,6 +145,16 @@ export default function Layout() {
   const [open, setOpen] = useState(false)
   const location = useLocation()
   useEffect(() => setOpen(false), [location.pathname])
+
+  const credits = useCredits()
+  // Shown over any page whose action ran out of credits.
+  const [outOfCredits, setOutOfCredits] = useState('')
+  useEffect(() => {
+    const on = (e: Event) => setOutOfCredits((e as CustomEvent<string>).detail || 'Out of credits.')
+    window.addEventListener(OUT_OF_CREDITS_EVENT, on)
+    return () => window.removeEventListener(OUT_OF_CREDITS_EVENT, on)
+  }, [])
+  useEffect(() => setOutOfCredits(''), [location.pathname])
 
   return (
     <div className="flex h-full flex-col md:flex-row">
@@ -208,6 +256,22 @@ export default function Layout() {
           )}
         </div>
 
+        {credits && (
+          <Link
+            to="/billing"
+            className="flex items-center justify-between gap-2 border-t border-edge px-4 py-3 text-[12px] transition-colors hover:bg-panel2"
+          >
+            <span className="flex items-center gap-2 text-ink2">
+              <Coins className="h-3.5 w-3.5 text-amber" />
+              {credits.unlimited
+                ? 'Unlimited'
+                : `${credits.total} credit${credits.total === 1 ? '' : 's'}`}
+            </span>
+            {!credits.unlimited && (
+              <span className="font-semibold text-accent">Buy</span>
+            )}
+          </Link>
+        )}
         <Link
           to="/account"
           className="flex items-center gap-2 border-t border-edge px-4 py-3 text-[11px] text-faint transition-colors hover:bg-panel2 hover:text-ink"
@@ -230,6 +294,19 @@ export default function Layout() {
         )}
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto">
+        {outOfCredits && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber/30 bg-amber/10 px-6 py-3 text-sm text-amber">
+            <span>{outOfCredits}</span>
+            <span className="flex items-center gap-3">
+              <Link to="/billing" className="btn-primary rounded-lg px-3 py-1.5 text-xs font-semibold text-white">
+                Buy credits
+              </Link>
+              <button onClick={() => setOutOfCredits('')} aria-label="Dismiss" className="text-amber/80 hover:text-amber">
+                <X className="h-4 w-4" />
+              </button>
+            </span>
+          </div>
+        )}
         <Outlet />
       </main>
     </div>

@@ -155,6 +155,9 @@ The application remains fully functional locally without keys (AI modules degrad
 | `TOKEN_TTL_DAYS` | you choose | How long a client's login session lasts before they must sign in again. Default `30`. |
 | `APP_PUBLIC_URL` | your deployment | Public base URL (e.g. `https://analytiq.example.com`) used in report download links returned by the remote MCP endpoint. Optional; the request's host is used if unset. |
 | `CLAMD_HOST` / `CLAMD_PORT` / `CLAMD_SOCKET` | your ClamAV daemon | Optional antivirus scan of every upload (e.g. the `clamav/clamav` Docker image on port 3310). Content checks — renamed programs, macro workbooks, compression bombs, encrypted workbooks — always run; with these set, each file is also scanned and refused if flagged. A configured scanner that is down makes uploads fail closed (503). |
+| `FREE_DAILY_CREDITS`, `CREDIT_COSTS`, `CREDIT_PACKS`, `FREE_USERS`, `SIGNUP_ENABLED` | you choose | Free credits a day (5), what reports/training/chat cost, the packs on sale, usernames never charged, and whether anyone may sign up. See [docs/OPERATIONS.md](docs/OPERATIONS.md#credits-and-payments). |
+| `RAZORPAY_*`, `STRIPE_*`, `PAYPAL_*` | the provider's dashboard | Selling credit packs: Razorpay (UPI, cards, netbanking), Stripe Checkout, PayPal. Each is on once its keys are set. |
+| `BUSINESS_NAME`, `BUSINESS_ADDRESS`, `BUSINESS_PHONE` | you | Shown on the public Contact, Terms, Privacy and Refund pages that payment providers check. |
 | `LLM_PRIVACY_MODE` | you choose | `1` forbids sending client data to any cloud model: narratives, AI chat and RAG answers use only the local model (`LOCAL_LLM_URL` / `LOCAL_LLM_MODEL`), and RAG indexes documents with the local embedder. Chat answers 503 if no local model is configured. |
 
 ### 🎬 Video-to-dataset extraction

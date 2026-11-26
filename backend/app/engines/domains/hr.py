@@ -319,6 +319,10 @@ def _run_attrition(df: pd.DataFrame) -> Optional[AttritionAnalysis]:
 #  HR INSIGHTS
 # ══════════════════════════════════════════════════════════
 
+def _q_text(q: float) -> str:
+    return "q<0.001" if q < 0.001 else "q={:.3f}".format(q)
+
+
 def _insights_hr(df: pd.DataFrame, stats: Dict,
                  corrs: List, attrition: Optional[AttritionAnalysis]) -> Dict:
     findings, risks, opps, actions = [], [], [], []
@@ -416,6 +420,25 @@ def _insights_hr(df: pd.DataFrame, stats: Dict,
         else:
             findings.append("Attrition rate {:.1f}% is {:.1f} points above the 10–15% "
                             "planning band.".format(rate, rate - 15))
+
+        # The strongest tested driver belongs beside the rate in the summary.
+        # It was only in the drivers table on a later page, while the
+        # summary's other lines were the shape of the tenure distribution.
+        lead = attrition.top_drivers[0] if attrition.top_drivers else None
+        if lead and lead["type"] == "categorical":
+            findings.append(
+                "Leaving is most strongly associated with '{}': {:.0f}% of '{}' left, "
+                "against {:.0f}% of '{}' ({}, corrected for the number of factors "
+                "tested). This is an association, not proof of cause.".format(
+                    lead["factor"], lead["worst_rate"], lead["worst_cat"],
+                    lead["best_rate"], lead["best_cat"], _q_text(lead["q_value"])))
+        elif lead:
+            findings.append(
+                "Leaving is most strongly associated with '{}': leavers average {:.2f} "
+                "against {:.2f} for those who stayed ({}, corrected for the number of "
+                "factors tested).".format(
+                    lead["factor"], lead["left_mean"], lead["stay_mean"],
+                    _q_text(lead["q_value"])))
 
         # Department and pay-band gaps. Each is reported only when the
         # chi-square test says the groups really differ: with a few groups

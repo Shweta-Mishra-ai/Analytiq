@@ -138,7 +138,7 @@ def _guard(fn):
         except Exception as e:
             # The busy and over-quota answers of the web API, in words.
             detail = getattr(e, "detail", None)
-            if isinstance(detail, str) and getattr(e, "status_code", 0) in (413, 503, 507):
+            if isinstance(detail, str) and getattr(e, "status_code", 0) in (402, 413, 503, 507):
                 return f"**Could not do that:** {detail}"
             logger.exception("MCP tool %s failed", fn.__name__)
             return f"**The analysis failed:** {e}"
@@ -460,9 +460,10 @@ def train_model(ctx: Context, dataset_id: str, target: str) -> str:
     df = _df(owner, dataset_id)
     if target not in df.columns:
         raise ValueError(f"No column '{target}'.")
+    from app.services.credits import charging
     from app.services.limits import heavy_job
     try:
-        with heavy_job("model training"):
+        with charging(owner, "ml_train"), heavy_job("model training"):
             rep = run_ml_pipeline(df, target)
     except TargetError as e:
         raise ValueError(str(e))
@@ -561,15 +562,16 @@ def generate_report(ctx: Context, dataset_id: str, kind: str = "analysis",
     meta = _store().get_meta(owner, dataset_id)
     lang = _check_language(language)
     filename = getattr(meta, "filename", "") or f"{dataset_id}.csv"
+    from app.services.credits import charging
     from app.services.limits import heavy_job
     if kind == "health":
         req = HealthPdfRequest(agency_name=prepared_by or "Analytiq", language=lang)
-        with heavy_job("report"), i18n.use_language(lang, **i18n.data_context(df, filename, req.agency_name)):
+        with charging(owner, "health_report"), heavy_job("report"), i18n.use_language(lang, **i18n.data_context(df, filename, req.agency_name)):
             pdf = _generate_health_pdf(df, filename, req)
     elif kind == "analysis":
         req = PdfRequest(title=title, client_name=client_name, prepared_by=prepared_by,
                          language=lang)
-        with heavy_job("report"), i18n.use_language(lang, **i18n.data_context(df, filename, title, "",
+        with charging(owner, "pdf_report"), heavy_job("report"), i18n.use_language(lang, **i18n.data_context(df, filename, title, "",
                                                          client_name, prepared_by)):
             pdf = _generate_pdf(df, owner, dataset_id, req)
     else:

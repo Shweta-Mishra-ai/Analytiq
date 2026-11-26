@@ -483,13 +483,19 @@ def _discount_message(data, rev, profit, disc) -> Optional[Message]:
     p = float(sc_stats.kruskal(*groups).pvalue)
     if gap_pp < 5 or share < 5 or p >= 0.05:
         return None
-    loses = deep_m < 0
+    # Losing money means a margin that is negative as printed: -0.04%
+    # printed as "lose money: -0.0% margin", a headline that reads as an
+    # error. Below that it is about break-even and says so.
+    shown = round(deep_m * 100, 1)
+    loses = shown < 0
     regained = gap_pp / 100 * float(g.loc[deepest, "rev"])
     title = ("Orders discounted {} lose money: {:.1f}% margin against {:.1f}% at full price"
              if loses else
+             "Orders discounted {} only break even: {:.1f}% margin against {:.1f}% at full price"
+             if shown == 0 else
              "Orders discounted {} earn {:.1f}% margin against {:.1f}% at full price")
     return Message(
-        title=title.format(deepest, deep_m * 100, base_m * 100),
+        title=title.format(deepest, abs(shown) if shown == 0 else shown, base_m * 100),
         detail=("They carry {:.0f}% of revenue ({}). Margin falls band by band: {}. "
                 "This is an association across orders; it does not show what volume the "
                 "discounts won.").format(

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from app.config import config
 from app.rag import service
 from app.rag.vector_store import rag_store
+from app.services.credits import charge
 from app.services.auth import current_owner
 from app.services.serialize import to_jsonable
 
@@ -116,7 +117,8 @@ def query(kb_id: str, req: QueryRequest, owner: str = Depends(current_owner)):
 
 
 @router.post("/kb/{kb_id}/report")
-def report(kb_id: str, req: ReportRequest, owner: str = Depends(current_owner)):
+def report(kb_id: str, req: ReportRequest, owner: str = Depends(current_owner),
+           _charged: None = Depends(charge("kb_report"))):
     kb = _kb_or_404(owner, kb_id)
     try:
         return to_jsonable(service.generate_report(kb, req.title, req.focus))
@@ -127,7 +129,8 @@ def report(kb_id: str, req: ReportRequest, owner: str = Depends(current_owner)):
 
 
 @router.post("/kb/{kb_id}/report/pdf")
-def report_as_pdf(kb_id: str, req: ReportRequest, owner: str = Depends(current_owner)):
+def report_as_pdf(kb_id: str, req: ReportRequest, owner: str = Depends(current_owner),
+                  _charged: None = Depends(charge("kb_report"))):
     kb = _kb_or_404(owner, kb_id)
     try:
         result = service.generate_report(kb, req.title, req.focus)

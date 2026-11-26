@@ -21,7 +21,7 @@ from starlette.requests import Request
 from pydantic import BaseModel
 
 from app.config import config
-from app.api import advanced_analytics, analytics, charts, chat, datasets, ml, reports
+from app.api import advanced_analytics, analytics, billing, charts, chat, datasets, ml, reports
 from app.services.auth import AuthMiddleware
 from app.services.cleanup import cleanup_loop, sweep_expired
 from app.services.user_store import user_store
@@ -76,8 +76,13 @@ _SECURITY_HEADERS = {
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
     # The app's own scripts and styles only. Plotly sets inline styles.
     "Content-Security-Policy": (
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
+        # checkout.razorpay.com: Razorpay's payment window (cards, UPI),
+        # which loads its script and opens in a frame on api.razorpay.com.
+        "default-src 'self'; script-src 'self' https://checkout.razorpay.com; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob: https://*.razorpay.com; font-src 'self' data:; "
+        "connect-src 'self' https://*.razorpay.com; "
+        "frame-src https://api.razorpay.com https://checkout.razorpay.com; "
         "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"),
 }
 
@@ -215,6 +220,69 @@ def login(req: LoginRequest):
 
 
 
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+    email: str = ""
+
+
+class _SignupLimiter:
+    """At most SIGNUPS_PER_HOUR new accounts from one address an hour. Each
+    account comes with free daily credits, so unlimited sign-ups were
+    unlimited free reports."""
+
+    def __init__(self, per_hour: int = 5):
+        self.per_hour = per_hour
+        self._seen: dict[str, list[float]] = {}
+        import threading
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> bool:
+        now = time.time()
+        with self._lock:
+            recent = [t for t in self._seen.get(key, []) if now - t < 3600]
+            if len(self._seen) > 10_000:
+                self._seen = {k: v for k, v in self._seen.items()
+                              if v and now - v[-1] < 3600}
+            if len(recent) >= self.per_hour:
+                self._seen[key] = recent
+                return False
+            recent.append(now)
+            self._seen[key] = recent
+            return True
+
+
+signup_limiter = _SignupLimiter()
+
+
+@app.post("/api/auth/signup")
+def signup(req: SignupRequest, request: Request):
+    """Create an account and sign in. Every account gets the free daily
+    credits; nothing else is shared between accounts."""
+    from fastapi import HTTPException
+    from app.services.auth import setup_required
+    from app.services.tokens import issue_token
+    if not config.signup_enabled:
+        raise HTTPException(403, "New accounts are created by the administrator. "
+                                 "Please contact support.")
+    if setup_required():
+        raise HTTPException(503, "This server is not set up yet: its administrator "
+                                 "must set APP_ADMIN_KEY.")
+    email = req.email.strip()
+    if email and (len(email) > 200 or "@" not in email or " " in email):
+        raise HTTPException(422, "That email address does not look right.")
+    if not signup_limiter.allow(_caller_key(request)):
+        raise HTTPException(429, "Too many new accounts from this address. "
+                                 "Try again in an hour.", headers={"Retry-After": "3600"})
+    try:
+        user = user_store.create(req.username, req.password, email=email)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    logger.info("account created by sign-up: %s", user.username)
+    return {"token": issue_token(user.username), "username": user.username,
+            "is_admin": False}
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
@@ -259,7 +327,13 @@ def account(request: Request):
         "data_ttl_days": config.data_ttl_days,
         "support_email": config.support_email,
         "connector": _connector_info(request, username),
+        "credits": _credits(request, username),
     }
+
+
+def _credits(request: Request, username: str) -> dict:
+    from app.services.credits import credit_store
+    return credit_store.balance(username, bool(getattr(request.state, "is_admin", False)))
 
 
 def _connector_info(request: Request, username: str):
@@ -308,6 +382,8 @@ app.include_router(charts.router)
 app.include_router(ml.router)
 app.include_router(chat.router)
 app.include_router(reports.router)
+app.include_router(billing.router)
+app.include_router(billing.admin_router)
 
 try:
     from app.api import rag
@@ -354,6 +430,9 @@ async def health():
         "max_file_mb": config.max_file_mb,
         "data_ttl_days": config.data_ttl_days,
         "chat_available": _chat_available(),
+        "signup_enabled": config.signup_enabled,
+        "business": {"name": config.business_name, "address": config.business_address,
+                     "phone": config.business_phone, "email": config.support_email},
         # What will actually happen to a narrative request, so a client
         # running in privacy mode can confirm it from outside the app.
         "llm": _llm_status(),
@@ -380,9 +459,11 @@ def create_client_user(req: CreateUserRequest):
 @app.get("/api/admin/users")
 def list_client_users():
     from app.services.limits import owner_usage
+    from app.services.credits import credit_store
     return {"users": [
         {"username": u.username, "created_at": u.created_at, "is_admin": u.is_admin,
-         "usage": owner_usage(u.username)}
+         "email": u.email, "usage": owner_usage(u.username),
+         "credits": credit_store.balance(u.username, u.is_admin)}
         for u in user_store.list()
     ]}
 
@@ -510,6 +591,8 @@ async def delete_client_user(username: str):
 
     removed_ds, removed_kbs = await run_in_threadpool(_cascade_delete)
     user_store.delete(username)
+    from app.services.credits import credit_store
+    credit_store.forget(username)
     return {"deleted_user": username, "datasets_removed": removed_ds,
             "knowledge_bases_removed": removed_kbs}
 

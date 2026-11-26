@@ -140,3 +140,36 @@ def test_a_template_spanning_sentences_matches_inside_a_paragraph():
                 "5 reps with >=3 records. Top 20% of reps generate 23% of revenue. "
                 "Team median per record=21.")
         assert not i18n.misses()
+
+
+def _monthly_campaigns(cpa_by_month, seed=4):
+    """Daily rows; each month's cost per conversion is the given value."""
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    rows = []
+    for m, cpa in enumerate(cpa_by_month):
+        start = pd.Timestamp("2024-01-01") + pd.DateOffset(months=m)
+        for d in range(start.days_in_month):
+            conv = int(rng.integers(40, 60))
+            rows.append({"Date": start + pd.Timedelta(days=d),
+                         "Channel": rng.choice(["Search", "Social"]),
+                         "Spend": round(conv * cpa, 2), "Clicks": conv * 20,
+                         "Conversions": conv, "Revenue": conv * 90.0})
+    return pd.DataFrame(rows)
+
+
+def test_a_cost_spike_after_a_steady_history_is_a_risk():
+    from app.engines.story_engine import generate_story
+    df = _monthly_campaigns([10, 10.5, 9.8, 10.2, 10, 9.9, 10.3, 10.1, 25])
+    risks = " ".join(generate_story(df).business_risks)
+    assert "Cost per conversion rose" in risks, risks
+
+
+def test_a_usual_monthly_swing_is_not_reported_as_a_risk():
+    """An account whose cost per conversion doubles and halves month to
+    month: another doubling is ordinary, and was printed as a risk."""
+    from app.engines.story_engine import generate_story
+    df = _monthly_campaigns([10, 22, 9, 24, 10, 21, 9, 23, 10, 22])
+    risks = " ".join(generate_story(df).business_risks)
+    assert "Cost per conversion rose" not in risks, risks

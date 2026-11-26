@@ -10,6 +10,7 @@ from typing import Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.services.credits import charge
 from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.serialize import to_jsonable
@@ -72,7 +73,8 @@ def targets(ds_id: str, owner: str = Depends(current_owner)):
 
 
 @router.post("/{ds_id}/train")
-def train(ds_id: str, req: TrainRequest, owner: str = Depends(current_owner)):
+def train(ds_id: str, req: TrainRequest, owner: str = Depends(current_owner),
+          _charged: None = Depends(charge("ml_train"))):
     df = _df_or_404(owner, ds_id)
     if req.target not in df.columns:
         raise HTTPException(422, f"Target '{req.target}' not in dataset")

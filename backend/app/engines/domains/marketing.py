@@ -388,9 +388,26 @@ def trend_insight(df: pd.DataFrame, rep: MarketingReport, insights: List,
         ch = (rc.cpa - rp.cpa) / rp.cpa * 100
         lines.append("cost per conversion {} ({:+.0f}% on {})".format(
             _money(rc.cpa), ch, prev.strftime("%b %Y")))
-        if ch >= 20:
-            risks.append("Cost per conversion rose {:.0f}% in {} against {}.".format(
-                ch, cur.strftime("%b %Y"), prev.strftime("%b %Y")))
+        # A 20% rise was a risk however much this account's cost per
+        # conversion usually moves. With a channel mix that shifts month to
+        # month, swings of 100%+ were ordinary and every one was printed as
+        # a risk. Against at least six earlier month-on-month changes, a
+        # rise is a risk only beyond nine in ten of them.
+        history = []
+        for a, b in zip(months[:-2], months[1:-1]):
+            ra, rb = _row(str(a), df[month == a], c), _row(str(b), df[month == b], c)
+            if np.isfinite(ra.cpa) and np.isfinite(rb.cpa) and ra.cpa > 0:
+                history.append(abs(rb.cpa - ra.cpa) / ra.cpa * 100)
+        usual = float(np.percentile(history, 90)) if len(history) >= 6 else None
+        if ch >= 20 and (usual is None or ch > usual):
+            risks.append("Cost per conversion rose {:.0f}% in {} against {}{}.".format(
+                ch, cur.strftime("%b %Y"), prev.strftime("%b %Y"),
+                " — more than nine in ten of its earlier monthly moves (up to {:.0f}%)"
+                .format(usual) if usual is not None else
+                " (only {} earlier months to judge whether that is unusual)".format(
+                    len(history) + 1)))
+        elif ch >= 20:
+            lines[-1] += ", within its usual month-to-month swing (up to {:.0f}%)".format(usual)
     if c.revenue and np.isfinite(rc.roas) and np.isfinite(rp.roas):
         lines.append("ROAS {:.2f} (from {:.2f})".format(rc.roas, rp.roas))
     if lines:

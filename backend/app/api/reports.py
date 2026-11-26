@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.engines.data_cleaner import table_name_from_filename
+from app.services.credits import charge
 from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.serialize import to_jsonable
@@ -208,7 +209,8 @@ def export_excel(ds_id: str, owner: str = Depends(current_owner)):
 
 
 @router.post("/{ds_id}/pdf")
-def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner)):
+def generate_pdf(ds_id: str, req: PdfRequest, owner: str = Depends(current_owner),
+                 _charged: None = Depends(charge("pdf_report"))):
     df = _df_or_404(owner, ds_id)
     from app import i18n
     lang = _check_language(req.language)
@@ -421,7 +423,8 @@ def health_summary(ds_id: str, owner: str = Depends(current_owner)):
 
 @router.post("/{ds_id}/health-pdf")
 def generate_health_pdf(ds_id: str, req: HealthPdfRequest,
-                         owner: str = Depends(current_owner)):
+                         owner: str = Depends(current_owner),
+                         _charged: None = Depends(charge("health_report"))):
     """Client-facing Data Health & Business Insights report (PDF)."""
     df = _df_or_404(owner, ds_id)
     meta = store.get_meta(owner, ds_id)

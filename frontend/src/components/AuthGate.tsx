@@ -4,7 +4,8 @@
  * install, zero setup) passes through untouched.
  */
 import { useEffect, useState, type ReactNode } from 'react'
-import { Database, Lock, User } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Database, Lock, Mail, User } from 'lucide-react'
 import { ApiError, apiGet, apiPost, getToken, setToken } from '../api/client'
 import { useApp } from '../store/app'
 
@@ -16,10 +17,14 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin')
+  const [email, setEmail] = useState('')
+  const [signupOpen, setSignupOpen] = useState(false)
 
   const probe = async () => {
     try {
-      const h = await apiGet<{ auth_required: boolean }>('/api/health')
+      const h = await apiGet<{ auth_required: boolean; signup_enabled?: boolean }>('/api/health')
+      setSignupOpen(Boolean(h.signup_enabled))
       if (!h.auth_required) return setStatus('open')
       if (!getToken()) return setStatus('locked')
       // verify the stored token still works
@@ -64,10 +69,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       setBusy(true)
       setError('')
       try {
-        const r = await apiPost<{ token: string }>('/api/auth/login', {
-          username,
-          password,
-        })
+        const r = await apiPost<{ token: string }>(
+          mode === 'signup' ? '/api/auth/signup' : '/api/auth/login',
+          mode === 'signup' ? { username, password, email } : { username, password },
+        )
         setToken(r.token)
         setStatus('authed')
       } catch (err) {
@@ -77,10 +82,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       }
     }
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="flex h-full items-center justify-center px-4">
         <form
           onSubmit={submit}
-          className="w-80 rounded-2xl border border-edge bg-panel p-6"
+          className="w-full max-w-sm rounded-2xl border border-edge bg-panel p-6"
         >
           <div className="mb-4 flex items-center gap-2">
             <Database className="h-6 w-6 text-accent" />
@@ -106,14 +111,53 @@ export default function AuthGate({ children }: { children: ReactNode }) {
             onChange={(e) => setPassword(e.target.value)}
             className="w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
           />
+          {mode === 'signup' && (
+            <>
+              <p className="mt-1 text-[11px] text-faint">At least 8 characters, not a common password.</p>
+              <label className="mt-3 mb-1 flex items-center gap-1.5 text-xs text-mute">
+                <Mail className="h-3.5 w-3.5" /> Email (for receipts and password help)
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full rounded-lg border border-edge bg-panel2 px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
+              />
+            </>
+          )}
           {error && <p className="mt-2 text-xs text-rose">{error}</p>}
           <button
             type="submit"
             disabled={busy || !username || !password}
             className="mt-4 w-full rounded-lg bg-accent py-2 text-sm font-semibold text-white disabled:opacity-40"
           >
-            {busy ? 'Signing in…' : 'Sign in'}
+            {busy ? 'Please wait…' : mode === 'signup' ? 'Create free account' : 'Sign in'}
           </button>
+          {signupOpen && (
+            <button
+              type="button"
+              onClick={() => {
+                setMode(mode === 'signup' ? 'signin' : 'signup')
+                setError('')
+              }}
+              className="mt-3 w-full text-center text-xs text-accent hover:underline"
+            >
+              {mode === 'signup'
+                ? 'Already have an account? Sign in'
+                : 'New here? Create a free account — free credits every day'}
+            </button>
+          )}
+          <div className="mt-4 flex justify-center gap-3 border-t border-edge pt-3 text-[11px] text-faint">
+            <Link to="/pricing" className="hover:text-ink">Pricing</Link>
+            <Link to="/terms" className="hover:text-ink">Terms</Link>
+            <Link to="/privacy" className="hover:text-ink">Privacy</Link>
+            <Link to="/contact" className="hover:text-ink">Contact</Link>
+          </div>
+          {mode === 'signup' && (
+            <p className="mt-2 text-center text-[10px] text-faint">
+              By creating an account you accept the Terms and Privacy Policy.
+            </p>
+          )}
         </form>
       </div>
     )

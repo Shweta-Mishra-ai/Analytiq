@@ -2032,5 +2032,9 @@
  "{v1:t} retention by cohort — {v2}; compared first cohort against the last (cohorts of {v3}+ customers; the first month of the data, which holds customers acquired before it, and cohorts whose return month the data does not fully cover are left out).": "समूह के अनुसार {v1} प्रतिधारण — {v2}; पहले समूह की तुलना अंतिम से (केवल {v3}+ ग्राहकों वाले समूह; डेटा का पहला महीना, जिसमें उससे पहले जुड़े ग्राहक हैं, और वे समूह जिनका वापसी-महीना डेटा में पूरा नहीं है, छोड़ दिए गए)।",
  "{v1:t} retention by cohort — {v2}; compared averaged over the cohorts of {v3} to {v4} against the same months a year earlier ({v5} to {v6}) (cohorts of {v7}+ customers; the first month of the data, which holds customers acquired before it, and cohorts whose return month the data does not fully cover are left out).": "समूह के अनुसार {v1} प्रतिधारण — {v2}; {v3} से {v4} के समूहों का औसत, एक वर्ष पहले के उन्हीं महीनों ({v5} से {v6}) की तुलना में (केवल {v7}+ ग्राहकों वाले समूह; डेटा का पहला महीना, जिसमें उससे पहले जुड़े ग्राहक हैं, और वे समूह जिनका वापसी-महीना डेटा में पूरा नहीं है, छोड़ दिए गए)।",
  "p<0.001": "p<0.001",
- "p={v1}": "p={v1}"
+ "p={v1}": "p={v1}",
+ "Leaving is most strongly associated with '{v1}': {v2}% of '{v3:t}' left, against {v4}% of '{v5:t}' ({v6}, corrected for the number of factors tested).": "नौकरी छोड़ने का सबसे गहरा संबंध '{v1}' से है: '{v3}' में से {v2}% ने नौकरी छोड़ी, जबकि '{v5}' में से {v4}% ने ({v6}, जाँचे गए कारकों की संख्या के लिए समायोजित)।",
+ "Leaving is most strongly associated with '{v1}': leavers average {v2} against {v3} for those who stayed ({v4}, corrected for the number of factors tested).": "नौकरी छोड़ने का सबसे गहरा संबंध '{v1}' से है: छोड़ने वालों का औसत {v2} है, जबकि रुकने वालों का {v3} ({v4}, जाँचे गए कारकों की संख्या के लिए समायोजित)।",
+ "This is an association, not proof of cause.": "यह एक संबंध है, कारण का प्रमाण नहीं।",
+ "Orders discounted {v1:t} only break even: {v2}% margin against {v3}% at full price": "{v1} छूट वाले ऑर्डर केवल लागत निकाल पाते हैं: पूरी कीमत पर {v3}% की तुलना में {v2}% मार्जिन"
 }

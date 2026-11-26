@@ -288,3 +288,13 @@ def test_case_is_kept_in_identifier_like_columns():
     df = pd.DataFrame({"Code": codes, "v": range(120)})
     out, _ = auto_clean(df)
     assert out["Code"].nunique() == 120
+
+
+def test_upload_warns_when_a_label_is_written_several_ways():
+    from app.engines.data_validator import validate_dataframe
+    df = pd.DataFrame({"Region": ["South"] * 40 + ["south "] * 3 + ["North"] * 40,
+                       "v": range(83)})
+    warnings = validate_dataframe(df).warnings
+    assert any("'Region' has labels written in more than one way" in w for w in warnings), warnings
+    clean = pd.DataFrame({"Region": ["South"] * 40 + ["North"] * 40, "v": range(80)})
+    assert not any("more than one way" in w for w in validate_dataframe(clean).warnings)

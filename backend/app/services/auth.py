@@ -34,7 +34,11 @@ from app.services.user_store import user_store
 logger = logging.getLogger(__name__)
 
 # endpoints that must stay reachable without a token
-PUBLIC_PATHS = {"/api/health", "/api/auth/login"}
+PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/signup",
+                "/api/billing/plans",
+                # Called by the payment providers, which have no token; each
+                # verifies the provider's signature itself.
+                "/api/billing/webhook/razorpay", "/api/billing/webhook/stripe"}
 
 # implicit owner used only in single-user open dev mode
 LOCAL_OWNER = "local"

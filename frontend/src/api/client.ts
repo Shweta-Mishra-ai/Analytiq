@@ -46,6 +46,21 @@ async function errorMessage(res: Response): Promise<string> {
   }
 }
 
+/** Credits changed (an action was charged, or credits were bought): the
+ *  balance in the sidebar refreshes. 402: none left for that action. */
+export const CREDITS_EVENT = 'analytiq-credits'
+export const OUT_OF_CREDITS_EVENT = 'analytiq-out-of-credits'
+function creditsChanged() {
+  window.dispatchEvent(new Event(CREDITS_EVENT))
+}
+async function failure(res: Response): Promise<ApiError> {
+  const message = await errorMessage(res)
+  if (res.status === 402) {
+    window.dispatchEvent(new CustomEvent(OUT_OF_CREDITS_EVENT, { detail: message }))
+  }
+  return new ApiError(res.status, message)
+}
+
 /** An HTTP error from the API, with its status for callers that branch on it. */
 export class ApiError extends Error {
   status: number
@@ -66,7 +81,7 @@ async function handle<T>(res: Response): Promise<T> {
     if (hadToken) onUnauthorized()
     throw new ApiError(401, hadToken ? 'Your session has ended — please sign in again' : message)
   }
-  if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
+  if (!res.ok) throw await failure(res)
   return res.json() as Promise<T>
 }
 
@@ -75,13 +90,15 @@ export async function apiGet<T>(path: string): Promise<T> {
 }
 
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
-  return handle<T>(
+  const out = await handle<T>(
     await fetch(`${BASE}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body ?? {}),
     }),
   )
+  creditsChanged()
+  return out
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
@@ -119,7 +136,8 @@ export async function apiBlob(
     onUnauthorized()
     throw new ApiError(401, 'Not authenticated — please log in')
   }
-  if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
+  if (!res.ok) throw await failure(res)
+  if (method === 'POST') creditsChanged()
   return res.blob()
 }
 

@@ -120,3 +120,24 @@ test('the admin screen opens with the key and shows the server status', async ({
   await expect(page.getByTestId('errors')).toContainText('None.')
   expect(problems).toEqual([])
 })
+
+test('the billing page and the public pricing and policy pages open', async ({ page }) => {
+  const problems = watch(page)
+  await page.goto('/billing')
+  // Single-user mode is never charged.
+  await expect(page.getByText('Unlimited account', { exact: true })).toBeVisible()
+  await expect(page.getByText('What uses credits')).toBeVisible()
+  await page.goto('/pricing')
+  await expect(page.getByText('free credits every day')).toBeVisible()
+  await expect(page.getByText('600', { exact: true })).toBeVisible()
+  for (const [path, heading] of [
+    ['/terms', 'Terms of Service'],
+    ['/privacy', 'Privacy Policy'],
+    ['/refunds', 'Refund & Cancellation Policy'],
+    ['/contact', 'Contact'],
+  ]) {
+    await page.goto(path)
+    await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible()
+  }
+  expect(problems).toEqual([])
+})

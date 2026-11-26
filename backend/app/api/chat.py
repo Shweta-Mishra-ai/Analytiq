@@ -18,6 +18,7 @@ from app.ai.prompt_builder import build_chat_system_prompt
 from app.ai.response_parser import parse_tool_call
 from app.ai.tool_dispatcher import dispatch
 from app.config import config
+from app.services.credits import charge
 from app.services.auth import current_owner
 from app.services.dataset_store import store
 from app.services.serialize import df_records
@@ -121,7 +122,8 @@ def _complete(system: str, messages: list[dict]) -> str:
 
 
 @router.post("/{ds_id}")
-def chat(ds_id: str, req: ChatRequest, owner: str = Depends(current_owner)):
+def chat(ds_id: str, req: ChatRequest, owner: str = Depends(current_owner),
+         _charged: None = Depends(charge("chat"))):
     df = store.get_df(owner, ds_id)
     if df is None:
         raise HTTPException(404, "Dataset not found")
