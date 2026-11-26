@@ -126,6 +126,13 @@ class AppConfig(BaseSettings):
     app_admin_key: str = Field(default="", alias="APP_ADMIN_KEY")
     app_password: str = Field(default="", alias="APP_PASSWORD")
     app_secret: str = Field(default="", alias="APP_SECRET")
+    # Never run without sign-in. Without it, a server with no admin key and
+    # no accounts is open to anyone with the address, every visitor an
+    # admin: one setting forgotten on a deployment exposed it entirely. The
+    # Docker image sets it, so a deployment without APP_ADMIN_KEY is locked
+    # (every API call refused, /api/health reports setup_required) rather
+    # than open. Running from a checkout leaves it off for local work.
+    require_auth: bool = Field(default=False, alias="REQUIRE_AUTH")
     token_ttl_days: int = Field(default=30, alias="TOKEN_TTL_DAYS")
 
     @property

@@ -9,8 +9,12 @@ figures are measurements of this app, not estimates.
    with a few reports running and 1 GB while a 59 MB file loads.
 2. **Set `APP_ADMIN_KEY`** to a long random value
    (`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`).
-   Without it and with no accounts, the app is open to anyone who has the
-   address.
+   The Docker image sets `REQUIRE_AUTH=1`, so a deployment without it is
+   locked: every request is refused and `/api/health` reports
+   `"setup_required": true`. Running from a checkout without Docker, there is
+   no such lock: without the key and with no accounts, the app is open to
+   anyone who has the address. Set `REQUIRE_AUTH=1` on any such server that
+   others can reach.
 3. **Serve it over HTTPS.** Passwords and tokens travel in every request.
    Render and Railway do this for you.
 4. **Persistent disk** mounted at `DATA_DIR`. Accounts, the token signing key

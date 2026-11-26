@@ -147,7 +147,8 @@ The application remains fully functional locally without keys (AI modules degrad
 | `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) | Claude answers AI Chat, writes report narratives and answers knowledge-base questions, tried before the other providers (which remain fallbacks). `CLAUDE_MODEL` defaults to `claude-opus-5-5`. Paid per use; refused in `LLM_PRIVACY_MODE` like every cloud model. |
 | `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) | Powering the AI Chat copilot and chart generation narratives |
 | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com) | Powering image/video analysis, RAG indexing, and executive summaries |
-| `APP_ADMIN_KEY` | you choose | Master key for account management (`/api/admin/*`). Unset + zero accounts created = open/no-auth (local dev only). `APP_PASSWORD` also works as a fallback name. |
+| `APP_ADMIN_KEY` | you choose | Master key for account management (`/api/admin/*`). Unset + zero accounts created = open/no-auth (local dev only), unless `REQUIRE_AUTH=1`. `APP_PASSWORD` also works as a fallback name. |
+| `REQUIRE_AUTH` | set by the Docker image | `1` never runs without sign-in: a server with no admin key and no accounts refuses every request (and `/api/health` reports `setup_required`) instead of opening to anyone. |
 | `DATA_TTL_DAYS` | you choose | Days before an uploaded dataset or RAG knowledge base is auto-deleted. Default `30`. Set `0` to disable expiry entirely. |
 | `CLEANUP_INTERVAL_HOURS` | you choose | How often the expiry sweep runs in the background. Default `6`. A sweep also runs once at startup, and can be triggered manually via `POST /api/admin/cleanup`. |
 | `APP_SECRET` | you choose | Signs client login tokens. Optional — auto-generated and persisted to `DATA_DIR/.secret_key` if unset. Set explicitly if you run multiple backend instances behind a load balancer, so they all validate the same tokens. |

@@ -423,9 +423,19 @@ def compute_drivers(df: pd.DataFrame, target_col: str,
                         val = f"{med:,.0f}" if abs(med) >= 100 else f"{med:.2f}"
                         bits.append(f"{c} ≈ {val}")
                     elif c in cats:
-                        mode_val = hi_rows[c].astype(str).mode()
-                        if len(mode_val):
-                            bits.append(f"{c} = '{mode_val.iloc[0]}'")
+                        # The value this group has far more of than everyone
+                        # else, not its most common one. The most common
+                        # value is usually just the largest group: the
+                        # profile read "Overtime = 'Yes'; Department =
+                        # 'Engineering'" because Engineering is the biggest
+                        # department, while its attrition was below the
+                        # company's and Support's was twice it.
+                        hi_share = hi_rows[c].astype(str).value_counts(normalize=True)
+                        all_share = data[c].astype(str).value_counts(normalize=True)
+                        lift = (hi_share / all_share.reindex(hi_share.index)).where(
+                            hi_share >= 0.10).dropna()
+                        if len(lift) and float(lift.max()) >= 1.2:
+                            bits.append(f"{c} = '{lift.idxmax()}'")
                 profile = "; ".join(bits)
 
         return DriverResult(

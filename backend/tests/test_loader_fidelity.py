@@ -136,3 +136,20 @@ def test_a_mostly_numeric_column_named_with_id_inside_a_word_is_converted():
     body = "amount_paid,v\n" + "\n".join(f"{x},{i}" for i, x in enumerate(["10.5"] * 9 + ["Pending"]))
     col = _load("p.csv", body.encode()).df["amount_paid"]
     assert col.iloc[0] == 10.5 and col.iloc[-1] == "Pending"
+
+
+def test_a_date_column_mixing_iso_and_day_first_is_read_as_dates():
+    """System exports (2025-03-04) and typed dates (13/10/2024) in one
+    column: pandas took one format from the first value and blanked every
+    ISO date, a third of the column, so it stayed text and the dataset lost
+    every trend, forecast and recency figure. format="mixed" with dayfirst
+    is no answer either: it reads 2025-03-04 as the 3rd of April."""
+    rows = ["13/10/2024", "2025-03-04", "05/01/2024", "2025-01-06", "01/02/2024",
+            "2024-12-31", "28/02/2025", "2025-06-15", "17/08/2024"]
+    csv = "Order Date,Sales\n" + "\n".join(f"{d},{i * 10}" for i, d in enumerate(rows))
+    df = _load("orders.csv", csv.encode()).df
+    col = df["Order Date"]
+    assert pd.api.types.is_datetime64_any_dtype(col), col.tolist()
+    got = [d.strftime("%Y-%m-%d") for d in col]
+    assert got == ["2024-10-13", "2025-03-04", "2024-01-05", "2025-01-06", "2024-02-01",
+                   "2024-12-31", "2025-02-28", "2025-06-15", "2024-08-17"]

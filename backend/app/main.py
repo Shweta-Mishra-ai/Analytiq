@@ -36,6 +36,10 @@ async def lifespan(app: FastAPI):
     # Background sweep of datasets/RAG knowledge bases past DATA_TTL_DAYS.
     # Set DATA_TTL_DAYS=0 to disable. Runs once immediately, then on
     # CLEANUP_INTERVAL_HOURS. Cancelled cleanly on shutdown.
+    from app.services.auth import setup_required
+    if setup_required():
+        logger.error("APP_ADMIN_KEY is not set and there are no accounts: every API "
+                     "request is refused until it is set (REQUIRE_AUTH is on).")
     task = asyncio.create_task(cleanup_loop())
     from app.services.backups import backup_loop
     backups = asyncio.create_task(backup_loop())
@@ -190,7 +194,12 @@ def login(req: LoginRequest):
     cheap way to freeze the server."""
     from fastapi import HTTPException
     from app.services.auth import login_throttle
+    from app.services.auth import setup_required
     from app.services.tokens import issue_token
+    if setup_required():
+        raise HTTPException(
+            503, "This server is not set up yet: its administrator must set "
+                 "APP_ADMIN_KEY and create your account.")
     wait = login_throttle.retry_after(req.username)
     if wait:
         raise HTTPException(
@@ -331,9 +340,10 @@ def _chat_available() -> bool:
 @app.get("/api/health")
 async def health():
     from app.ai.local_llm import status as _llm_status
-    from app.services.auth import _open_mode
+    from app.services.auth import _open_mode, setup_required
     return {
         "status": "ok",
+        "setup_required": setup_required(),
         "app": config.app_name,
         "version": config.app_version,
         "auth_required": not _open_mode(),

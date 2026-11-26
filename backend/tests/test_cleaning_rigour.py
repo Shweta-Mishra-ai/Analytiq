@@ -270,3 +270,21 @@ def test_non_string_column_names_survive_cleaning():
     df = pd.DataFrame({2023: np.arange(20.0), " region ": ["a", "b"] * 10})
     out, _ = auto_clean(df)
     assert 2023 in out.columns and "region" in out.columns
+
+
+def test_labels_differing_only_in_case_are_merged():
+    """'South' and 'south ' were two regions, and the report named the
+    lower-case one the smallest region."""
+    df = pd.DataFrame({"Region": ["South"] * 50 + ["south "] * 3 + ["North"] * 40 + ["NORTH"] * 2,
+                       "Ref": [f"aB{i}" for i in range(95)], "v": range(95)})
+    out, report = auto_clean(df)
+    assert out["Region"].value_counts().to_dict() == {"South": 53, "North": 42}
+    assert any("more than one case" in a.issue for a in report.actions)
+
+
+def test_case_is_kept_in_identifier_like_columns():
+    """Codes such as 'aB1' / 'AB1' can differ by case on purpose."""
+    codes = [f"aB{i}" for i in range(60)] + [f"AB{i}" for i in range(60)]
+    df = pd.DataFrame({"Code": codes, "v": range(120)})
+    out, _ = auto_clean(df)
+    assert out["Code"].nunique() == 120

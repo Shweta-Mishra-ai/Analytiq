@@ -357,3 +357,37 @@ def test_ecommerce_engine_runs_the_customer_analyses(rfm_df):
     blob = " ".join(out["findings"] + out["risks"] + out["opportunities"])
     assert "RFM" in blob or "concentration" in blob.lower(), \
         "customer analyses not reached by the ecommerce orchestrator"
+
+
+def _exact_cohorts(sizes, returned):
+    """Monthly cohorts with exactly `returned[i]` of `sizes[i]` customers
+    ordering again the next month."""
+    rows, cid = [], 0
+    for m, (size, back) in enumerate(zip(sizes, returned)):
+        start = pd.Timestamp("2023-01-01") + pd.DateOffset(months=m)
+        for k in range(size):
+            cid += 1
+            rows.append({"customer_id": cid, "order_date": start + pd.Timedelta(days=k % 27),
+                         "amount": 100.0})
+            if k < back:
+                rows.append({"customer_id": cid,
+                             "order_date": start + pd.DateOffset(months=1)
+                             + pd.Timedelta(days=k % 27), "amount": 100.0})
+    # One later month so the last cohort's return month is fully covered.
+    end = pd.Timestamp("2023-01-01") + pd.DateOffset(months=len(sizes) + 1)
+    rows.append({"customer_id": cid + 1, "order_date": end + pd.Timedelta(days=27),
+                 "amount": 100.0})
+    return pd.DataFrame(rows)
+
+
+def test_one_small_weak_cohort_is_not_reported_as_a_decline():
+    """Seven cohorts at 22-32% and a small last one at 10% (3 of 30): the
+    first-against-last gap is 19 points, but across the cohorts weighted by
+    size there is no trend. This was reported as a HIGH-severity decline."""
+    sizes = [100, 90, 80, 80, 70, 60, 50, 30]
+    returned = [29, 28, 18, 23, 16, 19, 15, 3]
+    df = _exact_cohorts([200] + sizes, [60] + returned)
+    out = _run(cohort_retention, df)
+    assert out["findings"], "retention should still be reported"
+    assert not out["risks"] and not out["insights"], \
+        "reported noise as a retention decline: {}".format(_text(out)[:300])

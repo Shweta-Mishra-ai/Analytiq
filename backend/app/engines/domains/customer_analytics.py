@@ -142,6 +142,37 @@ def _last_full_month(dates: pd.Series):
     return month - 1
 
 
+
+def _cohort_trend_p(hits, sizes):
+    """Two-sided p-value of the Cochran-Armitage test for a linear trend in
+    the share of each cohort that returned, cohorts scored 0, 1, 2... in
+    order. None when it cannot be computed (no variation at all)."""
+    from scipy.stats import norm
+    n = np.asarray(sizes, float)
+    x = np.asarray(hits, float)
+    t = np.arange(len(n), dtype=float)
+    total = n.sum()
+    if total <= 0 or len(n) < 3:
+        return None
+    p = x.sum() / total
+    stat = float((t * (x - n * p)).sum())
+    var = p * (1 - p) * float((n * t ** 2).sum() - (n * t).sum() ** 2 / total)
+    if var <= 0:
+        return None
+    return float(2 * norm.sf(abs(stat) / np.sqrt(var)))
+
+
+def _two_proportion_p(x1, n1, x2, n2):
+    """Two-sided p-value that two pooled return shares differ."""
+    from scipy.stats import norm
+    if n1 <= 0 or n2 <= 0:
+        return None
+    p = (x1 + x2) / (n1 + n2)
+    se = np.sqrt(p * (1 - p) * (1 / n1 + 1 / n2))
+    if se <= 0:
+        return None
+    return float(2 * norm.sf(abs(x1 / n1 - x2 / n2) / se))
+
 def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
                      risks: List, opps: List) -> None:
     """Do customers acquired in one month come back in later months?
@@ -209,11 +240,12 @@ def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
             "report near-zero retention for a business that retains "
             "well.".format(window, typical_gap))
 
-        m1 = {}
+        m1, returned_n = {}, {}
         for cohort, size in usable.items():
             returned = work[(work["_cohort"] == cohort)
                             & (work["_age"] == window)][cust].nunique()
             m1[cohort] = returned / size * 100
+            returned_n[cohort] = returned
 
         if len(m1) < 2:
             return
@@ -228,6 +260,9 @@ def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
         # retention "improving 11.7 points". With more than a year of
         # cohorts, compare each with the same month a year earlier.
         yoy = None
+        sizes = usable.reindex(rates.index).astype(float).values
+        hits = pd.Series(returned_n).reindex(rates.index).astype(float).values
+        trend_p = _cohort_trend_p(hits, sizes)
         if len(rates) >= 13:
             pairs = [(k, k - 12) for k in rates.index if (k - 12) in rates.index]
             if len(pairs) >= 3:
@@ -237,6 +272,9 @@ def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
                 oldest = float(rates[year_ago].mean())
                 drift = newest - oldest
                 yoy = (year_ago[0], year_ago[-1], recent[0], recent[-1])
+                trend_p = _two_proportion_p(
+                    float(pd.Series(returned_n)[recent].sum()), float(usable[recent].sum()),
+                    float(pd.Series(returned_n)[year_ago].sum()), float(usable[year_ago].sum()))
 
         findings.append(
             "{} retention averages {:.1f}% across {} monthly cohorts "
@@ -244,9 +282,15 @@ def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
                 label, overall, len(rates), int(usable.sum()),
                 float(rates.min()), float(rates.max()), cadence_note))
 
-        # A cohort trend is worth reporting when it is large enough not to
-        # be month-to-month noise.
-        if abs(drift) >= 5 and len(rates) >= 3:
+        # A cohort trend is worth reporting when it is large enough to matter
+        # and unlikely to be noise. The size test alone compared two cohorts
+        # and ignored the rest: seven cohorts at 22-32% and a small last one
+        # at 10% (3 of 30 customers) were reported as a HIGH-severity
+        # decline. The trend must now also hold across every cohort,
+        # weighted by its size (Cochran-Armitage), or across the paired
+        # year-ago cohorts, at p < 0.05.
+        if (abs(drift) >= 5 and len(rates) >= 3 and trend_p is not None
+                and trend_p < 0.05):
             direction = "declined" if drift < 0 else "improved"
             sev = ("high" if drift <= -10 else "warning" if drift < 0 else "positive")
             detail = "; ".join(
@@ -260,7 +304,9 @@ def cohort_retention(df: pd.DataFrame, insights: List, findings: List,
             else:
                 basis = "first cohort against the last"
                 first_label, last_label = str(rates.index[0]), str(rates.index[-1])
-            detail = detail + "; compared " + basis
+            detail = detail + "; compared " + basis + (
+                "; trend across cohorts weighted by size, p={}".format(
+                    "<0.001" if trend_p < 0.001 else "{:.3f}".format(trend_p)))
             if drift < 0:
                 risks.append(
                     "{} retention has {} {:.1f} points across the cohorts in "

@@ -273,6 +273,47 @@ def auto_clean(df: pd.DataFrame) -> tuple[pd.DataFrame, CleaningReport]:
     return df, report
 
 
+def _merge_case_variants(df: pd.DataFrame, col: str, report: CleaningReport) -> None:
+    """Spell each label one way when it is written in several cases.
+
+    "South" and "south" were two regions: every breakdown showed a tiny
+    "south" beside the real one, and the report named it the smallest
+    region. Each group of labels that differ only in case is written as
+    its most frequent spelling.
+
+    Only category columns: few distinct labels for the rows they cover. In
+    an identifier or a code ("aB12" vs "AB12") case can be meaningful, and
+    such columns have nearly as many distinct values as rows.
+    """
+    s = df[col]
+    texts = s[s.map(lambda v: isinstance(v, str))]
+    if texts.empty:
+        return
+    n_labels = texts.nunique()
+    if n_labels < 2 or n_labels > 200 or n_labels > 0.5 * len(texts):
+        return
+    counts = texts.value_counts()
+    folded = counts.groupby(counts.index.str.casefold())
+    mapping: dict = {}
+    for _, group in folded:
+        if len(group) > 1:
+            keep = group.idxmax()
+            for label in group.index:
+                if label != keep:
+                    mapping[label] = keep
+    if not mapping:
+        return
+    rows = int(texts.isin(list(mapping)).sum())
+    df[col] = s.map(lambda v: mapping.get(v, v) if isinstance(v, str) else v)
+    shown = ", ".join("'{}' → '{}'".format(a, b) for a, b in list(mapping.items())[:4])
+    more = " and {} more".format(len(mapping) - 4) if len(mapping) > 4 else ""
+    report.add(col, "{} labels written in more than one case ({}{})".format(
+                   len(mapping), shown, more),
+               "merged into the most frequent spelling", len(mapping), 0, rows,
+               sql="\n".join("UPDATE {{table}} SET {c} = {k} WHERE {c} = {v};".format(
+                   c=_q(col), k=_lit(b), v=_lit(a)) for a, b in mapping.items()))
+
+
 def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
     """Apply all relevant cleaning to one column."""
     s = df[col]
@@ -296,6 +337,9 @@ def _clean_column(df: pd.DataFrame, col: str, report: CleaningReport):
                        "whitespace stripped", ws_count, 0, ws_count,
                        sql="UPDATE {{table}} SET {c} = TRIM({c}) WHERE {c} <> TRIM({c});".format(
                            c=_q(col)))
+
+        _merge_case_variants(df, col, report)
+        s = df[col]
 
     # ── 5b. Handle missing values ──────────────────────────
     missing = s.isna().sum()

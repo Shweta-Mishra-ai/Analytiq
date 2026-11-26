@@ -240,3 +240,27 @@ def test_tokens_issued_before_iat_existed_still_verify(monkeypatch):
     claims = tokens.verify_token_claims(f"{payload}.{sig}")
     assert claims and claims["u"] == "legacy"
     assert claims["iat"] < time.time()
+
+
+def test_require_auth_locks_a_server_with_no_admin_key_instead_of_opening_it(
+        client, monkeypatch):
+    """A deployment that forgot APP_ADMIN_KEY served every client's data to
+    anyone with the address, each visitor an admin. With REQUIRE_AUTH (set
+    by the Docker image) it is locked and says why."""
+    from app.config import config
+    from app.services.user_store import user_store
+    assert user_store.is_empty()
+    monkeypatch.setattr(config, "app_admin_key", "")
+    monkeypatch.setattr(config, "app_password", "")
+    monkeypatch.setattr(config, "require_auth", True)
+    health = client.get("/api/health").json()
+    assert health["auth_required"] is True and health["setup_required"] is True
+    assert client.get("/api/datasets").status_code == 401
+    assert client.get("/api/admin/users").status_code == 401
+    r = client.post("/api/auth/login", json={"username": "x", "password": "y" * 8})
+    assert r.status_code == 503 and "APP_ADMIN_KEY" in r.json()["detail"]
+    # Setting the key is all it takes to administer it.
+    monkeypatch.setattr(config, "app_admin_key", "now-set-key-123")
+    assert client.get("/api/admin/users",
+                      headers={"Authorization": "Bearer now-set-key-123"}).status_code == 200
+    assert client.get("/api/health").json()["setup_required"] is False

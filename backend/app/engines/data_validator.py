@@ -127,14 +127,19 @@ def validate_dataframe(df: pd.DataFrame) -> ValidationResult:
     all_null_rows = df.isna().all(axis=1).sum()
     if all_null_rows > 0:
         result.warnings.append(
-            "{} fully empty row(s) found — will be dropped.".format(all_null_rows))
+            "{} fully empty row(s) found. Auto-clean on the Data Quality page "
+            "removes them.".format(all_null_rows))
 
     # Duplicate rows
     dup_count = df.duplicated().sum()
     if dup_count > 0:
         dup_pct = dup_count / len(df) * 100
         result.warnings.append(
-            "{:,} duplicate rows ({:.1f}%) — will be removed.".format(
+            # This said "will be removed", and nothing removed them: every
+            # total, average and report counted them until the client ran
+            # Auto-clean, which the message gave no reason to do.
+            "{:,} duplicate rows ({:.1f}%). They are counted in every total "
+            "until you run Auto-clean on the Data Quality page.".format(
                 dup_count, dup_pct))
 
     # Problematic column names

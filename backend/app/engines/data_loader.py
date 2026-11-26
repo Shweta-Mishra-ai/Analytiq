@@ -540,7 +540,29 @@ def _parse_dates(s: pd.Series) -> pd.Series:
     (01/02/2024) was read month-first; every value with a day above 12 then
     failed, and the whole column stayed text. Both orders are tried and the
     one that parses more values wins; on a tie the default stands.
+
+    A column that mixes year-first values (2025-03-03, from a system
+    export) with day- or month-first ones (13/10/2024, typed in Excel) is
+    parsed as two groups. pandas takes one format from the first value, so
+    the whole column was read as 13/10/2024 and every 2025-03-03 became a
+    blank; with a third of the dates lost the column stayed text, and the
+    dataset had no trend, forecast or customer recency at all. Parsing the
+    lot with format="mixed" is no better: with dayfirst it reads 2025-03-04
+    as the 3rd of April.
     """
+    text = s.astype(str)
+    year_first = text.str.match(r"^\s*\d{4}[-/.]\d{1,2}[-/.]\d{1,2}") & s.notna()
+    if year_first.any() and (~year_first & s.notna()).any():
+        parts = [_parse_uniform(s[year_first]), _parse_uniform(s[~year_first])]
+        combined = pd.concat(parts).reindex(s.index)
+        if pd.api.types.is_datetime64_any_dtype(combined):
+            return combined
+    return _parse_uniform(s)
+
+
+def _parse_uniform(s: pd.Series) -> pd.Series:
+    """Dates written one way throughout: day-first or month-first, whichever
+    reads more of them (see _parse_dates)."""
     import warnings
     with warnings.catch_warnings():
         # Trying both orders on purpose: pandas warns that ISO dates ignore

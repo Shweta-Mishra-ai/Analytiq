@@ -41,7 +41,15 @@ LOCAL_OWNER = "local"
 
 
 def _open_mode() -> bool:
-    return not config.effective_admin_key and user_store.is_empty()
+    return (not config.require_auth and not config.effective_admin_key
+            and user_store.is_empty())
+
+
+def setup_required() -> bool:
+    """Sign-in is required but nobody can sign in: no admin key, no
+    accounts. Only REQUIRE_AUTH gets a server into this state."""
+    return (config.require_auth and not config.effective_admin_key
+            and user_store.is_empty())
 
 
 class AuthMiddleware(BaseHTTPMiddleware):

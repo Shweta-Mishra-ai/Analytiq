@@ -24,8 +24,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/app ./app
 COPY --from=frontend /fe/dist ./static
 
+# REQUIRE_AUTH: a deployment that forgets APP_ADMIN_KEY is locked, not
+# open to anyone with its address (see app/config.py).
 ENV DATA_DIR=/srv/data \
-    PORT=8000
+    PORT=8000 \
+    REQUIRE_AUTH=1
 RUN mkdir -p /srv/data
 
 EXPOSE 8000

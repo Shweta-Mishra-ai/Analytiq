@@ -210,3 +210,23 @@ def test_without_a_model_a_report_quotes_the_documents_instead_of_failing(tmp_pa
     assert service.report_pdf(out["markdown"], "Policies").startswith(b"%PDF")
     answer = service.answer_question(kb, "how long is the warranty?")["answer"]
     assert "two-year warranty" in answer and "API_KEY" not in answer
+
+
+def test_high_risk_profile_names_the_riskiest_group_not_the_largest():
+    """Engineering is the biggest department and leaves at the base rate;
+    Support is small and leaves at twice it. The profile named Engineering,
+    the most common department among the high-risk rows, as a risk."""
+    import numpy as np
+    from app.engines.predictive import compute_drivers
+    rng = np.random.default_rng(3)
+    n = 1500
+    dept = rng.choice(["Engineering", "Sales", "Support", "Finance"], n, p=[.45, .25, .2, .1])
+    overtime = rng.choice(["Yes", "No"], n, p=[.3, .7])
+    p = 0.06 + 0.18 * (overtime == "Yes") + 0.12 * (dept == "Support")
+    df = pd.DataFrame({"Department": dept, "Overtime": overtime,
+                       "Age": rng.integers(21, 60, n),
+                       "Left": np.where(rng.random(n) < p, "Yes", "No")})
+    res = compute_drivers(df, "Left")
+    assert res is not None and res.high_risk_profile
+    assert "Engineering" not in res.high_risk_profile, res.high_risk_profile
+    assert "Overtime = 'Yes'" in res.high_risk_profile, res.high_risk_profile
